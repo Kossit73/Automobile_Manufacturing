@@ -24,6 +24,240 @@ def _default_capacity_curve(start_year: int, projection_years: int) -> Dict[int,
     return {start_year + i: values[i] for i in range(projection_years)}
 
 
+def _default_product_portfolio() -> Dict[str, Dict[str, float]]:
+    """Return the default product portfolio with mix, pricing, and cost drivers."""
+
+    return {
+        "EV_Bikes": {
+            "mix": 0.30,
+            "price": 4_000.0,
+            "price_growth": 0.01,
+            "variable_cost_ratio": 0.52,
+            "cost_inflation": 0.015,
+            "scale_sensitivity": 0.10,
+        },
+        "EV_Scooters": {
+            "mix": 0.25,
+            "price": 3_500.0,
+            "price_growth": 0.01,
+            "variable_cost_ratio": 0.50,
+            "cost_inflation": 0.015,
+            "scale_sensitivity": 0.12,
+        },
+        "EV_SUV": {
+            "mix": 0.25,
+            "price": 15_000.0,
+            "price_growth": 0.012,
+            "variable_cost_ratio": 0.58,
+            "cost_inflation": 0.018,
+            "scale_sensitivity": 0.08,
+        },
+        "EV_Hatchback": {
+            "mix": 0.10,
+            "price": 12_000.0,
+            "price_growth": 0.012,
+            "variable_cost_ratio": 0.55,
+            "cost_inflation": 0.017,
+            "scale_sensitivity": 0.09,
+        },
+        "EV_NanoCar": {
+            "mix": 0.10,
+            "price": 9_000.0,
+            "price_growth": 0.015,
+            "variable_cost_ratio": 0.48,
+            "cost_inflation": 0.016,
+            "scale_sensitivity": 0.14,
+        },
+    }
+
+
+def _normalize_product_portfolio(
+    start_year: int,
+    projection_years: int,
+    portfolio: Optional[Dict[str, Dict[str, float]]],
+    fallback_ratio: float,
+) -> Dict[str, Dict[str, float]]:
+    """Validate and normalize product portfolio inputs."""
+
+    if not portfolio:
+        portfolio = _default_product_portfolio()
+
+    normalized: Dict[str, Dict[str, float]] = {}
+    total_mix = 0.0
+    for name, raw in portfolio.items():
+        try:
+            mix = max(0.0, float(raw.get("mix", 0.0)))
+        except (TypeError, ValueError):
+            mix = 0.0
+
+        try:
+            price = max(0.0, float(raw.get("price", 0.0)))
+        except (TypeError, ValueError):
+            price = 0.0
+
+        try:
+            price_growth = float(raw.get("price_growth", 0.0))
+        except (TypeError, ValueError):
+            price_growth = 0.0
+
+        try:
+            variable_cost_ratio = raw.get("variable_cost_ratio")
+            if variable_cost_ratio is not None:
+                variable_cost_ratio = max(0.0, float(variable_cost_ratio))
+        except (TypeError, ValueError):
+            variable_cost_ratio = None
+
+        try:
+            base_cost_per_unit = raw.get("variable_cost_per_unit")
+            if base_cost_per_unit is not None:
+                base_cost_per_unit = max(0.0, float(base_cost_per_unit))
+        except (TypeError, ValueError):
+            base_cost_per_unit = None
+
+        try:
+            cost_inflation = float(raw.get("cost_inflation", 0.0))
+        except (TypeError, ValueError):
+            cost_inflation = 0.0
+
+        try:
+            scale_sensitivity = float(raw.get("scale_sensitivity", 0.1))
+        except (TypeError, ValueError):
+            scale_sensitivity = 0.1
+
+        scale_sensitivity = max(0.0, min(1.0, scale_sensitivity))
+
+        if base_cost_per_unit is None:
+            ratio = variable_cost_ratio if variable_cost_ratio is not None else fallback_ratio
+            if price > 0:
+                base_cost_per_unit = price * ratio
+            else:
+                base_cost_per_unit = 0.0
+
+        if price > 0 and (variable_cost_ratio is None or variable_cost_ratio < 0.0):
+            variable_cost_ratio = base_cost_per_unit / price if price else 0.0
+
+        variable_cost_ratio = max(0.0, min(1.5, variable_cost_ratio or 0.0))
+
+        normalized[name] = {
+            "mix": mix,
+            "price": price,
+            "price_growth": price_growth,
+            "variable_cost_ratio": variable_cost_ratio,
+            "base_cost_per_unit": base_cost_per_unit,
+            "cost_inflation": cost_inflation,
+            "scale_sensitivity": scale_sensitivity,
+        }
+
+        total_mix += mix
+
+    if total_mix <= 0:
+        normalized = _default_product_portfolio()
+        total_mix = sum(item["mix"] for item in normalized.values())
+
+    # Normalize mix weights so they sum to 1
+    for name, data in normalized.items():
+        data["mix"] = data["mix"] / total_mix
+
+    return normalized
+
+
+def _default_marketing_plan(start_year: int) -> Dict[str, Dict[str, float]]:
+    """Return a default multi-campaign marketing plan."""
+
+    return {
+        "Brand Awareness": {
+            "base": 48_000.0,
+            "growth": 0.04,
+            "start_year": start_year,
+            "duration": None,
+        },
+        "Digital Acquisition": {
+            "base": 36_000.0,
+            "growth": 0.06,
+            "start_year": start_year,
+            "duration": None,
+        },
+        "Launch Events": {
+            "base": 60_000.0,
+            "growth": -0.15,
+            "start_year": start_year,
+            "duration": 2,
+        },
+    }
+
+
+def _normalize_marketing_plan(
+    start_year: int, projection_years: int, plan: Optional[Dict[str, Dict[str, float]]]
+) -> Dict[str, Dict[str, float]]:
+    """Normalize marketing plan inputs into a structured campaign mapping."""
+
+    if not plan:
+        plan = _default_marketing_plan(start_year)
+
+    normalized: Dict[str, Dict[str, float]] = {}
+    for name, raw in plan.items():
+        try:
+            base = max(0.0, float(raw.get("base", 0.0)))
+        except (TypeError, ValueError):
+            base = 0.0
+
+        try:
+            growth = float(raw.get("growth", 0.0))
+        except (TypeError, ValueError):
+            growth = 0.0
+
+        try:
+            start = int(raw.get("start_year", start_year))
+        except (TypeError, ValueError):
+            start = start_year
+
+        duration_raw = raw.get("duration")
+        duration: Optional[int]
+        if duration_raw is None:
+            duration = None
+        else:
+            try:
+                duration = max(1, int(duration_raw))
+            except (TypeError, ValueError):
+                duration = None
+
+        normalized[name] = {
+            "base": base,
+            "growth": growth,
+            "start_year": start,
+            "duration": duration,
+        }
+
+    return normalized
+
+
+def _build_marketing_budget(
+    start_year: int, projection_years: int, plan: Dict[str, Dict[str, float]]
+) -> Dict[int, float]:
+    """Generate the annual marketing budget from the campaign plan."""
+
+    budgets = {start_year + i: 0.0 for i in range(projection_years)}
+
+    for campaign in plan.values():
+        base = campaign["base"]
+        growth = campaign["growth"]
+        start = max(start_year, campaign["start_year"])
+        duration = campaign["duration"]
+
+        for i in range(projection_years):
+            year = start_year + i
+            if year < start:
+                continue
+            if duration is not None and year >= start + duration:
+                continue
+
+            year_index = year - start
+            spend = base * ((1 + growth) ** max(0, year_index))
+            budgets[year] += spend
+
+    return budgets
+
+
 def _normalize_capacity_utilization(
     start_year: int, projection_years: int, values: Optional[Iterable]
 ) -> Dict[int, float]:
@@ -110,7 +344,8 @@ class CompanyConfig:
     
     # Marketing
     marketing_budget: Dict[int, float] = None
-    
+    marketing_plan: Optional[Dict[str, Dict[str, float]]] = None
+
     # Financing
     loan_amount: float = 1_000_000
     equity_investment: float = 3_000_000
@@ -119,6 +354,11 @@ class CompanyConfig:
     
     # Working Capital & Financial Parameters
     cogs_ratio: float = 0.6
+    product_portfolio: Optional[Dict[str, Dict[str, float]]] = None
+    variable_cost_inflation: float = 0.02
+    base_fixed_production_cost: float = 1_250_000.0
+    fixed_cost_inflation: float = 0.02
+    fixed_cost_utilization_sensitivity: float = 0.4
     tax_rate: float = 0.25
     wacc: float = 0.12
     terminal_growth: float = 0.03
@@ -136,27 +376,61 @@ class CompanyConfig:
             self.start_year, self.projection_years, self.capacity_utilization
         )
 
-        if self.marketing_budget is None or not self.marketing_budget:
-            self.marketing_budget = {
-                self.start_year + i: 72_000 for i in range(self.projection_years)
-            }
-        else:
-            budgets = dict(self.marketing_budget)
-            sorted_years = sorted(budgets.keys())
-            last_budget = budgets[sorted_years[0]] if sorted_years else 72_000
+        # Normalize portfolio cost drivers before calculating budgets or production costs.
+        self.product_portfolio = _normalize_product_portfolio(
+            self.start_year, self.projection_years, self.product_portfolio, self.cogs_ratio
+        )
+
+        # Update the blended cogs ratio so downstream analytics remain meaningful.
+        blended_ratio = sum(
+            data["mix"] * data["variable_cost_ratio"] for data in self.product_portfolio.values()
+        )
+        if blended_ratio > 0:
+            self.cogs_ratio = blended_ratio
+
+        # Normalize marketing plan and budget.
+        self.marketing_plan = _normalize_marketing_plan(
+            self.start_year, self.projection_years, self.marketing_plan
+        )
+
+        derived_budget = _build_marketing_budget(
+            self.start_year, self.projection_years, self.marketing_plan
+        )
+
+        if self.marketing_budget:
+            custom = {}
+            for raw_year, raw_value in self.marketing_budget.items():
+                try:
+                    year = int(raw_year)
+                    value = float(raw_value)
+                except (TypeError, ValueError):
+                    continue
+                custom[year] = max(0.0, value)
+
+            budgets = derived_budget
+            last_known = None
             for i in range(self.projection_years):
                 year = self.start_year + i
-                if year in budgets:
-                    last_budget = budgets[year]
-                else:
-                    budgets[year] = last_budget
+                if year in custom:
+                    budgets[year] = custom[year]
+                    last_known = custom[year]
+                elif last_known is not None:
+                    budgets[year] = last_known
             self.marketing_budget = budgets
+        else:
+            self.marketing_budget = derived_budget
 
         # Guardrail working-capital driver inputs to keep calculations stable.
         self.receivable_days = max(0.0, float(self.receivable_days))
         self.inventory_days = max(0.0, float(self.inventory_days))
         self.payable_days = max(0.0, float(self.payable_days))
         self.accrued_expense_ratio = max(0.0, float(self.accrued_expense_ratio))
+
+        self.variable_cost_inflation = float(self.variable_cost_inflation)
+        self.fixed_cost_inflation = float(self.fixed_cost_inflation)
+        self.fixed_cost_utilization_sensitivity = max(
+            0.0, min(1.0, float(self.fixed_cost_utilization_sensitivity))
+        )
 
 # Default Configuration
 config = CompanyConfig()
@@ -181,6 +455,21 @@ def _carry_forward(mapping: Dict[int, float], year: int, default: float) -> floa
         return mapping[min(later)]
 
     return default
+
+
+def _fixed_production_cost(cfg: CompanyConfig, year: int) -> float:
+    """Estimate fixed production costs for the given year."""
+
+    years_since_start = max(0, year - cfg.start_year)
+    base_cost = cfg.base_fixed_production_cost * ((1 + cfg.fixed_cost_inflation) ** years_since_start)
+    utilization = _carry_forward(cfg.capacity_utilization, year, 1.0)
+
+    # Higher utilization dilutes fixed costs while under-utilization keeps them elevated.
+    sensitivity = cfg.fixed_cost_utilization_sensitivity
+    scale = 1.0 - sensitivity * (utilization - 1.0)
+    scale = max(0.5, min(1.5, scale))
+
+    return base_cost * scale
 
 
 def calculate_working_capital_positions(
@@ -235,43 +524,88 @@ def calculate_working_capital_positions(
 # 2. PRODUCTION & SALES FORECAST
 # =====================================================
 def calculate_production_forecast(cfg: CompanyConfig):
-    """Calculate production volume and revenue forecasts"""
+    """Calculate production volume, per-product pricing, and revenue forecasts."""
+
     years = _projection_years(cfg)
 
     production_volume = {
         y: cfg.annual_capacity * _carry_forward(cfg.capacity_utilization, y, 1.0)
         for y in years
     }
-    
-    product_mix = {
-        "EV_Bikes": 0.30,
-        "EV_Scooters": 0.25,
-        "EV_SUV": 0.25,
-        "EV_Hatchback": 0.10,
-        "EV_NanoCar": 0.10
-    }
-    
-    selling_price = {
-        "EV_Bikes": 4000,
-        "EV_Scooters": 3500,
-        "EV_SUV": 15000,
-        "EV_Hatchback": 12000,
-        "EV_NanoCar": 9000
-    }
-    
-    revenue = {
-        y: sum(production_volume[y] * product_mix[p] * selling_price[p] for p in product_mix)
-        for y in years
-    }
-    
-    return production_volume, product_mix, selling_price, revenue
+
+    product_units: Dict[int, Dict[str, float]] = {}
+    product_prices: Dict[int, Dict[str, float]] = {}
+    product_revenue: Dict[int, Dict[str, float]] = {}
+    revenue: Dict[int, float] = {}
+
+    for y in years:
+        units_for_year: Dict[str, float] = {}
+        prices_for_year: Dict[str, float] = {}
+        revenue_for_year: Dict[str, float] = {}
+        total_revenue = 0.0
+        years_since_start = max(0, y - cfg.start_year)
+
+        for product, drivers in cfg.product_portfolio.items():
+            units = production_volume[y] * drivers["mix"]
+            price = drivers["price"] * ((1 + drivers.get("price_growth", 0.0)) ** years_since_start)
+
+            units_for_year[product] = units
+            prices_for_year[product] = price
+            revenue_value = units * price
+            revenue_for_year[product] = revenue_value
+            total_revenue += revenue_value
+
+        product_units[y] = units_for_year
+        product_prices[y] = prices_for_year
+        product_revenue[y] = revenue_for_year
+        revenue[y] = total_revenue
+
+    return production_volume, product_units, product_prices, revenue, product_revenue
 
 # =====================================================
 # 3. COST OF GOODS SOLD
 # =====================================================
-def calculate_cogs(revenue: Dict, cfg: CompanyConfig) -> Dict:
-    """Calculate COGS based on revenue"""
-    return {y: revenue[y] * cfg.cogs_ratio for y in revenue}
+def calculate_cogs(
+    years: Sequence[int],
+    product_units: Dict[int, Dict[str, float]],
+    cfg: CompanyConfig,
+) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float], Dict[int, Dict[str, float]]]:
+    """Calculate COGS with variable and fixed components."""
+
+    total_cogs: Dict[int, float] = {}
+    variable_cogs: Dict[int, float] = {}
+    fixed_cogs: Dict[int, float] = {}
+    variable_breakdown: Dict[int, Dict[str, float]] = {}
+
+    for y in years:
+        per_product: Dict[str, float] = {}
+        variable_total = 0.0
+        years_since_start = max(0, y - cfg.start_year)
+        utilization = _carry_forward(cfg.capacity_utilization, y, 1.0)
+
+        for product, units in product_units[y].items():
+            drivers = cfg.product_portfolio[product]
+            base_cost = drivers["base_cost_per_unit"]
+            cost_inflation = drivers.get("cost_inflation", cfg.variable_cost_inflation)
+            scale_sensitivity = drivers.get("scale_sensitivity", 0.0)
+
+            inflation_factor = (1 + cost_inflation) ** years_since_start
+            scale_factor = 1.0 - scale_sensitivity * (utilization - 1.0)
+            scale_factor = max(0.5, min(1.5, scale_factor))
+
+            cost_per_unit = base_cost * inflation_factor * scale_factor
+            variable_cost = cost_per_unit * units
+            per_product[product] = variable_cost
+            variable_total += variable_cost
+
+        fixed_cost = _fixed_production_cost(cfg, y)
+
+        total_cogs[y] = variable_total + fixed_cost
+        variable_cogs[y] = variable_total
+        fixed_cogs[y] = fixed_cost
+        variable_breakdown[y] = per_product
+
+    return total_cogs, variable_cogs, fixed_cogs, variable_breakdown
 
 # =====================================================
 # 4. OPERATING EXPENSES
@@ -518,8 +852,14 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
     years = _projection_years(cfg)
 
     # Calculate components
-    production_volume, product_mix, selling_price, revenue = calculate_production_forecast(cfg)
-    cogs = calculate_cogs(revenue, cfg)
+    (
+        production_volume,
+        product_units,
+        product_prices,
+        revenue,
+        product_revenue,
+    ) = calculate_production_forecast(cfg)
+    cogs, variable_cogs, fixed_cogs, variable_breakdown = calculate_cogs(years, product_units, cfg)
     opex = calculate_opex_with_labor_manager(years, cfg)
     labor_metrics = get_labor_metrics(cfg, years)
     ebitda, ebit, tax, net_profit, depreciation = calculate_income_statement(years, cfg, production_volume, revenue, cogs, opex)
@@ -577,6 +917,9 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         'years': tuple(years),
         'revenue': revenue,
         'cogs': cogs,
+        'variable_cogs': variable_cogs,
+        'fixed_cogs': fixed_cogs,
+        'variable_cogs_breakdown': variable_breakdown,
         'opex': opex,
         'ebitda': ebitda,
         'ebit': ebit,
@@ -586,8 +929,9 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         'discounted_fcf': discounted_fcf,
         'enterprise_value': enterprise_value,
         'production_volume': production_volume,
-        'product_mix': product_mix,
-        'selling_price': selling_price,
+        'product_units': product_units,
+        'product_prices': product_prices,
+        'product_revenue': product_revenue,
         'depreciation': depreciation,
         'cfo': cfo,
         'cfi': cfi,

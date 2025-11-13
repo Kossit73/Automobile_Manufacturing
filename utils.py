@@ -41,9 +41,20 @@ class FinancialValidator:
             warnings_list.append("Headcount should be positive")
         
         # Check reasonable ranges
-        if config.cogs_ratio < 0 or config.cogs_ratio > 1:
-            warnings_list.append("COGS ratio should be between 0 and 1")
-        
+        if config.cogs_ratio < 0 or config.cogs_ratio > 1.5:
+            warnings_list.append("Blended COGS ratio should be between 0 and 150% of revenue")
+
+        # Product portfolio sanity checks
+        mix_total = sum(driver["mix"] for driver in config.product_portfolio.values()) if config.product_portfolio else 0
+        if abs(mix_total - 1.0) > 1e-6:
+            warnings_list.append("Product mix weights do not sum to 1.0")
+
+        for name, driver in (config.product_portfolio or {}).items():
+            if driver["price"] <= 0:
+                warnings_list.append(f"Product '{name}' has a non-positive price")
+            if driver["base_cost_per_unit"] < 0:
+                warnings_list.append(f"Product '{name}' has a negative cost per unit")
+
         if config.tax_rate < 0 or config.tax_rate > 1:
             warnings_list.append("Tax rate should be between 0 and 1")
         

@@ -277,14 +277,19 @@ class FinancialAnalyzer:
     def break_even_analysis(self) -> Dict:
         """Calculate break-even metrics"""
         # Break-even volume: Fixed Costs / (Price - Variable Cost per Unit)
-        total_fixed_costs = self.model_data['opex'][self.years[0]]  # Approximate
-        avg_selling_price = self.model_data['revenue'][self.years[0]] / self.model_data['production_volume'][self.years[0]]
-        variable_cost_per_unit = (self.model_data['cogs'][self.years[0]] / 
-                                 self.model_data['production_volume'][self.years[0]])
-        
+        first_year = self.years[0]
+        production_volume = self.model_data['production_volume'][first_year]
+        avg_selling_price = self.model_data['revenue'][first_year] / production_volume if production_volume else 0.0
+
+        variable_total = self.model_data.get('variable_cogs', {}).get(first_year, 0.0)
+        variable_cost_per_unit = variable_total / production_volume if production_volume else 0.0
+
+        fixed_production = self.model_data.get('fixed_cogs', {}).get(first_year, 0.0)
+        total_fixed_costs = self.model_data['opex'][first_year] + fixed_production
+
         contribution_margin_per_unit = avg_selling_price - variable_cost_per_unit
         break_even_volume = total_fixed_costs / contribution_margin_per_unit if contribution_margin_per_unit != 0 else 0
-        
+
         break_even_revenue = break_even_volume * avg_selling_price
         
         return {

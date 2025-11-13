@@ -1112,39 +1112,55 @@ def _render_reports(model: Dict[str, Any]) -> None:
 
 def _render_platform_settings() -> None:
     cfg: CompanyConfig = st.session_state["company_config"]
-    st.markdown("### Company Configuration")
-    company_name = st.text_input("Company Name", cfg.company_name)
-    start_year = st.number_input("Model Start Year", value=int(cfg.start_year), step=1)
-    projection_years = st.number_input(
-        "Projection Years",
-        value=int(cfg.projection_years),
-        min_value=1,
-        max_value=20,
-        step=1,
-    )
-    salary_growth = st.slider(
-        "Annual Salary Growth", min_value=0.0, max_value=0.15, value=float(cfg.annual_salary_growth), step=0.01
+
+    general_tab, labor_tab, capex_tab = st.tabs(
+        ["General Settings", "Labor Management", "CAPEX Management"]
     )
 
-    if (
-        company_name != cfg.company_name
-        or int(start_year) != cfg.start_year
-        or int(projection_years) != cfg.projection_years
-        or salary_growth != cfg.annual_salary_growth
-    ):
-        cfg.company_name = company_name
-        cfg.start_year = int(start_year)
-        cfg.projection_years = int(projection_years)
-        cfg.annual_salary_growth = float(salary_growth)
-        cfg.__post_init__()
-        _run_model()
-        st.success("Settings updated. Financial model refreshed.")
+    with general_tab:
+        st.markdown("### Company Configuration")
+        company_name = st.text_input("Company Name", cfg.company_name)
+        start_year = st.number_input("Model Start Year", value=int(cfg.start_year), step=1)
+        projection_years = st.number_input(
+            "Projection Years",
+            value=int(cfg.projection_years),
+            min_value=1,
+            max_value=20,
+            step=1,
+        )
+        salary_growth = st.slider(
+            "Annual Salary Growth",
+            min_value=0.0,
+            max_value=0.15,
+            value=float(cfg.annual_salary_growth),
+            step=0.01,
+        )
 
-    st.markdown("### Model Execution")
-    st.write(f"Last model refresh: {st.session_state.get('last_model_run', 'Never')}")
-    if st.button("Recalculate Model"):
-        _run_model()
-        st.success("Model recalculated.")
+        if (
+            company_name != cfg.company_name
+            or int(start_year) != cfg.start_year
+            or int(projection_years) != cfg.projection_years
+            or salary_growth != cfg.annual_salary_growth
+        ):
+            cfg.company_name = company_name
+            cfg.start_year = int(start_year)
+            cfg.projection_years = int(projection_years)
+            cfg.annual_salary_growth = float(salary_growth)
+            cfg.__post_init__()
+            _run_model()
+            st.success("Settings updated. Financial model refreshed.")
+
+        st.markdown("### Model Execution")
+        st.write(f"Last model refresh: {st.session_state.get('last_model_run', 'Never')}")
+        if st.button("Recalculate Model"):
+            _run_model()
+            st.success("Model recalculated.")
+
+    with labor_tab:
+        _render_labor_management()
+
+    with capex_tab:
+        _render_capex_management()
 
 
 def _render_ai_settings(payload: Dict[str, Any], container: Optional[DeltaGenerator] = None) -> None:
@@ -1250,8 +1266,6 @@ def _render_ai_settings(payload: Dict[str, Any], container: Optional[DeltaGenera
 def _render_navigation() -> str:
     pages = [
         "Dashboard",
-        "Labor Management",
-        "CAPEX Management",
         "Financial Model",
         "Reports",
         "Platform Settings",
@@ -1285,10 +1299,6 @@ def main() -> None:
 
     if active_page == "Dashboard":
         _render_dashboard(model)
-    elif active_page == "Labor Management":
-        _render_labor_management()
-    elif active_page == "CAPEX Management":
-        _render_capex_management()
     elif active_page == "Financial Model":
         _render_financial_model(model)
     elif active_page == "Reports":

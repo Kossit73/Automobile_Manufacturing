@@ -11,6 +11,17 @@ import numpy as np
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
+from io import BytesIO
+from copy import deepcopy
+from typing import Dict, Tuple
+
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    OPENPYXL_AVAILABLE = True
+except ImportError:
+    OPENPYXL_AVAILABLE = False
 
 # Import platform modules
 from financial_model import run_financial_model, CompanyConfig
@@ -21,8 +32,203 @@ from labor_management import (
 from capex_management import initialize_default_capex, CapexScheduleManager
 
 # =====================================================
-# PAGE CONFIG
+# EXCEL EXPORT HELPER FUNCTIONS
 # =====================================================
+
+def _generate_excel_bytes(model: Dict, labor_manager, capex_manager, scenario: str = "Base Case") -> bytes:
+    """
+    Generate Excel workbook with financial model, labor schedule, and CAPEX schedule
+    
+    Args:
+        model: Financial model results dictionary
+        labor_manager: Labor management object
+        capex_manager: CAPEX management object
+        scenario: Scenario name for the model
+    
+    Returns:
+        Bytes of Excel workbook
+    """
+    if not OPENPYXL_AVAILABLE:
+        st.error("openpyxl is required for Excel export. Install with: pip install openpyxl")
+        return None
+    
+    wb = Workbook()
+    wb.remove(wb.active)  # Remove default sheet
+    
+    # Define styles
+    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=12)
+    title_font = Font(bold=True, size=14)
+    subtitle_font = Font(bold=True, size=11)
+    center_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    currency_format = '_-$* #,##0.00_-;-$* #,##0.00_-;_-$* "-"??_-;_-@_-'
+    number_format = '#,##0.00'
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    
+    # ========== SHEET 1: EXECUTIVE SUMMARY ==========
+    ws_summary = wb.create_sheet("Executive Summary", 0)
+    ws_summary.column_dimensions['A'].width = 30
+    ws_summary.column_dimensions['B'].width = 20
+    ws_summary.column_dimensions['C'].width = 20
+    
+    row = 1
+    ws_summary[f'A{row}'] = f"Automobile Manufacturing Financial Model - {scenario}"
+    ws_summary[f'A{row}'].font = title_font
+    row += 1
+    ws_summary[f'A{row}'] = f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    row += 2
+    
+    # Summary metrics
+    ws_summary[f'A{row}'] = "Key Metrics"
+    ws_summary[f'A{row}'].font = subtitle_font
+    row += 1
+    
+    metrics = [
+        ("2026 Revenue", model['revenue'][0] if isinstance(model['revenue'], list) else model['revenue']),
+        ("2026 EBIT", model['ebit'][0] if isinstance(model['ebit'], list) else model['ebit']),
+        ("2026 Net Profit", model['net_profit'][0] if isinstance(model['net_profit'], list) else model['net_profit']),
+        ("2026 FCF", model['fcf'][0] if isinstance(model['fcf'], list) else model['fcf']),
+        ("Enterprise Value", model.get('enterprise_value', 0)),
+        ("5-Year Total FCF", sum(model['fcf']) if isinstance(model['fcf'], list) else model['fcf']),
+    ]
+    
+    for label, value in metrics:
+        ws_summary[f'A{row}'] = label
+        ws_summary[f'B{row}'] = value
+        ws_summary[f'B{row}'].number_format = currency_format
+        ws_summary[f'B{row}'].border = thin_border
+        row += 1
+    
+    # ========== SHEET 2: FINANCIAL MODEL ==========
+    ws_financial = wb.create_sheet("Financial Model", 1)
+    
+    # Header
+    headers = ['Year', 'Revenue', 'COGS', 'Gross Profit', 'OPEX', 'EBITDA', 'Depreciation', 'EBIT', 'Interest', 'EBT', 'Taxes', 'Net Profit', 'FCF']
+    for col, header in enumerate(headers, 1):
+        cell = ws_financial.cell(row=1, column=col, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center_alignment
+        cell.border = thin_border
+    
+    # Data rows
+    years = list(range(2026, 2031))
+    for row_idx, year in enumerate(years, 2):
+        ws_financial.cell(row=row_idx, column=1, value=year)
+        ws_financial.cell(row=row_idx, column=2, value=model['revenue'][row_idx-2] if isinstance(model['revenue'], list) else model['revenue'])
+        ws_financial.cell(row=row_idx, column=3, value=model['cogs'][row_idx-2] if isinstance(model['cogs'], list) else model['cogs'])
+        ws_financial.cell(row=row_idx, column=4, value=model['revenue'][row_idx-2] - model['cogs'][row_idx-2] if isinstance(model['revenue'], list) else model['revenue'] - model['cogs'])
+        ws_financial.cell(row=row_idx, column=5, value=model['opex'][row_idx-2] if isinstance(model['opex'], list) else model['opex'])
+        ws_financial.cell(row=row_idx, column=6, value=model['revenue'][row_idx-2] - model['cogs'][row_idx-2] - model['opex'][row_idx-2] if isinstance(model['revenue'], list) else model['revenue'] - model['cogs'] - model['opex'])
+        ws_financial.cell(row=row_idx, column=7, value=model.get('depreciation', [0]*5)[row_idx-2])
+        ws_financial.cell(row=row_idx, column=8, value=model['ebit'][row_idx-2] if isinstance(model['ebit'], list) else model['ebit'])
+        ws_financial.cell(row=row_idx, column=9, value=0)  # Interest
+        ws_financial.cell(row=row_idx, column=10, value=model['ebit'][row_idx-2] if isinstance(model['ebit'], list) else model['ebit'])  # EBT
+        ws_financial.cell(row=row_idx, column=11, value=(model['ebit'][row_idx-2] * 0.21) if isinstance(model['ebit'], list) else (model['ebit'] * 0.21))  # Taxes
+        ws_financial.cell(row=row_idx, column=12, value=model['net_profit'][row_idx-2] if isinstance(model['net_profit'], list) else model['net_profit'])
+        ws_financial.cell(row=row_idx, column=13, value=model['fcf'][row_idx-2] if isinstance(model['fcf'], list) else model['fcf'])
+        
+        # Format as currency
+        for col in range(2, 14):
+            ws_financial.cell(row=row_idx, column=col).number_format = currency_format
+            ws_financial.cell(row=row_idx, column=col).border = thin_border
+    
+    # Set column widths
+    ws_financial.column_dimensions['A'].width = 12
+    for col in range(2, 14):
+        ws_financial.column_dimensions[get_column_letter(col)].width = 16
+    
+    # ========== SHEET 3: LABOR SCHEDULE ==========
+    ws_labor = wb.create_sheet("Labor Schedule", 2)
+    
+    try:
+        cost_schedule = LaborCostSchedule(labor_manager)
+        labor_df = cost_schedule.generate_5year_schedule(salary_growth=st.session_state.salary_growth_rate)
+        
+        # Write headers
+        for col, header in enumerate(labor_df.columns, 1):
+            cell = ws_labor.cell(row=1, column=col, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center_alignment
+            cell.border = thin_border
+        
+        # Write data
+        for row_idx, row_data in enumerate(labor_df.values, 2):
+            for col_idx, value in enumerate(row_data, 1):
+                cell = ws_labor.cell(row=row_idx, column=col_idx, value=value)
+                if col_idx > 1:  # Format numeric columns as currency or number
+                    if 'Cost' in labor_df.columns[col_idx-1]:
+                        cell.number_format = currency_format
+                    else:
+                        cell.number_format = number_format
+                cell.border = thin_border
+        
+        # Auto-size columns
+        for col_idx, col_header in enumerate(labor_df.columns, 1):
+            ws_labor.column_dimensions[get_column_letter(col_idx)].width = 18
+    
+    except Exception as e:
+        ws_labor['A1'] = f"Error generating labor schedule: {str(e)}"
+    
+    # ========== SHEET 4: CAPEX SCHEDULE ==========
+    ws_capex = wb.create_sheet("CAPEX Schedule", 3)
+    
+    try:
+        capex_items = capex_manager.list_items()
+        
+        headers = ['Item ID', 'Asset Name', 'Category', 'Acquisition Cost', 'Acquisition Date', 'Useful Life (Years)', 'Annual Depreciation']
+        for col, header in enumerate(headers, 1):
+            cell = ws_capex.cell(row=1, column=col, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center_alignment
+            cell.border = thin_border
+        
+        # Write CAPEX items
+        for row_idx, item in enumerate(capex_items, 2):
+            ws_capex.cell(row=row_idx, column=1, value=item.item_id).border = thin_border
+            ws_capex.cell(row=row_idx, column=2, value=item.name).border = thin_border
+            ws_capex.cell(row=row_idx, column=3, value=item.category).border = thin_border
+            
+            cost_cell = ws_capex.cell(row=row_idx, column=4, value=item.amount)
+            cost_cell.number_format = currency_format
+            cost_cell.border = thin_border
+            
+            ws_capex.cell(row=row_idx, column=5, value=item.acquisition_date).border = thin_border
+            ws_capex.cell(row=row_idx, column=6, value=item.useful_life).border = thin_border
+            
+            annual_dep = item.amount / item.useful_life if item.useful_life > 0 else 0
+            dep_cell = ws_capex.cell(row=row_idx, column=7, value=annual_dep)
+            dep_cell.number_format = currency_format
+            dep_cell.border = thin_border
+        
+        # Set column widths
+        ws_capex.column_dimensions['A'].width = 12
+        ws_capex.column_dimensions['B'].width = 20
+        ws_capex.column_dimensions['C'].width = 15
+        ws_capex.column_dimensions['D'].width = 18
+        ws_capex.column_dimensions['E'].width = 18
+        ws_capex.column_dimensions['F'].width = 18
+        ws_capex.column_dimensions['G'].width = 20
+    
+    except Exception as e:
+        ws_capex['A1'] = f"Error generating CAPEX schedule: {str(e)}"
+    
+    # Save to bytes
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
+
+# =====================================================
+# PAGE CONFIG
+# ====================================================="
 
 st.set_page_config(
     page_title="Manufacturing Financial Platform",
@@ -51,6 +257,12 @@ def initialize_session_state():
     
     if 'last_update' not in st.session_state:
         st.session_state.last_update = None
+    
+    if 'excel_bytes_map' not in st.session_state:
+        st.session_state.excel_bytes_map = {}
+    
+    if 'selected_scenario' not in st.session_state:
+        st.session_state.selected_scenario = "Base Case"
 
 initialize_session_state()
 
@@ -589,39 +801,109 @@ elif page == "📈 Reports":
         
         st.markdown(summary_text)
         
-        # Export buttons
-        st.markdown("## Download Reports")
+        # ========== EXCEL MODEL DOWNLOAD SECTION ==========
+        st.markdown("## 📊 Excel Model Download")
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            selected_scenario = st.selectbox(
+                "Select Scenario:",
+                ["Base Case", "Conservative", "Optimistic"],
+                key="scenario_selector"
+            )
+            st.session_state.selected_scenario = selected_scenario
+        
+        download_container = st.container()
+        
+        # Excel bytes cache management
+        excel_map: Dict[str, bytes] = st.session_state.setdefault("excel_bytes_map", {})
+        excel_bytes = excel_map.get(selected_scenario)
+        
+        model.scenario = selected_scenario
+        
+        with download_container:
+            col_prepare, col_download, col_clear = st.columns([2, 2, 2])
+            
+            with col_prepare:
+                if not excel_bytes:
+                    if st.button("📄 Prepare Excel Model", key=f"prepare_excel_{selected_scenario.lower()}"):
+                        with st.spinner("Preparing Excel workbook..."):
+                            excel_bytes = _generate_excel_bytes(
+                                model, 
+                                st.session_state.labor_manager,
+                                st.session_state.capex_manager,
+                                selected_scenario
+                            )
+                        if excel_bytes:
+                            excel_map[selected_scenario] = excel_bytes
+                            st.session_state.excel_bytes_map = excel_map
+                            st.success("✅ Excel model ready for download!")
+                        else:
+                            st.error("❌ Failed to generate Excel file")
+            
+            with col_download:
+                if excel_bytes:
+                    st.download_button(
+                        "⬇️ Download Excel Model",
+                        data=excel_bytes,
+                        file_name=f"Automobile_Manufacturing_Financial_Model_{selected_scenario.replace(' ', '_')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"download_excel_{selected_scenario.lower()}"
+                    )
+            
+            with col_clear:
+                if excel_bytes:
+                    if st.button("🗑️ Clear Prepared Excel", key=f"clear_excel_{selected_scenario.lower()}"):
+                        excel_map.pop(selected_scenario, None)
+                        st.session_state.excel_bytes_map = excel_map
+                        excel_bytes = None
+                        st.rerun()
+        
+        if not excel_bytes:
+            st.info("💡 Click 'Prepare Excel Model' to generate the workbook for download. It will include Executive Summary, Financial Model, Labor Schedule, and CAPEX Schedule.")
+        
+        st.divider()
+        
+        # ========== CSV EXPORTS SECTION ==========
+        st.markdown("## 📋 CSV Exports")
+        st.markdown("*Quick export of individual reports in CSV format*")
+        
+        col1, col2 = st.columns(2)
         
         # Financial summary
-        export_df = pd.DataFrame({
-            'Year': range(2026, 2031),
-            'Revenue': model['revenue'],
-            'COGS': model['cogs'],
-            'OPEX': model['opex'],
-            'EBIT': model['ebit'],
-            'Net Profit': model['net_profit'],
-            'FCF': model['fcf']
-        })
-        
-        csv = export_df.to_csv(index=False)
-        st.download_button(
-            "📥 Download Financial Forecast (CSV)",
-            csv,
-            "financial_forecast.csv",
-            "text/csv"
-        )
+        with col1:
+            export_df = pd.DataFrame({
+                'Year': range(2026, 2031),
+                'Revenue': model['revenue'],
+                'COGS': model['cogs'],
+                'OPEX': model['opex'],
+                'EBIT': model['ebit'],
+                'Net Profit': model['net_profit'],
+                'FCF': model['fcf']
+            })
+            
+            csv = export_df.to_csv(index=False)
+            st.download_button(
+                "📥 Download Financial Forecast (CSV)",
+                csv,
+                "financial_forecast.csv",
+                "text/csv",
+                key="download_financial_csv"
+            )
         
         # Labor summary
-        cost_schedule = LaborCostSchedule(st.session_state.labor_manager)
-        labor_df = cost_schedule.generate_5year_schedule(salary_growth=st.session_state.salary_growth_rate)
-        
-        csv = labor_df.to_csv(index=False)
-        st.download_button(
-            "📥 Download Labor Schedule (CSV)",
-            csv,
-            "labor_schedule.csv",
-            "text/csv"
-        )
+        with col2:
+            cost_schedule = LaborCostSchedule(st.session_state.labor_manager)
+            labor_df = cost_schedule.generate_5year_schedule(salary_growth=st.session_state.salary_growth_rate)
+            
+            csv = labor_df.to_csv(index=False)
+            st.download_button(
+                "📥 Download Labor Schedule (CSV)",
+                csv,
+                "labor_schedule.csv",
+                "text/csv",
+                key="download_labor_csv"
+            )
     else:
         st.info("Run the financial model first to generate reports")
 

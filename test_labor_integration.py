@@ -25,11 +25,11 @@ print("-"*100)
 # Initialize labor structure
 labor_manager = initialize_default_labor_structure()
 
-print("\n📋 CURRENT LABOR SCHEDULE:")
+print("\nCURRENT LABOR SCHEDULE:")
 print(labor_manager.get_position_summary().to_string(index=False))
 
 # ===== CREATE: Add new positions =====
-print("\n\n➕ CREATE OPERATION - Adding new positions:")
+print("\n\nCREATE OPERATION - Adding new positions:")
 print("-" * 100)
 
 pos_id_1 = labor_manager.add_position(
@@ -56,28 +56,28 @@ pos_id_2 = labor_manager.add_position(
 )
 
 # ===== READ: Query positions =====
-print("\n\n📖 READ OPERATIONS:")
+print("\n\nREAD OPERATIONS:")
 print("-" * 100)
 
-print("\n📊 Headcount Summary (2026):")
+print("\nHeadcount Summary (2026):")
 hc_by_type = labor_manager.get_headcount_by_type(2026)
 print(f"  Direct Labor:   {hc_by_type['Direct']:3d} employees")
 print(f"  Indirect Labor: {hc_by_type['Indirect']:3d} employees")
 print(f"  Total:          {labor_manager.get_total_headcount(2026):3d} employees")
 
-print("\n💰 Labor Cost Summary (2026):")
+print("\nLabor Cost Summary (2026):")
 costs_by_type = labor_manager.get_labor_cost_by_type(2026)
 print(f"  Direct Labor Cost:   ${costs_by_type['Direct']:>15,.0f}")
 print(f"  Indirect Labor Cost: ${costs_by_type['Indirect']:>15,.0f}")
 print(f"  Total Labor Cost:    ${costs_by_type['Direct'] + costs_by_type['Indirect']:>15,.0f}")
 
-print("\n📈 Headcount Projection (2026-2030):")
+print("\nHeadcount Projection (2026-2030):")
 for year in range(2026, 2031):
     total_hc = labor_manager.get_total_headcount(year)
     print(f"  {year}: {total_hc:3d} employees")
 
 # ===== UPDATE: Edit positions =====
-print("\n\n✏️ UPDATE OPERATION - Editing positions:")
+print("\n\nUPDATE OPERATION - Editing positions:")
 print("-" * 100)
 
 print(f"\nBefore Edit - Assembly Line Positions:")
@@ -100,14 +100,14 @@ print(f"  Annual Salary: ${new_pos.annual_salary:,.0f}")
 print(f"  Overtime Hours: {new_pos.overtime_hours_annual}")
 
 # ===== DELETE: Mark as inactive =====
-print("\n\n🗑️ DELETE OPERATION - Phasing out positions:")
+print("\n\nDELETE OPERATION - Phasing out positions:")
 print("-" * 100)
 
 print(f"\nMarking Painters (POS_D_003) as inactive starting 2028")
 print(f"(This represents phase-out, not immediate removal)")
 labor_manager.mark_inactive('POS_D_003', end_year=2028)
-print(f"✓ Status updated to: {labor_manager.get_position('POS_D_003').status.value}")
-print(f"✓ End year set to: 2028")
+print(f"  Status updated to: {labor_manager.get_position('POS_D_003').status.value}")
+print("  End year set to: 2028")
 
 # =====================================================
 # PART 2: LABOR COST SCHEDULES
@@ -119,19 +119,19 @@ print("-"*100)
 
 cost_schedule = LaborCostSchedule(labor_manager)
 
-print("\n📋 5-YEAR LABOR COST SCHEDULE:")
+print("\n5-YEAR LABOR COST SCHEDULE:")
 five_year_schedule = cost_schedule.generate_5year_schedule()
 print(five_year_schedule.to_string(index=False))
 
-print("\n📋 DETAILED LABOR COST SCHEDULE (2026):")
+print("\nDETAILED LABOR COST SCHEDULE (2026):")
 detailed_2026 = cost_schedule.generate_detailed_schedule(2026)
 print(detailed_2026.to_string(index=False))
 
-print("\n📋 DETAILED LABOR COST SCHEDULE (2027 - With Additions):")
+print("\nDETAILED LABOR COST SCHEDULE (2027 - With Additions):")
 detailed_2027 = cost_schedule.generate_detailed_schedule(2027)
 print(detailed_2027.to_string(index=False))
 
-print("\n📊 JOB CATEGORY BREAKDOWN (2026):")
+print("\nJOB CATEGORY BREAKDOWN (2026):")
 category_summary = cost_schedule.generate_category_summary(2026)
 print(category_summary.to_string(index=False))
 
@@ -145,7 +145,7 @@ print("-"*100)
 
 production_volumes = {2026: 10000, 2027: 14000, 2028: 18000, 2029: 20000, 2030: 20000}
 
-print("\n📊 PRODUCTION vs. REQUIRED LABOR:")
+print("\nPRODUCTION vs. REQUIRED LABOR:")
 labor_plan = ProductionLinkedLabor.create_labor_plan(
     production_volumes=production_volumes,
     labor_hours_per_unit=3.5,
@@ -156,10 +156,10 @@ labor_plan = ProductionLinkedLabor.create_labor_plan(
 print(labor_plan.to_string(index=False))
 
 print("\nAssumptions:")
-print("  • Labor Hours per Unit: 3.5 hours")
-print("  • Working Days per Year: 300 days")
-print("  • Hours per Working Day: 8.0 hours")
-print("  • Indirect/Direct Ratio: 35%")
+print("  - Labor Hours per Unit: 3.5 hours")
+print("  - Working Days per Year: 300 days")
+print("  - Hours per Working Day: 8.0 hours")
+print("  - Indirect/Direct Ratio: 35%")
 
 # =====================================================
 # PART 4: INTEGRATION WITH FINANCIAL MODEL
@@ -172,18 +172,18 @@ print("-"*100)
 # Create config with labor manager
 cfg_with_labor = CompanyConfig(labor_manager=labor_manager)
 
-print("\n🔄 Running financial model WITH labor management system...")
+print("\nRunning financial model WITH labor management system...")
 model_data = run_financial_model(cfg_with_labor)
 
-print("\n📊 INTEGRATED INCOME STATEMENT:")
+print("\nINTEGRATED INCOME STATEMENT:")
 income_df, cashflow_df, balance_df = generate_financial_statements(model_data)
 print(income_df.to_string(index=False))
 
-print("\n📊 LABOR COST STATEMENT:")
+print("\nLABOR COST STATEMENT:")
 labor_statement = generate_labor_statement(model_data)
 print(labor_statement.to_string(index=False))
 
-print("\n💰 KEY METRICS:")
+print("\nKEY METRICS:")
 print(f"  Total Revenue (2030):       ${model_data['revenue'][2030]:>15,.0f}")
 print(f"  Total OPEX (2030):          ${model_data['opex'][2030]:>15,.0f}")
 print(f"  Labor Costs (2030):         ${model_data['labor_metrics'][2030]['total_labor_cost']:>15,.0f}")
@@ -198,14 +198,14 @@ print("\n\n" + "-"*100)
 print("PART 5: WORKFORCE PLANNING INSIGHTS")
 print("-"*100)
 
-print("\n📈 Workforce Expansion Plan:")
+print("\nWorkforce Expansion Plan:")
 for year in range(2026, 2031):
     total_hc = labor_manager.get_total_headcount(year)
     total_cost = sum(labor_manager.get_labor_cost_by_type(year, 0.05).values())
     avg_cost = total_cost / total_hc if total_hc > 0 else 0
     print(f"  {year}: {total_hc:2d} employees | Total Cost: ${total_cost:>12,.0f} | Avg Cost/HC: ${avg_cost:>10,.0f}")
 
-print("\n📊 Direct vs. Indirect Labor Composition:")
+print("\nDirect vs. Indirect Labor Composition:")
 for year in range(2026, 2031):
     hc = labor_manager.get_headcount_by_type(year)
     total = hc['Direct'] + hc['Indirect']
@@ -256,20 +256,20 @@ print(f"\nTotal Impact: +${increase:,.0f} ({increase_pct:.2f}%)")
 # =====================================================
 
 print("\n\n" + "="*100)
-print("✅ INTEGRATION COMPLETE - LABOR MANAGEMENT SYSTEM FULLY OPERATIONAL")
+print("INTEGRATION COMPLETE - LABOR MANAGEMENT SYSTEM FULLY OPERATIONAL")
 print("="*100)
 
-print("\n📌 SYSTEM CAPABILITIES DEMONSTRATED:")
-print("  ✓ CREATE operations - Added 2 new positions")
-print("  ✓ READ operations - Queried headcount, costs, projections")
-print("  ✓ UPDATE operations - Edited existing positions with field validation")
-print("  ✓ DELETE operations - Marked positions inactive with end dates")
-print("  ✓ Cost Schedules - 5-year forecasts with detailed breakdowns")
-print("  ✓ Production Linkage - Aligned labor to production volumes")
-print("  ✓ Financial Integration - Labor costs flow into OPEX and P&L")
-print("  ✓ What-If Analysis - Scenario testing with immediate impact")
+print("\nSYSTEM CAPABILITIES DEMONSTRATED:")
+print("  CREATE operations - Added two new positions")
+print("  READ operations - Queried headcount, costs, and projections")
+print("  UPDATE operations - Edited existing positions with field validation")
+print("  DELETE operations - Marked positions inactive with end dates")
+print("  Cost Schedules - Five-year forecasts with detailed breakdowns")
+print("  Production Linkage - Aligned labor to production volumes")
+print("  Financial Integration - Labor costs flow into operating expenses and the P&L")
+print("  What-If Analysis - Scenario testing with immediate impact")
 
-print("\n📋 NEXT STEPS:")
+print("\nNEXT STEPS:")
 print("  1. Export labor schedules to CSV/Excel")
 print("  2. Create dashboard visualizations")
 print("  3. Set up real-time monitoring alerts")

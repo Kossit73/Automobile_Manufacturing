@@ -152,7 +152,7 @@ class LaborScheduleManager:
         )
         
         self.positions[position_id] = position
-        print(f"✓ Position added: {position_id} - {position_name}")
+        print(f"Position added: {position_id} - {position_name}")
         return position_id
     
     # ===== READ =====
@@ -223,7 +223,7 @@ class LaborScheduleManager:
                 raise ValueError(f"Position does not have field: {key}")
         
         position.last_modified = datetime.now().isoformat()
-        print(f"✓ Position updated: {position_id}")
+        print(f"Position updated: {position_id}")
         return True
     
     # ===== DELETE =====
@@ -234,7 +234,7 @@ class LaborScheduleManager:
         
         position_name = self.positions[position_id].position_name
         del self.positions[position_id]
-        print(f"✓ Position removed: {position_id} - {position_name}")
+        print(f"Position removed: {position_id} - {position_name}")
         return True
     
     def mark_inactive(self, position_id: str, end_year: int) -> bool:
@@ -479,7 +479,7 @@ class LaborVarianceAnalysis:
                 'Actual': actual_val,
                 'Variance': variance,
                 'Variance %': f"{variance_pct:.1f}%",
-                'Status': '🔴 Unfavorable' if variance > 0 else '🟢 Favorable'
+                'Status': 'Unfavorable' if variance > 0 else 'Favorable'
             })
         
         return pd.DataFrame(data)
@@ -697,5 +697,5 @@ if __name__ == "__main__":
     labor_manager.mark_inactive(new_pos_id, 2026)
     
     print("\n" + "="*80)
-    print("✅ LABOR MANAGEMENT SYSTEM READY FOR INTEGRATION")
+    print("LABOR MANAGEMENT SYSTEM READY FOR INTEGRATION")
     print("="*80)

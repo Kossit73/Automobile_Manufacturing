@@ -386,7 +386,7 @@ class ReportUtilities:
     @staticmethod
     def highlight_value(value: float, threshold: float, good_if_above: bool = True) -> str:
         """Highlight value if it meets condition"""
-        symbol = "✓" if (value >= threshold) == good_if_above else "✗"
+        symbol = "PASS" if (value >= threshold) == good_if_above else "FAIL"
         return f"{symbol} {value:.2f}"
 
 
@@ -433,7 +433,7 @@ if __name__ == "__main__":
     print(f"Std Dev of {data1}: {FinancialStatistics.calculate_std_dev(data1):.2f}")
     print(f"Correlation between series: {FinancialStatistics.calculate_correlation(data1, data2):.2f}")
     slope, intercept, r_sq = FinancialStatistics.linear_regression([1, 2, 3, 4, 5], [2, 4, 5, 4, 5])
-    print(f"Linear Regression - Slope: {slope:.2f}, R²: {r_sq:.4f}")
+    print(f"Linear Regression - Slope: {slope:.2f}, R^2: {r_sq:.4f}")
     
     # Test Report Utilities
     print("\n6. REPORT UTILITIES:")

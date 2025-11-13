@@ -36,7 +36,7 @@ class FinancialVisualizer:
         max_value = max(data.values())
         for label, value in data.items():
             bar_length = int((value / max_value) * width)
-            bar = "█" * bar_length
+            bar = "#" * bar_length
             chart += f"{str(label):20} | {bar} {value:>15,.0f}\n"
         
         return chart
@@ -66,7 +66,7 @@ class FinancialVisualizer:
         chart = "\nPROFIT MARGIN TREND (%)\n" + "=" * 50 + "\n"
         for y, margin in margins.items():
             bar_length = int(margin * 0.5)
-            bar = "▓" * bar_length
+            bar = "=" * bar_length
             chart += f"{y}: {bar} {margin:.2f}%\n"
         
         return chart
@@ -178,31 +178,31 @@ RATIO SUMMARY & ASSESSMENT:
 
 Profitability Analysis:
   Average Net Profit Margin: {summary['Profitability']['Avg Net Margin (%)']:.2f}%
-    └─ Industry Benchmark:   15-20% (Strong performance if above 20%)
+    -  Industry Benchmark:   15-20% (Strong performance if above 20%)
   
   Average ROE (Return on Equity): {summary['Profitability']['Avg ROE (%)']:.2f}%
-    └─ Assessment: {'Excellent' if summary['Profitability']['Avg ROE (%)'] > 20 else 'Good' if summary['Profitability']['Avg ROE (%)'] > 10 else 'Fair'}
+    -  Assessment: {'Excellent' if summary['Profitability']['Avg ROE (%)'] > 20 else 'Good' if summary['Profitability']['Avg ROE (%)'] > 10 else 'Fair'}
   
   Average ROA (Return on Assets): {summary['Profitability']['Avg ROA (%)']:.2f}%
-    └─ Assessment: {'Strong' if summary['Profitability']['Avg ROA (%)'] > 10 else 'Moderate' if summary['Profitability']['Avg ROA (%)'] > 5 else 'Weak'}
+    -  Assessment: {'Strong' if summary['Profitability']['Avg ROA (%)'] > 10 else 'Moderate' if summary['Profitability']['Avg ROA (%)'] > 5 else 'Weak'}
 
 Liquidity Analysis:
   Average Current Ratio: {summary['Liquidity']['Avg Current Ratio']:.2f}
-    └─ Industry Benchmark: 1.5-3.0 (Higher is safer, below 1.0 is risky)
+    -  Industry Benchmark: 1.5-3.0 (Higher is safer, below 1.0 is risky)
   
   Minimum Current Ratio: {summary['Liquidity']['Min Current Ratio']:.2f}
-    └─ Assessment: {'Strong' if summary['Liquidity']['Min Current Ratio'] > 1.5 else 'Acceptable' if summary['Liquidity']['Min Current Ratio'] > 1.0 else 'Concerning'}
+    -  Assessment: {'Strong' if summary['Liquidity']['Min Current Ratio'] > 1.5 else 'Acceptable' if summary['Liquidity']['Min Current Ratio'] > 1.0 else 'Concerning'}
 
 Leverage Analysis:
   Average Debt-to-Equity: {summary['Leverage']['Avg Debt-to-Equity']:.2f}
-    └─ Industry Benchmark: 0.5-2.0 (Lower is less risky)
+    -  Industry Benchmark: 0.5-2.0 (Lower is less risky)
   
   Final Debt-to-Equity: {summary['Leverage']['Final Debt-to-Equity']:.2f}
-    └─ Trend: {'Improving' if summary['Leverage']['Final Debt-to-Equity'] < summary['Leverage']['Avg Debt-to-Equity'] else 'Deteriorating'}
+    -  Trend: {'Improving' if summary['Leverage']['Final Debt-to-Equity'] < summary['Leverage']['Avg Debt-to-Equity'] else 'Deteriorating'}
 
 Efficiency Analysis:
   Average Asset Turnover: {summary['Efficiency']['Avg Asset Turnover']:.2f}
-    └─ Assessment: {'Efficient' if summary['Efficiency']['Avg Asset Turnover'] > 1.5 else 'Moderate' if summary['Efficiency']['Avg Asset Turnover'] > 1.0 else 'Below Average'}
+    -  Assessment: {'Efficient' if summary['Efficiency']['Avg Asset Turnover'] > 1.5 else 'Moderate' if summary['Efficiency']['Avg Asset Turnover'] > 1.0 else 'Below Average'}
 
 {'='*80}
 """
@@ -234,24 +234,24 @@ KEY INSIGHTS:
         
         report += f"""
 1. Enterprise Value Impact:
-   └─ Pessimistic vs Base: ${ev_diff_pess:,.2f} ({(ev_diff_pess/scenarios_df.iloc[base_idx]['Enterprise Value']*100):.2f}%)
-   └─ Optimistic vs Base: ${ev_diff_opt:,.2f} ({(ev_diff_opt/scenarios_df.iloc[base_idx]['Enterprise Value']*100):.2f}%)
-   └─ Range: ${scenarios_df['Enterprise Value'].max() - scenarios_df['Enterprise Value'].min():,.2f}
+   -  Pessimistic vs Base: ${ev_diff_pess:,.2f} ({(ev_diff_pess/scenarios_df.iloc[base_idx]['Enterprise Value']*100):.2f}%)
+   -  Optimistic vs Base: ${ev_diff_opt:,.2f} ({(ev_diff_opt/scenarios_df.iloc[base_idx]['Enterprise Value']*100):.2f}%)
+   -  Range: ${scenarios_df['Enterprise Value'].max() - scenarios_df['Enterprise Value'].min():,.2f}
 
 2. Revenue Impact:
-   └─ Base Case 2030: ${scenarios_df.iloc[base_idx]['2030 Revenue']:,.2f}
-   └─ Pessimistic: ${scenarios_df.iloc[pessimistic_idx]['2030 Revenue']:,.2f}
-   └─ Optimistic: ${scenarios_df.iloc[optimistic_idx]['2030 Revenue']:,.2f}
+   -  Base Case 2030: ${scenarios_df.iloc[base_idx]['2030 Revenue']:,.2f}
+   -  Pessimistic: ${scenarios_df.iloc[pessimistic_idx]['2030 Revenue']:,.2f}
+   -  Optimistic: ${scenarios_df.iloc[optimistic_idx]['2030 Revenue']:,.2f}
 
 3. Profit Margin Comparison:
-   └─ Pessimistic: {scenarios_df.iloc[pessimistic_idx]['Avg Profit Margin']:.2f}%
-   └─ Base Case: {scenarios_df.iloc[base_idx]['Avg Profit Margin']:.2f}%
-   └─ Optimistic: {scenarios_df.iloc[optimistic_idx]['Avg Profit Margin']:.2f}%
+   -  Pessimistic: {scenarios_df.iloc[pessimistic_idx]['Avg Profit Margin']:.2f}%
+   -  Base Case: {scenarios_df.iloc[base_idx]['Avg Profit Margin']:.2f}%
+   -  Optimistic: {scenarios_df.iloc[optimistic_idx]['Avg Profit Margin']:.2f}%
 
 4. Cash Generation:
-   └─ Pessimistic Total FCF: ${scenarios_df.iloc[pessimistic_idx]['Total FCF']:,.2f}
-   └─ Base Case Total FCF: ${scenarios_df.iloc[base_idx]['Total FCF']:,.2f}
-   └─ Optimistic Total FCF: ${scenarios_df.iloc[optimistic_idx]['Total FCF']:,.2f}
+   -  Pessimistic Total FCF: ${scenarios_df.iloc[pessimistic_idx]['Total FCF']:,.2f}
+   -  Base Case Total FCF: ${scenarios_df.iloc[base_idx]['Total FCF']:,.2f}
+   -  Optimistic Total FCF: ${scenarios_df.iloc[optimistic_idx]['Total FCF']:,.2f}
 
 RISK ASSESSMENT:
 The valuation ranges from ${scenarios_df['Enterprise Value'].min():,.2f} (pessimistic)
@@ -325,10 +325,10 @@ ${scenarios_df.iloc[base_idx]['Enterprise Value']:,.2f}.
                 
                 # Create visualization
                 if ev_change > 0:
-                    bar = "▲" * int(abs(ev_change) / 2)
+                    bar = "^" * int(abs(ev_change) / 2)
                     symbol = "+"
                 else:
-                    bar = "▼" * int(abs(ev_change) / 2)
+                    bar = "v" * int(abs(ev_change) / 2)
                     symbol = "-"
                 
                 heatmap += f"  {change:>6.1f}% change: {symbol}{ev_change:>6.2f}% {bar}\n"
@@ -356,11 +356,11 @@ class FinancialReportGenerator:
         
         # Title page
         report += f"""
-{'█'*80}
-█{'COMPREHENSIVE FINANCIAL ANALYSIS REPORT'.center(78)}█
-█{self.visualizer.cfg.company_name.center(78)}█
-█{'Planning Period: 2026-2030'.center(78)}█
-{'█'*80}
+{'='*80}
+|{'COMPREHENSIVE FINANCIAL ANALYSIS REPORT'.center(78)}|
+|{self.visualizer.cfg.company_name.center(78)}|
+|{'Planning Period: 2026-2030'.center(78)}|
+{'='*80}
 """
         
         # Executive Summary

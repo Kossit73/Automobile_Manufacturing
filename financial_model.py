@@ -465,4 +465,4 @@ if __name__ == "__main__":
     
     print(f"\nEnterprise Value (DCF): ${model_data['enterprise_value']:,.2f}")
     print(f"ROI (2030): {roi:.2f}%")
-    print("Model complete and balanced ✅")
+    print("Model complete and balanced.")

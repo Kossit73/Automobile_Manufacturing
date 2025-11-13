@@ -32,7 +32,7 @@ class FinancialAnalyzer:
         
         Args:
             parameter: Parameter name to vary (e.g., 'cogs_ratio', 'wacc', 'tax_rate')
-            range_pct: Range to vary (0.5 = ±50%)
+            range_pct: Range to vary (0.5 = +/-50%)
             steps: Number of steps in analysis
         
         Returns:
@@ -368,7 +368,7 @@ if __name__ == "__main__":
     print("="*80)
     
     # 1. Sensitivity Analysis
-    print("\n--- SENSITIVITY ANALYSIS: COGS Ratio (±50%) ---")
+    print("\n--- SENSITIVITY ANALYSIS: COGS Ratio (+/-50%) ---")
     cogs_sensitivity = analyzer.sensitivity_analysis('cogs_ratio', range_pct=0.5, steps=11)
     print(cogs_sensitivity.to_string(index=False))
     
@@ -429,5 +429,5 @@ if __name__ == "__main__":
                 print(f"  {metric}: {value:.2f}")
     
     print("\n" + "="*80)
-    print("Analysis complete ✅")
+    print("Analysis complete.")
     print("="*80)

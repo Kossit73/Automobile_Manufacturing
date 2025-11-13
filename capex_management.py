@@ -85,7 +85,7 @@ class CapexScheduleManager:
                          useful_life=useful_life, salvage_value=salvage_value,
                          category=category, notes=notes, spend_curve=spend_curve)
         self.items[item_id] = item
-        print(f"✓ CAPEX item added: {item_id} - {name} (${amount:,.0f})")
+        print(f"CAPEX item added: {item_id} - {name} (${amount:,.0f})")
         return item_id
 
     def get_item(self, item_id: str) -> Optional[CapexItem]:
@@ -106,7 +106,7 @@ class CapexScheduleManager:
             else:
                 raise ValueError(f"Invalid field for CapexItem: {key}")
         item.last_modified = datetime.now().isoformat()
-        print(f"✓ CAPEX item updated: {item_id}")
+        print(f"CAPEX item updated: {item_id}")
         return True
 
     def remove_item(self, item_id: str) -> bool:
@@ -114,7 +114,7 @@ class CapexScheduleManager:
             raise ValueError(f"CAPEX item {item_id} not found")
         name = self.items[item_id].name
         del self.items[item_id]
-        print(f"✓ CAPEX item removed: {item_id} - {name}")
+        print(f"CAPEX item removed: {item_id} - {name}")
         return True
 
     def yearly_capex_schedule(self, start_year: int, years: int) -> Dict[int, float]:

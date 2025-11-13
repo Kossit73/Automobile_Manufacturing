@@ -629,7 +629,7 @@ class RegressionModeler:
         # Add intercept column
         X = np.column_stack([np.ones(len(X_data)), X_data])
         
-        # Normal equations: β = (X'X)^-1 X'y
+        # Normal equations: beta = (X'X)^-1 X'y
         try:
             coefficients = np.linalg.inv(X.T @ X) @ X.T @ y_data
         except np.linalg.LinAlgError:
@@ -853,7 +853,7 @@ class RealOptionsAnalyzer:
                               upside_scenario_npv: float, probability: float = 0.5) -> Dict:
         """
         Value of option to expand
-        Option Value = Probability × max(Expansion NPV - Cost, 0)
+        Option Value = Probability * max(Expansion NPV - Cost, 0)
         """
         expansion_npv = upside_scenario_npv - expansion_cost
         option_value = probability * max(expansion_npv, 0)
@@ -1143,5 +1143,5 @@ if __name__ == "__main__":
         print(f"  Year {year}: ${data['annual_cost']:,.0f} (Cumulative: ${data['cumulative_cost']:,.0f})")
     
     print("\n" + "="*80)
-    print("Advanced Analytics Complete ✅")
+    print("Advanced Analytics Complete.")
     print("="*80)

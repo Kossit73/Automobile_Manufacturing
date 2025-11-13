@@ -183,6 +183,12 @@ def _currency_series(values: Iterable[float]) -> List[str]:
     return [f"${value:,.0f}" for value in values]
 
 
+def _product_label(name: str) -> str:
+    """Return a human-friendly label for product keys."""
+
+    return name.replace("_", " ")
+
+
 def _parse_spend_curve_input(text: str) -> Optional[Dict[int, float]]:
     cleaned = text.strip()
     if not cleaned:
@@ -702,6 +708,60 @@ def _production_capacity_schedule(cfg: CompanyConfig, model: Optional[Dict[str, 
         "Available Capacity",
     ]
     return pd.DataFrame(records, columns=columns)
+
+
+def _pricing_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    model = model or {}
+    years = _config_years(cfg)
+    product_prices: Dict[int, Dict[str, float]] = model.get("product_prices", {})
+    products = list(cfg.product_portfolio.keys())
+
+    columns = ["Year"] + [f"{_product_label(product)} Price" for product in products]
+    records: List[Dict[str, Any]] = []
+
+    for year in years:
+        row: Dict[str, Any] = {"Year": year}
+        prices_for_year = product_prices.get(year, {})
+        for product in products:
+            row[f"{_product_label(product)} Price"] = float(prices_for_year.get(product, 0.0))
+        records.append(row)
+
+    df = pd.DataFrame(records, columns=columns)
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    for column in columns[1:]:
+        df[column] = _currency_series(df[column])
+    return df
+
+
+def _revenue_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    model = model or {}
+    years = _config_years(cfg)
+    product_revenue: Dict[int, Dict[str, float]] = model.get("product_revenue", {})
+    total_revenue: Dict[int, float] = model.get("revenue", {})
+    products = list(cfg.product_portfolio.keys())
+
+    columns = ["Year"] + [f"{_product_label(product)} Revenue" for product in products] + [
+        "Total Revenue"
+    ]
+    records: List[Dict[str, Any]] = []
+
+    for year in years:
+        row: Dict[str, Any] = {"Year": year}
+        revenue_for_year = product_revenue.get(year, {})
+        for product in products:
+            row[f"{_product_label(product)} Revenue"] = float(revenue_for_year.get(product, 0.0))
+        row["Total Revenue"] = float(total_revenue.get(year, 0.0))
+        records.append(row)
+
+    df = pd.DataFrame(records, columns=columns)
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    for column in columns[1:]:
+        df[column] = _currency_series(df[column])
+    return df
 
 
 def _debt_schedule(model: Dict[str, Any]) -> pd.DataFrame:
@@ -1258,6 +1318,18 @@ def _render_platform_settings() -> None:
         model: Dict[str, Any] = st.session_state.get("financial_model", {})
         capacity_df = _production_capacity_schedule(cfg, model)
         _render_table(capacity_df, hide_index=True)
+
+        st.markdown("#### Pricing Schedule")
+        pricing_df = _pricing_schedule(cfg, model)
+        if pricing_df.empty:
+            st.write("Run the financial model to populate product pricing across the horizon.")
+        _render_table(pricing_df, hide_index=True)
+
+        st.markdown("#### Revenue Schedule")
+        revenue_df = _revenue_schedule(cfg, model)
+        if revenue_df.empty:
+            st.write("Run the financial model to populate revenue projections across the horizon.")
+        _render_table(revenue_df, hide_index=True)
 
         st.markdown("#### Debt Amortization Schedule")
         debt_df = _debt_schedule(model)

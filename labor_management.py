@@ -6,7 +6,6 @@ Author: Advanced Analytics Team
 """
 
 import pandas as pd
-import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from enum import Enum

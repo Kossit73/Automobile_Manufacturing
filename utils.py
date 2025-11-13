@@ -64,9 +64,22 @@ class FinancialValidator:
         if config.annual_salary_growth < -0.5 or config.annual_salary_growth > 0.5:
             warnings_list.append("Annual salary growth should be between -50% and 50%")
         
-        if config.loan_term <= 0:
-            warnings_list.append("Loan term should be positive")
-        
+        instruments = getattr(config, "debt_instruments", []) or []
+        total_debt = sum(getattr(inst, "principal", 0.0) for inst in instruments)
+        if total_debt > 0 and config.loan_term <= 0:
+            warnings_list.append("Loan term should be positive for outstanding debt")
+
+        for inst in instruments:
+            if getattr(inst, "term", 0) <= 0:
+                warnings_list.append(f"Debt instrument '{inst.name}' has a non-positive term")
+            if getattr(inst, "interest_rate", 0.0) < 0:
+                warnings_list.append(f"Debt instrument '{inst.name}' has a negative interest rate")
+            draws_total = sum((inst.draw_schedule or {}).values()) if getattr(inst, "draw_schedule", None) else 0.0
+            if abs(draws_total - getattr(inst, "principal", 0.0)) > 1e-3:
+                warnings_list.append(
+                    f"Debt instrument '{inst.name}' draw schedule does not align with principal amount"
+                )
+
         if config.useful_life <= 0:
             warnings_list.append("Useful life should be positive")
         

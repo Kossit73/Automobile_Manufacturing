@@ -5,7 +5,7 @@ Author: Advanced Analytics Team
 """
 
 import pandas as pd
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional, Sequence, Iterable
 
 # =====================================================
@@ -314,6 +314,176 @@ def _normalize_capacity_utilization(
 
 
 @dataclass
+class DebtInstrument:
+    """Structured representation of an individual debt instrument."""
+
+    name: str
+    principal: float
+    interest_rate: float
+    term: int
+    start_year: int
+    interest_only_years: int = 0
+    draw_schedule: Dict[int, float] = field(default_factory=dict)
+
+    def __post_init__(self):
+        self.name = str(self.name or "Debt Instrument")
+        try:
+            self.principal = max(0.0, float(self.principal))
+        except (TypeError, ValueError):
+            self.principal = 0.0
+
+        try:
+            self.interest_rate = max(0.0, float(self.interest_rate))
+        except (TypeError, ValueError):
+            self.interest_rate = 0.0
+
+        try:
+            self.term = int(self.term)
+        except (TypeError, ValueError):
+            self.term = 0
+        self.term = max(0, self.term)
+
+        try:
+            self.start_year = int(self.start_year)
+        except (TypeError, ValueError):
+            self.start_year = 0
+
+        try:
+            self.interest_only_years = int(self.interest_only_years)
+        except (TypeError, ValueError):
+            self.interest_only_years = 0
+        self.interest_only_years = max(0, self.interest_only_years)
+
+        cleaned: Dict[int, float] = {}
+        total_draws = 0.0
+        for raw_year, raw_amount in (self.draw_schedule or {}).items():
+            try:
+                year = int(raw_year)
+                amount = max(0.0, float(raw_amount))
+            except (TypeError, ValueError):
+                continue
+            if amount <= 0:
+                continue
+            cleaned[year] = cleaned.get(year, 0.0) + amount
+            total_draws += amount
+
+        if not cleaned and self.principal > 0:
+            cleaned = {self.start_year: self.principal}
+            total_draws = self.principal
+
+        if total_draws > 0 and self.principal <= 0:
+            self.principal = total_draws
+        elif total_draws > 0 and abs(total_draws - self.principal) > 1e-6:
+            self.principal = total_draws
+
+        self.draw_schedule = cleaned
+
+        if self.principal > 0 and self.term <= 0:
+            self.term = max(1, len(self.draw_schedule) if self.draw_schedule else 1)
+
+        if self.draw_schedule:
+            latest_draw_year = max(self.draw_schedule)
+            if latest_draw_year > self.final_year:
+                self.term = (latest_draw_year - self.start_year) + 1
+
+        if self.term > 0 and self.interest_only_years >= self.term:
+            self.interest_only_years = max(0, self.term - 1)
+
+    @property
+    def final_year(self) -> int:
+        if self.term <= 0:
+            return self.start_year
+        return self.start_year + self.term - 1
+
+    @property
+    def amortization_years(self) -> int:
+        return max(0, self.term - self.interest_only_years)
+
+    def draw_for_year(self, year: int) -> float:
+        return self.draw_schedule.get(year, 0.0)
+
+
+def _normalize_debt_instruments(
+    start_year: int,
+    projection_years: int,
+    instruments: Optional[Sequence],
+    fallback_amount: float,
+    fallback_rate: float,
+    fallback_term: int,
+) -> List[DebtInstrument]:
+    """Normalize raw instrument definitions into ``DebtInstrument`` objects."""
+
+    normalized: List[DebtInstrument] = []
+
+    if instruments:
+        for idx, raw in enumerate(instruments):
+            if isinstance(raw, DebtInstrument):
+                normalized.append(raw)
+                continue
+            if not isinstance(raw, dict):
+                continue
+
+            name = raw.get("name") or raw.get("label") or f"Instrument {idx + 1}"
+
+            principal = raw.get("principal", raw.get("amount", 0.0))
+            interest_rate = raw.get("interest_rate", raw.get("rate", fallback_rate))
+            term = raw.get("term", fallback_term)
+            instrument_start = raw.get("start_year", start_year)
+            interest_only_years = raw.get("interest_only_years", raw.get("io_years", 0))
+
+            draw_schedule_raw = raw.get("draw_schedule", raw.get("draws"))
+            draws: Dict[int, float] = {}
+            if isinstance(draw_schedule_raw, dict):
+                for raw_year, raw_amount in draw_schedule_raw.items():
+                    try:
+                        year = int(raw_year)
+                        amount = max(0.0, float(raw_amount))
+                    except (TypeError, ValueError):
+                        continue
+                    if amount <= 0:
+                        continue
+                    draws[year] = draws.get(year, 0.0) + amount
+            elif isinstance(draw_schedule_raw, Sequence) and not isinstance(draw_schedule_raw, (str, bytes)):
+                for offset, raw_amount in enumerate(draw_schedule_raw):
+                    if raw_amount is None:
+                        continue
+                    try:
+                        amount = max(0.0, float(raw_amount))
+                    except (TypeError, ValueError):
+                        continue
+                    if amount <= 0:
+                        continue
+                    year = int(instrument_start) + offset
+                    draws[year] = draws.get(year, 0.0) + amount
+
+            instrument = DebtInstrument(
+                name=name,
+                principal=principal,
+                interest_rate=interest_rate,
+                term=term,
+                start_year=instrument_start,
+                interest_only_years=interest_only_years,
+                draw_schedule=draws,
+            )
+            normalized.append(instrument)
+
+    if not normalized and fallback_amount > 0:
+        normalized.append(
+            DebtInstrument(
+                name="Senior Loan",
+                principal=fallback_amount,
+                interest_rate=fallback_rate,
+                term=fallback_term,
+                start_year=start_year,
+                draw_schedule={start_year: fallback_amount},
+            )
+        )
+
+    normalized.sort(key=lambda inst: (inst.start_year, inst.name))
+    return normalized
+
+
+@dataclass
 class CompanyConfig:
     """Configuration class for company parameters"""
     company_name: str = "Volt Rider"
@@ -351,6 +521,7 @@ class CompanyConfig:
     equity_investment: float = 3_000_000
     loan_interest_rate: float = 0.08
     loan_term: int = 5
+    debt_instruments: Optional[Sequence[DebtInstrument]] = None
     
     # Working Capital & Financial Parameters
     cogs_ratio: float = 0.6
@@ -419,6 +590,26 @@ class CompanyConfig:
             self.marketing_budget = budgets
         else:
             self.marketing_budget = derived_budget
+
+        self.debt_instruments = _normalize_debt_instruments(
+            self.start_year,
+            self.projection_years,
+            self.debt_instruments,
+            self.loan_amount,
+            self.loan_interest_rate,
+            self.loan_term,
+        )
+
+        total_principal = sum(inst.principal for inst in self.debt_instruments)
+        if total_principal > 0:
+            self.loan_amount = total_principal
+            if self.loan_term <= 0:
+                self.loan_term = max(inst.term for inst in self.debt_instruments)
+            weighted_rate = sum(inst.interest_rate * inst.principal for inst in self.debt_instruments)
+            if weighted_rate > 0:
+                self.loan_interest_rate = weighted_rate / total_principal
+        else:
+            self.loan_amount = 0.0
 
         # Guardrail working-capital driver inputs to keep calculations stable.
         self.receivable_days = max(0.0, float(self.receivable_days))
@@ -717,32 +908,66 @@ def calculate_dcf(
 # =====================================================
 def build_debt_schedule(
     years: Sequence[int], cfg: CompanyConfig
-) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float]]:
-    """Construct interest, principal, and ending balance schedules for the loan."""
-    interest_payment: Dict[int, float] = {}
-    principal_payment: Dict[int, float] = {}
-    ending_balance: Dict[int, float] = {}
+) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float], Dict[int, float], Dict[str, Dict[str, Dict[int, float]]]]:
+    """Construct interest, principal, draw, and balance schedules across instruments."""
 
-    balance = cfg.loan_amount
-    for y in years:
-        years_since_start = y - cfg.start_year
-        if years_since_start < 0:
+    years_list = list(years)
+    interest_payment: Dict[int, float] = {y: 0.0 for y in years_list}
+    principal_payment: Dict[int, float] = {y: 0.0 for y in years_list}
+    ending_balance: Dict[int, float] = {y: 0.0 for y in years_list}
+    debt_draws: Dict[int, float] = {y: 0.0 for y in years_list}
+    instrument_details: Dict[str, Dict[str, Dict[int, float]]] = {}
+
+    instruments = getattr(cfg, "debt_instruments", None) or []
+
+    for instrument in instruments:
+        balance = 0.0
+        detail = {
+            "draws": {y: 0.0 for y in years_list},
+            "interest": {y: 0.0 for y in years_list},
+            "principal": {y: 0.0 for y in years_list},
+            "ending_balance": {y: 0.0 for y in years_list},
+        }
+
+        final_year = instrument.final_year
+        amortization_start = instrument.start_year + instrument.interest_only_years
+        amortization_years = instrument.amortization_years
+
+        for y in years_list:
+            draw = instrument.draw_for_year(y)
+            if draw:
+                balance += draw
+
+            active = instrument.term > 0 and y >= instrument.start_year and y <= final_year
             interest = 0.0
             principal = 0.0
-        elif years_since_start >= cfg.loan_term or balance <= 0:
-            interest = 0.0
-            principal = 0.0
-        else:
-            interest = balance * cfg.loan_interest_rate
-            scheduled_principal = cfg.loan_amount / cfg.loan_term
-            principal = min(scheduled_principal, balance)
-            balance = max(0.0, balance - principal)
 
-        interest_payment[y] = interest
-        principal_payment[y] = principal
-        ending_balance[y] = balance
+            if active and balance > 0:
+                interest = balance * instrument.interest_rate
 
-    return interest_payment, principal_payment, ending_balance
+                if amortization_years <= 0:
+                    if y >= final_year:
+                        principal = balance
+                elif y >= amortization_start:
+                    remaining_periods = max(1, (final_year - y) + 1)
+                    principal = balance / remaining_periods
+
+                principal = min(principal, balance)
+                balance = max(0.0, balance - principal)
+
+            detail["draws"][y] = draw
+            detail["interest"][y] = interest
+            detail["principal"][y] = principal
+            detail["ending_balance"][y] = balance
+
+            interest_payment[y] += interest
+            principal_payment[y] += principal
+            ending_balance[y] += balance
+            debt_draws[y] += draw
+
+        instrument_details[instrument.name] = detail
+
+    return interest_payment, principal_payment, ending_balance, debt_draws, instrument_details
 
 # =====================================================
 # 7. CASH FLOW STATEMENT CALCULATION
@@ -874,7 +1099,13 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         accrued_expenses,
     ) = calculate_working_capital_positions(years, revenue, cogs, opex, cfg)
 
-    interest_payment, loan_repayment, outstanding_debt = build_debt_schedule(years, cfg)
+    (
+        interest_payment,
+        loan_repayment,
+        outstanding_debt,
+        debt_draws,
+        debt_details,
+    ) = build_debt_schedule(years, cfg)
 
     # Determine CAPEX cash flows and total capex
     if cfg.capex_manager is not None:
@@ -891,8 +1122,12 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         dep_y = depreciation[y] if isinstance(depreciation, dict) else depreciation
         cfo[y] = net_profit[y] + dep_y - change_in_working_capital.get(y, 0)
 
-    cff = {y: (cfg.equity_investment + cfg.loan_amount) if y == cfg.start_year else -loan_repayment[y] - interest_payment[y]
-           for y in years}
+    cff = {}
+    for y in years:
+        equity = cfg.equity_investment if y == cfg.start_year else 0.0
+        inflows = equity + debt_draws.get(y, 0.0)
+        outflows = loan_repayment[y] + interest_payment[y]
+        cff[y] = inflows - outflows
     cash_balance = calculate_cash_flow(years, cfg, net_profit, depreciation, cfo, cfi, cff)
 
     # Balance sheet
@@ -940,6 +1175,8 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         'interest_payment': interest_payment,
         'loan_repayment': loan_repayment,
         'outstanding_debt': outstanding_debt,
+        'debt_draws': debt_draws,
+        'debt_schedule_detail': debt_details,
         'accounts_receivable': accounts_receivable,
         'inventory': inventory,
         'accounts_payable': accounts_payable,

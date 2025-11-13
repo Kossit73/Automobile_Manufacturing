@@ -232,6 +232,7 @@ def _debt_schedule(model: Dict[str, Any]) -> pd.DataFrame:
         rows.append(
             {
                 "Year": year,
+                "Debt Draw": model.get("debt_draws", {}).get(year, 0.0),
                 "Interest Payment": model.get("interest_payment", {}).get(year, 0.0),
                 "Principal Repayment": model.get("loan_repayment", {}).get(year, 0.0),
                 "Outstanding Debt": model.get("outstanding_debt", {}).get(year, 0.0),
@@ -240,8 +241,9 @@ def _debt_schedule(model: Dict[str, Any]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if df.empty:
         return pd.DataFrame(
-            columns=["Year", "Interest Payment", "Principal Repayment", "Outstanding Debt"]
+            columns=["Year", "Debt Draw", "Interest Payment", "Principal Repayment", "Outstanding Debt"]
         )
+    df["Debt Draw"] = _currency_series(df["Debt Draw"])
     df["Interest Payment"] = _currency_series(df["Interest Payment"])
     df["Principal Repayment"] = _currency_series(df["Principal Repayment"])
     df["Outstanding Debt"] = _currency_series(df["Outstanding Debt"])

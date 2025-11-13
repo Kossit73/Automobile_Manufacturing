@@ -10,6 +10,7 @@ from financial_model import CompanyConfig, run_financial_model
 
 # Create company config (use default start year)
 cfg = CompanyConfig()
+horizon = cfg.projection_years
 
 # Initialize capex manager and defaults
 capex_mgr = CapexScheduleManager()
@@ -23,13 +24,13 @@ for it in capex_mgr.list_items():
 cfg.capex_manager = capex_mgr
 base_model = run_financial_model(cfg)
 
-print("\n--- BASELINE: YEARLY CAPEX SCHEDULE (first 5 years) ---")
-yearly = capex_mgr.yearly_capex_schedule(cfg.start_year, 5)
+print(f"\n--- BASELINE: YEARLY CAPEX SCHEDULE ({horizon} years) ---")
+yearly = capex_mgr.yearly_capex_schedule(cfg.start_year, horizon)
 for y, amt in yearly.items():
     print(f"{y}: ${amt:,.0f}")
 
-print("\n--- BASELINE: AGGREGATE DEPRECIATION SCHEDULE (first 5 years) ---")
-dep_sched = capex_mgr.depreciation_schedule(cfg.start_year, 5)
+print(f"\n--- BASELINE: AGGREGATE DEPRECIATION SCHEDULE ({horizon} years) ---")
+dep_sched = capex_mgr.depreciation_schedule(cfg.start_year, horizon)
 for y, d in dep_sched.items():
     print(f"{y}: ${d:,.0f}")
 
@@ -94,13 +95,13 @@ model_after_remove = run_financial_model(cfg)
 print("\nEnterprise Value After Remove: ${:,.0f}".format(model_after_remove['enterprise_value']))
 
 # Final summary: show CFI and depreciation for final model
-print("\n--- FINAL: YEARLY CAPEX SCHEDULE (first 5 years) ---")
-yearly_final = capex_mgr.yearly_capex_schedule(cfg.start_year, 5)
+print(f"\n--- FINAL: YEARLY CAPEX SCHEDULE ({horizon} years) ---")
+yearly_final = capex_mgr.yearly_capex_schedule(cfg.start_year, horizon)
 for y, amt in yearly_final.items():
     print(f"{y}: ${amt:,.0f}")
 
-print("\n--- FINAL: AGGREGATE DEPRECIATION SCHEDULE (first 5 years) ---")
-dep_sched_final = capex_mgr.depreciation_schedule(cfg.start_year, 5)
+print(f"\n--- FINAL: AGGREGATE DEPRECIATION SCHEDULE ({horizon} years) ---")
+dep_sched_final = capex_mgr.depreciation_schedule(cfg.start_year, horizon)
 for y, d in dep_sched_final.items():
     print(f"{y}: ${d:,.0f}")
 

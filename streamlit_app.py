@@ -150,6 +150,10 @@ def _projection_years(model: Dict[str, Any]) -> List[int]:
     return []
 
 
+def _config_years(cfg: CompanyConfig) -> List[int]:
+    return [cfg.start_year + i for i in range(cfg.projection_years)]
+
+
 def _safe_dataframe(data: Optional[pd.DataFrame], columns: Sequence[str]) -> pd.DataFrame:
     if data is None or data.empty:
         return pd.DataFrame(columns=list(columns))
@@ -166,7 +170,7 @@ def _currency_series(values: Iterable[float]) -> List[str]:
 
 
 def _build_labor_cost_schedule(manager: LaborScheduleManager, cfg: CompanyConfig) -> pd.DataFrame:
-    years = range(cfg.start_year, cfg.start_year + 5)
+    years = _config_years(cfg)
     rows = []
     for year in years:
         cost_by_type = manager.get_labor_cost_by_type(year, cfg.annual_salary_growth)
@@ -204,8 +208,8 @@ def _build_labor_cost_schedule(manager: LaborScheduleManager, cfg: CompanyConfig
 
 
 def _capex_spend_schedule(manager: CapexScheduleManager, cfg: CompanyConfig) -> pd.DataFrame:
-    years = range(cfg.start_year, cfg.start_year + 5)
-    schedule = manager.yearly_capex_schedule(cfg.start_year, len(list(years)))
+    years = _config_years(cfg)
+    schedule = manager.yearly_capex_schedule(cfg.start_year, len(years))
     rows = [{"Year": year, "Capital Spend": schedule.get(year, 0.0)} for year in years]
     df = pd.DataFrame(rows)
     df["Capital Spend"] = _currency_series(df["Capital Spend"])
@@ -213,8 +217,8 @@ def _capex_spend_schedule(manager: CapexScheduleManager, cfg: CompanyConfig) -> 
 
 
 def _capex_depreciation_schedule(manager: CapexScheduleManager, cfg: CompanyConfig) -> pd.DataFrame:
-    years = range(cfg.start_year, cfg.start_year + 5)
-    schedule = manager.depreciation_schedule(cfg.start_year, len(list(years)))
+    years = _config_years(cfg)
+    schedule = manager.depreciation_schedule(cfg.start_year, len(years))
     rows = [{"Year": year, "Depreciation": schedule.get(year, 0.0)} for year in years]
     df = pd.DataFrame(rows)
     df["Depreciation"] = _currency_series(df["Depreciation"])
@@ -487,14 +491,28 @@ def _render_platform_settings() -> None:
     st.markdown("### Company Configuration")
     company_name = st.text_input("Company Name", cfg.company_name)
     start_year = st.number_input("Model Start Year", value=int(cfg.start_year), step=1)
+    projection_years = st.number_input(
+        "Projection Years",
+        value=int(cfg.projection_years),
+        min_value=1,
+        max_value=20,
+        step=1,
+    )
     salary_growth = st.slider(
         "Annual Salary Growth", min_value=0.0, max_value=0.15, value=float(cfg.annual_salary_growth), step=0.01
     )
 
-    if company_name != cfg.company_name or int(start_year) != cfg.start_year or salary_growth != cfg.annual_salary_growth:
+    if (
+        company_name != cfg.company_name
+        or int(start_year) != cfg.start_year
+        or int(projection_years) != cfg.projection_years
+        or salary_growth != cfg.annual_salary_growth
+    ):
         cfg.company_name = company_name
         cfg.start_year = int(start_year)
+        cfg.projection_years = int(projection_years)
         cfg.annual_salary_growth = float(salary_growth)
+        cfg.__post_init__()
         _run_model()
         st.success("Settings updated. Financial model refreshed.")
 

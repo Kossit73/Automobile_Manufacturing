@@ -25,6 +25,12 @@ print("-"*100)
 # Initialize labor structure
 labor_manager = initialize_default_labor_structure()
 
+# Shared financial configuration with labor integration
+cfg_with_labor = CompanyConfig(labor_manager=labor_manager)
+projection_years = [cfg_with_labor.start_year + i for i in range(cfg_with_labor.projection_years)]
+final_year = projection_years[-1]
+base_year = cfg_with_labor.start_year
+
 print("\nCURRENT LABOR SCHEDULE:")
 print(labor_manager.get_position_summary().to_string(index=False))
 
@@ -59,20 +65,20 @@ pos_id_2 = labor_manager.add_position(
 print("\n\nREAD OPERATIONS:")
 print("-" * 100)
 
-print("\nHeadcount Summary (2026):")
-hc_by_type = labor_manager.get_headcount_by_type(2026)
+print(f"\nHeadcount Summary ({base_year}):")
+hc_by_type = labor_manager.get_headcount_by_type(base_year)
 print(f"  Direct Labor:   {hc_by_type['Direct']:3d} employees")
 print(f"  Indirect Labor: {hc_by_type['Indirect']:3d} employees")
-print(f"  Total:          {labor_manager.get_total_headcount(2026):3d} employees")
+print(f"  Total:          {labor_manager.get_total_headcount(base_year):3d} employees")
 
-print("\nLabor Cost Summary (2026):")
-costs_by_type = labor_manager.get_labor_cost_by_type(2026)
+print(f"\nLabor Cost Summary ({base_year}):")
+costs_by_type = labor_manager.get_labor_cost_by_type(base_year)
 print(f"  Direct Labor Cost:   ${costs_by_type['Direct']:>15,.0f}")
 print(f"  Indirect Labor Cost: ${costs_by_type['Indirect']:>15,.0f}")
 print(f"  Total Labor Cost:    ${costs_by_type['Direct'] + costs_by_type['Indirect']:>15,.0f}")
 
-print("\nHeadcount Projection (2026-2030):")
-for year in range(2026, 2031):
+print("\nHeadcount Projection ({}-{}):".format(projection_years[0], projection_years[-1]))
+for year in projection_years:
     total_hc = labor_manager.get_total_headcount(year)
     print(f"  {year}: {total_hc:3d} employees")
 
@@ -123,16 +129,16 @@ print("\n5-YEAR LABOR COST SCHEDULE:")
 five_year_schedule = cost_schedule.generate_5year_schedule()
 print(five_year_schedule.to_string(index=False))
 
-print("\nDETAILED LABOR COST SCHEDULE (2026):")
-detailed_2026 = cost_schedule.generate_detailed_schedule(2026)
+print(f"\nDETAILED LABOR COST SCHEDULE ({base_year}):")
+detailed_2026 = cost_schedule.generate_detailed_schedule(base_year)
 print(detailed_2026.to_string(index=False))
 
-print("\nDETAILED LABOR COST SCHEDULE (2027 - With Additions):")
-detailed_2027 = cost_schedule.generate_detailed_schedule(2027)
+print(f"\nDETAILED LABOR COST SCHEDULE ({base_year + 1} - With Additions):")
+detailed_2027 = cost_schedule.generate_detailed_schedule(base_year + 1)
 print(detailed_2027.to_string(index=False))
 
-print("\nJOB CATEGORY BREAKDOWN (2026):")
-category_summary = cost_schedule.generate_category_summary(2026)
+print(f"\nJOB CATEGORY BREAKDOWN ({base_year}):")
+category_summary = cost_schedule.generate_category_summary(base_year)
 print(category_summary.to_string(index=False))
 
 # =====================================================
@@ -143,7 +149,11 @@ print("\n\n" + "-"*100)
 print("PART 3: PRODUCTION-LINKED LABOR FORECASTING")
 print("-"*100)
 
-production_volumes = {2026: 10000, 2027: 14000, 2028: 18000, 2029: 20000, 2030: 20000}
+production_base = [10000, 14000, 18000, 20000, 20000]
+production_volumes = {}
+for idx, year in enumerate(projection_years):
+    baseline = production_base[idx] if idx < len(production_base) else production_base[-1]
+    production_volumes[year] = baseline
 
 print("\nPRODUCTION vs. REQUIRED LABOR:")
 labor_plan = ProductionLinkedLabor.create_labor_plan(
@@ -169,9 +179,6 @@ print("\n\n" + "-"*100)
 print("PART 4: FINANCIAL MODEL INTEGRATION")
 print("-"*100)
 
-# Create config with labor manager
-cfg_with_labor = CompanyConfig(labor_manager=labor_manager)
-
 print("\nRunning financial model WITH labor management system...")
 model_data = run_financial_model(cfg_with_labor)
 
@@ -184,10 +191,13 @@ labor_statement = generate_labor_statement(model_data)
 print(labor_statement.to_string(index=False))
 
 print("\nKEY METRICS:")
-print(f"  Total Revenue (2030):       ${model_data['revenue'][2030]:>15,.0f}")
-print(f"  Total OPEX (2030):          ${model_data['opex'][2030]:>15,.0f}")
-print(f"  Labor Costs (2030):         ${model_data['labor_metrics'][2030]['total_labor_cost']:>15,.0f}")
-print(f"  Net Profit (2030):          ${model_data['net_profit'][2030]:>15,.0f}")
+print(f"  Total Revenue ({final_year}):       ${model_data['revenue'][final_year]:>15,.0f}")
+print(f"  Total OPEX ({final_year}):          ${model_data['opex'][final_year]:>15,.0f}")
+labor_metrics = model_data.get('labor_metrics', {})
+print(
+    f"  Labor Costs ({final_year}):         ${labor_metrics.get(final_year, {}).get('total_labor_cost', 0):>15,.0f}"
+)
+print(f"  Net Profit ({final_year}):          ${model_data['net_profit'][final_year]:>15,.0f}")
 print(f"  Enterprise Value (DCF):     ${model_data['enterprise_value']:>15,.0f}")
 
 # =====================================================
@@ -199,14 +209,14 @@ print("PART 5: WORKFORCE PLANNING INSIGHTS")
 print("-"*100)
 
 print("\nWorkforce Expansion Plan:")
-for year in range(2026, 2031):
+for year in projection_years:
     total_hc = labor_manager.get_total_headcount(year)
     total_cost = sum(labor_manager.get_labor_cost_by_type(year, 0.05).values())
     avg_cost = total_cost / total_hc if total_hc > 0 else 0
     print(f"  {year}: {total_hc:2d} employees | Total Cost: ${total_cost:>12,.0f} | Avg Cost/HC: ${avg_cost:>10,.0f}")
 
 print("\nDirect vs. Indirect Labor Composition:")
-for year in range(2026, 2031):
+for year in projection_years:
     hc = labor_manager.get_headcount_by_type(year)
     total = hc['Direct'] + hc['Indirect']
     direct_pct = (hc['Direct'] / total * 100) if total > 0 else 0
@@ -224,7 +234,7 @@ print("-"*100)
 print("\nScenario: Increase all direct labor salaries by 5% to improve retention")
 
 # Before scenario
-costs_before = labor_manager.get_labor_cost_by_type(2026, 0.05)
+costs_before = labor_manager.get_labor_cost_by_type(base_year, 0.05)
 total_before = costs_before['Direct'] + costs_before['Indirect']
 
 # Apply changes
@@ -234,7 +244,7 @@ for pos in direct_positions:
     labor_manager.edit_position(pos.position_id, annual_salary=new_salary)
 
 # After scenario
-costs_after = labor_manager.get_labor_cost_by_type(2026, 0.05)
+costs_after = labor_manager.get_labor_cost_by_type(base_year, 0.05)
 total_after = costs_after['Direct'] + costs_after['Indirect']
 
 print(f"\nBefore Adjustment:")

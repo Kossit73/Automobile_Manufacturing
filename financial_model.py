@@ -6,7 +6,7 @@ Author: Advanced Analytics Team
 
 import pandas as pd
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Sequence
 
 # =====================================================
 # 1. INPUT PARAMETERS (CONFIGURABLE)
@@ -17,6 +17,7 @@ class CompanyConfig:
     """Configuration class for company parameters"""
     company_name: str = "Volt Rider"
     start_year: int = 2026
+    projection_years: int = 5
     facility_size: int = 2000
     
     # CAPEX
@@ -49,29 +50,108 @@ class CompanyConfig:
     loan_interest_rate: float = 0.08
     loan_term: int = 5
     
-    # Financial Parameters
+    # Working Capital & Financial Parameters
     cogs_ratio: float = 0.6
     tax_rate: float = 0.25
     wacc: float = 0.12
     terminal_growth: float = 0.03
-    
+    working_capital_ratio: float = 0.12
+
     def __post_init__(self):
-        if self.capacity_utilization is None:
-            self.capacity_utilization = {2026: 0.5, 2027: 0.7, 2028: 0.9, 2029: 1.0, 2030: 1.0}
-        if self.marketing_budget is None:
-            self.marketing_budget = {y: 72_000 for y in range(self.start_year, self.start_year + 5)}
+        if self.projection_years < 1:
+            raise ValueError("projection_years must be at least 1")
+
+        if self.capacity_utilization is None or not self.capacity_utilization:
+            default_curve = [0.5, 0.7, 0.9, 1.0]
+            values = []
+            for i in range(self.projection_years):
+                if i < len(default_curve):
+                    values.append(default_curve[i])
+                else:
+                    values.append(default_curve[-1])
+            self.capacity_utilization = {
+                self.start_year + i: values[i] for i in range(self.projection_years)
+            }
+        else:
+            filled: Dict[int, float] = {}
+            sorted_years = sorted(self.capacity_utilization.keys())
+            last_value = self.capacity_utilization.get(sorted_years[0], 1.0)
+            for i in range(self.projection_years):
+                year = self.start_year + i
+                if year in self.capacity_utilization:
+                    last_value = self.capacity_utilization[year]
+                else:
+                    earlier = [y for y in sorted_years if y <= year]
+                    later = [y for y in sorted_years if y > year]
+                    if earlier:
+                        last_value = self.capacity_utilization[earlier[-1]]
+                    elif later:
+                        last_value = self.capacity_utilization[later[0]]
+                filled[year] = last_value
+            self.capacity_utilization = filled
+
+        if self.marketing_budget is None or not self.marketing_budget:
+            self.marketing_budget = {
+                self.start_year + i: 72_000 for i in range(self.projection_years)
+            }
+        else:
+            budgets = dict(self.marketing_budget)
+            sorted_years = sorted(budgets.keys())
+            last_budget = budgets[sorted_years[0]] if sorted_years else 72_000
+            for i in range(self.projection_years):
+                year = self.start_year + i
+                if year in budgets:
+                    last_budget = budgets[year]
+                else:
+                    budgets[year] = last_budget
+            self.marketing_budget = budgets
 
 # Default Configuration
 config = CompanyConfig()
+
+
+def _projection_years(cfg: CompanyConfig) -> List[int]:
+    """Return the list of projection years for the configuration."""
+    return [cfg.start_year + i for i in range(cfg.projection_years)]
+
+
+def _carry_forward(mapping: Dict[int, float], year: int, default: float) -> float:
+    """Return mapping[year] while carrying forward the closest available value."""
+    if year in mapping:
+        return mapping[year]
+
+    earlier = [y for y in mapping.keys() if y <= year]
+    if earlier:
+        return mapping[max(earlier)]
+
+    later = [y for y in mapping.keys() if y > year]
+    if later:
+        return mapping[min(later)]
+
+    return default
+
+
+def calculate_working_capital_changes(years: Sequence[int], revenue: Dict[int, float], cfg: CompanyConfig) -> Dict[int, float]:
+    """Derive working capital changes as a ratio of revenue."""
+    changes: Dict[int, float] = {}
+    previous_target = 0.0
+    for year in years:
+        target_wc = revenue.get(year, 0.0) * cfg.working_capital_ratio
+        changes[year] = target_wc - previous_target
+        previous_target = target_wc
+    return changes
 
 # =====================================================
 # 2. PRODUCTION & SALES FORECAST
 # =====================================================
 def calculate_production_forecast(cfg: CompanyConfig):
     """Calculate production volume and revenue forecasts"""
-    years = range(cfg.start_year, cfg.start_year + 5)
-    
-    production_volume = {y: cfg.annual_capacity * cfg.capacity_utilization[y] for y in years}
+    years = _projection_years(cfg)
+
+    production_volume = {
+        y: cfg.annual_capacity * _carry_forward(cfg.capacity_utilization, y, 1.0)
+        for y in years
+    }
     
     product_mix = {
         "EV_Bikes": 0.30,
@@ -106,30 +186,31 @@ def calculate_cogs(revenue: Dict, cfg: CompanyConfig) -> Dict:
 # =====================================================
 # 4. OPERATING EXPENSES
 # =====================================================
-def calculate_opex(years: range, cfg: CompanyConfig) -> Dict:
+def calculate_opex(years: Sequence[int], cfg: CompanyConfig) -> Dict[int, float]:
     """Calculate operating expenses including marketing and payroll"""
     opex = {}
     for y in years:
         annual_payroll = (cfg.avg_salary * cfg.headcount * 12) * (1 + cfg.annual_salary_growth) ** (y - cfg.start_year)
-        opex[y] = cfg.marketing_budget[y] + annual_payroll
+        marketing = _carry_forward(cfg.marketing_budget, y, 72_000)
+        opex[y] = marketing + annual_payroll
     return opex
 
-def calculate_opex_with_labor_manager(years: range, cfg: CompanyConfig) -> Dict:
+def calculate_opex_with_labor_manager(years: Sequence[int], cfg: CompanyConfig) -> Dict[int, float]:
     """Calculate operating expenses using labor manager if available"""
     if cfg.labor_manager is None:
         return calculate_opex(years, cfg)
-    
+
     opex = {}
     for y in years:
         # Get labor costs from manager
         direct_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Direct', 0)
         indirect_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Indirect', 0)
         labor_cost = direct_cost + indirect_cost
-        marketing = cfg.marketing_budget[y]
+        marketing = _carry_forward(cfg.marketing_budget, y, 72_000)
         opex[y] = marketing + labor_cost
     return opex
 
-def get_labor_metrics(cfg: CompanyConfig, years: range) -> Dict:
+def get_labor_metrics(cfg: CompanyConfig, years: Sequence[int]) -> Dict[int, Dict[str, float]]:
     """Extract labor metrics from labor manager for reporting"""
     if cfg.labor_manager is None:
         return {}
@@ -152,7 +233,14 @@ def get_labor_metrics(cfg: CompanyConfig, years: range) -> Dict:
 # =====================================================
 # 5. INCOME STATEMENT CALCULATION
 # =====================================================
-def calculate_income_statement(years: range, cfg: CompanyConfig, production_volume, revenue, cogs, opex):
+def calculate_income_statement(
+    years: Sequence[int],
+    cfg: CompanyConfig,
+    production_volume,
+    revenue,
+    cogs,
+    opex,
+):
     """Calculate complete income statement"""
     # Determine depreciation schedule (per-year) from capex manager if available
     years_list = list(years)
@@ -164,17 +252,21 @@ def calculate_income_statement(years: range, cfg: CompanyConfig, production_volu
         annual_dep = total_capex / cfg.useful_life
         depreciation_schedule = {y: annual_dep for y in years_list}
 
+    depreciation_lookup = {y: depreciation_schedule.get(y, 0.0) for y in years}
+
     ebitda = {y: revenue[y] - cogs[y] - opex[y] for y in years}
-    ebit = {y: ebitda[y] - depreciation_schedule[y] for y in years}
+    ebit = {y: ebitda[y] - depreciation_lookup[y] for y in years}
     tax = {y: max(0, ebit[y] * cfg.tax_rate) for y in years}
     net_profit = {y: ebit[y] - tax[y] for y in years}
 
-    return ebitda, ebit, tax, net_profit, depreciation_schedule
+    return ebitda, ebit, tax, net_profit, depreciation_lookup
 
 # =====================================================
 # 6. DCF VALUATION
 # =====================================================
-def calculate_dcf(years: range, ebit, cfg: CompanyConfig, depreciation) -> Tuple[Dict, Dict, float]:
+def calculate_dcf(
+    years: Sequence[int], ebit, cfg: CompanyConfig, depreciation
+) -> Tuple[Dict[int, float], Dict[int, float], float]:
     """Calculate Free Cash Flow and DCF valuation"""
     # depreciation may be a dict (per-year) or a scalar
     if isinstance(depreciation, dict):
@@ -182,14 +274,16 @@ def calculate_dcf(years: range, ebit, cfg: CompanyConfig, depreciation) -> Tuple
     else:
         fcf = {y: ebit[y] * (1 - cfg.tax_rate) + depreciation for y in years}
     discounted_fcf = {y: fcf[y] / ((1 + cfg.wacc) ** (y - cfg.start_year + 1)) for y in years}
-    
+
+    final_year = max(years)
+
     # Avoid division by zero and negative terminal values
-    if cfg.wacc <= cfg.terminal_growth or fcf[cfg.start_year + 4] <= 0:
+    if cfg.wacc <= cfg.terminal_growth or fcf[final_year] <= 0:
         terminal_value = 0
     else:
-        terminal_value = fcf[cfg.start_year + 4] * (1 + cfg.terminal_growth) / (cfg.wacc - cfg.terminal_growth)
-    
-    discounted_terminal = terminal_value / ((1 + cfg.wacc) ** (cfg.start_year + 4 - cfg.start_year + 1))
+        terminal_value = fcf[final_year] * (1 + cfg.terminal_growth) / (cfg.wacc - cfg.terminal_growth)
+
+    discounted_terminal = terminal_value / ((1 + cfg.wacc) ** (final_year - cfg.start_year + 1))
     enterprise_value = sum(discounted_fcf.values()) + discounted_terminal
     
     return fcf, discounted_fcf, enterprise_value
@@ -197,7 +291,9 @@ def calculate_dcf(years: range, ebit, cfg: CompanyConfig, depreciation) -> Tuple
 # =====================================================
 # 7. CASH FLOW STATEMENT CALCULATION
 # =====================================================
-def build_debt_schedule(years: range, cfg: CompanyConfig) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float]]:
+def build_debt_schedule(
+    years: Sequence[int], cfg: CompanyConfig
+) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float]]:
     """Construct interest, principal, and ending balance schedules for the loan."""
     interest_payment: Dict[int, float] = {}
     principal_payment: Dict[int, float] = {}
@@ -227,23 +323,34 @@ def build_debt_schedule(years: range, cfg: CompanyConfig) -> Tuple[Dict[int, flo
 # =====================================================
 # 7. CASH FLOW STATEMENT CALCULATION
 # =====================================================
-def calculate_cash_flow(years: range, cfg: CompanyConfig, net_profit, depreciation, cfo, cfi, cff):
+def calculate_cash_flow(
+    years: Sequence[int], cfg: CompanyConfig, net_profit, depreciation, cfo, cfi, cff
+):
     """Calculate cumulative cash balance"""
     cash_balance = {}
-    for i, y in enumerate(years):
+    year_list = list(years)
+    for i, y in enumerate(year_list):
         if i == 0:
             cash_balance[y] = cfo[y] + cfi[y] + cff[y]
         else:
-            prev_year = years[i - 1]
+            prev_year = year_list[i - 1]
             cash_balance[y] = cash_balance[prev_year] + cfo[y] + cfi[y] + cff[y]
     return cash_balance
 
 # =====================================================
 # 8. BALANCE SHEET CALCULATION
 # =====================================================
-def calculate_balance_sheet(years: range, cfg: CompanyConfig, net_profit, cash_balance,
-                           depreciation, outstanding_debt, cfi):
+def calculate_balance_sheet(
+    years: Sequence[int],
+    cfg: CompanyConfig,
+    net_profit,
+    cash_balance,
+    depreciation,
+    outstanding_debt,
+    cfi,
+):
     """Calculate balance sheet items"""
+    years_list = list(years)
     # Determine total capex and compute fixed assets net of accumulated depreciation
     if cfg.capex_manager is not None:
         total_capex = cfg.capex_manager.total_capex()
@@ -251,46 +358,46 @@ def calculate_balance_sheet(years: range, cfg: CompanyConfig, net_profit, cash_b
         if isinstance(depreciation, dict):
             # accumulated depreciation up to year
             fixed_assets = {}
-            for y in years:
+            for y in years_list:
                 acc_dep = 0.0
-                for t in years:
+                for t in years_list:
                     if t <= y:
                         acc_dep += depreciation.get(t, 0.0)
                 fixed_assets[y] = max(0, total_capex - acc_dep)
         else:
             # fallback: treat as scalar annual depreciation
             fixed_assets = {}
-            for y in years:
+            for y in years_list:
                 years_since_start = y - cfg.start_year
                 accumulated_dep = depreciation * (years_since_start + 1)
                 fixed_assets[y] = max(0, total_capex - accumulated_dep)
     else:
         total_capex = cfg.land_acquisition + cfg.factory_construction + cfg.machinery_automation
         fixed_assets = {}
-        for y in years:
+        for y in years_list:
             years_since_start = y - cfg.start_year
             if isinstance(depreciation, dict):
-                accumulated_dep = sum(depreciation.get(t, 0.0) for t in years if t <= y)
+                accumulated_dep = sum(depreciation.get(t, 0.0) for t in years_list if t <= y)
             else:
                 accumulated_dep = depreciation * (years_since_start + 1)
             fixed_assets[y] = max(0, total_capex - accumulated_dep)
-    
-    current_assets = {y: cash_balance[y] + 200_000 for y in years}
-    current_liabilities = {y: 150_000 for y in years}
-    long_term_debt = {y: max(0.0, outstanding_debt[y]) for y in years}
-    
+
+    current_assets = {y: cash_balance[y] + 200_000 for y in years_list}
+    current_liabilities = {y: 150_000 for y in years_list}
+    long_term_debt = {y: max(0.0, outstanding_debt[y]) for y in years_list}
+
     retained_earnings = {}
-    for i, y in enumerate(years):
+    for i, y in enumerate(years_list):
         if i == 0:
             retained_earnings[y] = net_profit[y]
         else:
-            prev_year = years[i - 1]
+            prev_year = years_list[i - 1]
             retained_earnings[y] = retained_earnings[prev_year] + net_profit[y]
-    
-    total_equity = {y: cfg.equity_investment + retained_earnings[y] for y in years}
-    total_assets = {y: current_assets[y] + fixed_assets[y] for y in years}
-    total_liab_equity = {y: current_liabilities[y] + long_term_debt[y] + total_equity[y] for y in years}
-    
+
+    total_equity = {y: cfg.equity_investment + retained_earnings[y] for y in years_list}
+    total_assets = {y: current_assets[y] + fixed_assets[y] for y in years_list}
+    total_liab_equity = {y: current_liabilities[y] + long_term_debt[y] + total_equity[y] for y in years_list}
+
     return fixed_assets, current_assets, current_liabilities, long_term_debt, total_equity, total_assets, total_liab_equity
 
 # =====================================================
@@ -301,8 +408,8 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
     if cfg is None:
         cfg = config
     
-    years = range(cfg.start_year, cfg.start_year + 5)
-    
+    years = _projection_years(cfg)
+
     # Calculate components
     production_volume, product_mix, selling_price, revenue = calculate_production_forecast(cfg)
     cogs = calculate_cogs(revenue, cfg)
@@ -310,16 +417,15 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
     labor_metrics = get_labor_metrics(cfg, years)
     ebitda, ebit, tax, net_profit, depreciation = calculate_income_statement(years, cfg, production_volume, revenue, cogs, opex)
     fcf, discounted_fcf, enterprise_value = calculate_dcf(years, ebit, cfg, depreciation)
-    
+
     # Cash flow components
-    change_in_working_capital = {cfg.start_year: -500_000, cfg.start_year + 1: -250_000,
-                                 cfg.start_year + 2: 0, cfg.start_year + 3: 200_000, cfg.start_year + 4: 200_000}
+    change_in_working_capital = calculate_working_capital_changes(years, revenue, cfg)
 
     interest_payment, loan_repayment, outstanding_debt = build_debt_schedule(years, cfg)
 
     # Determine CAPEX cash flows and total capex
     if cfg.capex_manager is not None:
-        yearly_capex = cfg.capex_manager.yearly_capex_schedule(cfg.start_year, len(list(years)))
+        yearly_capex = cfg.capex_manager.yearly_capex_schedule(cfg.start_year, len(years))
         total_capex = cfg.capex_manager.total_capex()
         cfi = {y: -yearly_capex.get(y, 0.0) for y in years}
     else:
@@ -344,7 +450,7 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
     
     # Return all calculated data
     return {
-        'years': years,
+        'years': tuple(years),
         'revenue': revenue,
         'cogs': cogs,
         'opex': opex,
@@ -385,7 +491,7 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
 # =====================================================
 def generate_financial_statements(model_data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Generate income statement, cash flow, and balance sheet DataFrames"""
-    years = model_data['years']
+    years = list(model_data['years'])
     
     income_df = pd.DataFrame({
         "Year": years,
@@ -471,8 +577,11 @@ if __name__ == "__main__":
     print(balance_df.to_string(index=False))
     
     # Calculate ROI
-    roi = (model_data['net_profit'][2030] / (cfg.land_acquisition + cfg.factory_construction + cfg.machinery_automation)) * 100
-    
+    final_year = max(model_data['years'])
+    roi = 0.0
+    if model_data['initial_capex']:
+        roi = (model_data['net_profit'][final_year] / model_data['initial_capex']) * 100
+
     print(f"\nEnterprise Value (DCF): ${model_data['enterprise_value']:,.2f}")
-    print(f"ROI (2030): {roi:.2f}%")
+    print(f"ROI ({final_year}): {roi:.2f}%")
     print("Model complete and balanced.")

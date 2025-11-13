@@ -1259,6 +1259,12 @@ def _render_platform_settings() -> None:
         capacity_df = _production_capacity_schedule(cfg, model)
         _render_table(capacity_df, hide_index=True)
 
+        st.markdown("#### Debt Amortization Schedule")
+        debt_df = _debt_schedule(model)
+        if debt_df.empty:
+            st.write("Configure debt instruments in the financing settings to populate the schedule.")
+        _render_table(debt_df, hide_index=True)
+
     with labor_tab:
         _render_labor_management()
 

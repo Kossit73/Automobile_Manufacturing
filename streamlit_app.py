@@ -670,6 +670,40 @@ def _production_horizon_table(cfg: CompanyConfig) -> pd.DataFrame:
     return pd.DataFrame(records, columns=["Year", "Capacity Utilization", "Projected Units"])
 
 
+def _production_capacity_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    model = model or {}
+    years = _config_years(cfg)
+    production_volume: Dict[int, float] = model.get("production_volume", {})
+
+    records: List[Dict[str, Any]] = []
+    for year in years:
+        utilization = float(cfg.capacity_utilization.get(year, 0.0))
+        utilization = max(0.0, min(1.0, utilization))
+        annual_capacity = float(cfg.annual_capacity)
+        planned_units = float(production_volume.get(year, annual_capacity * utilization))
+        available_capacity = max(annual_capacity - planned_units, 0.0)
+        records.append(
+            {
+                "Year": year,
+                "Working Days": int(cfg.working_days),
+                "Annual Capacity": f"{annual_capacity:,.0f}",
+                "Utilization": f"{utilization * 100:.1f}%",
+                "Planned Production": f"{planned_units:,.0f}",
+                "Available Capacity": f"{available_capacity:,.0f}",
+            }
+        )
+
+    columns = [
+        "Year",
+        "Working Days",
+        "Annual Capacity",
+        "Utilization",
+        "Planned Production",
+        "Available Capacity",
+    ]
+    return pd.DataFrame(records, columns=columns)
+
+
 def _debt_schedule(model: Dict[str, Any]) -> pd.DataFrame:
     years = _projection_years(model)
     rows = []
@@ -1219,6 +1253,11 @@ def _render_platform_settings() -> None:
         st.markdown("#### Production Horizon Schedule")
         horizon_df = _production_horizon_table(cfg)
         _render_table(horizon_df, hide_index=True)
+
+        st.markdown("#### Production Capacity Schedule")
+        model: Dict[str, Any] = st.session_state.get("financial_model", {})
+        capacity_df = _production_capacity_schedule(cfg, model)
+        _render_table(capacity_df, hide_index=True)
 
     with labor_tab:
         _render_labor_management()

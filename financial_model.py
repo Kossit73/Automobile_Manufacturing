@@ -6,11 +6,78 @@ Author: Advanced Analytics Team
 
 import pandas as pd
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Sequence
+from typing import Dict, List, Tuple, Optional, Sequence, Iterable
 
 # =====================================================
 # 1. INPUT PARAMETERS (CONFIGURABLE)
 # =====================================================
+
+def _default_capacity_curve(start_year: int, projection_years: int) -> Dict[int, float]:
+    """Return the default ramp-up curve for capacity utilization."""
+    default_curve = [0.5, 0.7, 0.9, 1.0]
+    values = []
+    for i in range(projection_years):
+        if i < len(default_curve):
+            values.append(default_curve[i])
+        else:
+            values.append(default_curve[-1])
+    return {start_year + i: values[i] for i in range(projection_years)}
+
+
+def _normalize_capacity_utilization(
+    start_year: int, projection_years: int, values: Optional[Iterable]
+) -> Dict[int, float]:
+    """Normalize utilization input into a year-indexed mapping covering the horizon.
+
+    Supports dictionaries keyed by year or ordered iterables aligned with the
+    projection window. Missing years fall back to the most recently provided
+    utilization so downstream consumers never raise ``KeyError``.
+    """
+
+    years = [start_year + i for i in range(projection_years)]
+    default_map = _default_capacity_curve(start_year, projection_years)
+
+    provided: Dict[int, float] = {}
+    if isinstance(values, dict):
+        for raw_year, raw_value in values.items():
+            if raw_value is None:
+                continue
+            try:
+                year = int(raw_year)
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            provided[year] = value
+    elif values is not None:
+        try:
+            ordered = list(values)
+        except TypeError:
+            ordered = []
+        for idx, raw_value in enumerate(ordered):
+            if raw_value is None or idx >= projection_years:
+                continue
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            provided[start_year + idx] = value
+
+    carry: Optional[float] = None
+    normalized: Dict[int, float] = {}
+    for year in years:
+        default_value = default_map[year]
+        if year in provided:
+            carry = provided[year]
+        if carry is None:
+            carry = default_value
+        value = carry
+        # Clamp utilization between 0 and 1 to avoid invalid inputs.
+        value = max(0.0, min(1.0, value))
+        normalized[year] = value
+        carry = value
+
+    return normalized
+
 
 @dataclass
 class CompanyConfig:
@@ -61,34 +128,9 @@ class CompanyConfig:
         if self.projection_years < 1:
             raise ValueError("projection_years must be at least 1")
 
-        if self.capacity_utilization is None or not self.capacity_utilization:
-            default_curve = [0.5, 0.7, 0.9, 1.0]
-            values = []
-            for i in range(self.projection_years):
-                if i < len(default_curve):
-                    values.append(default_curve[i])
-                else:
-                    values.append(default_curve[-1])
-            self.capacity_utilization = {
-                self.start_year + i: values[i] for i in range(self.projection_years)
-            }
-        else:
-            filled: Dict[int, float] = {}
-            sorted_years = sorted(self.capacity_utilization.keys())
-            last_value = self.capacity_utilization.get(sorted_years[0], 1.0)
-            for i in range(self.projection_years):
-                year = self.start_year + i
-                if year in self.capacity_utilization:
-                    last_value = self.capacity_utilization[year]
-                else:
-                    earlier = [y for y in sorted_years if y <= year]
-                    later = [y for y in sorted_years if y > year]
-                    if earlier:
-                        last_value = self.capacity_utilization[earlier[-1]]
-                    elif later:
-                        last_value = self.capacity_utilization[later[0]]
-                filled[year] = last_value
-            self.capacity_utilization = filled
+        self.capacity_utilization = _normalize_capacity_utilization(
+            self.start_year, self.projection_years, self.capacity_utilization
+        )
 
         if self.marketing_budget is None or not self.marketing_budget:
             self.marketing_budget = {

@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tupl
 import io
 import csv
 
-__all__ = ["DataFrame", "Series"]
+__all__ = ["DataFrame", "Series", "Index", "RangeIndex"]
 
 
 class Index(list):
@@ -28,6 +28,31 @@ class Index(list):
 
     def copy(self) -> "Index":  # type: ignore[override]
         return Index(self)
+
+
+class RangeIndex(Index):
+    """Minimal implementation of :class:`pandas.RangeIndex`."""
+
+    def __init__(self, start: int = 0, stop: Optional[int] = None, step: int = 1):
+        if step == 0:
+            raise ValueError("RangeIndex step must not be zero")
+        if stop is None:
+            stop = start
+            start = 0
+        self.start = int(start)
+        self.stop = int(stop)
+        self.step = int(step)
+        super().__init__(range(self.start, self.stop, self.step))
+
+    @classmethod
+    def from_range(cls, range_obj: range) -> "RangeIndex":
+        return cls(range_obj.start, range_obj.stop, range_obj.step)
+
+    def copy(self) -> "RangeIndex":  # type: ignore[override]
+        return RangeIndex(self.start, self.stop, self.step)
+
+    def __repr__(self) -> str:
+        return f"RangeIndex(start={self.start}, stop={self.stop}, step={self.step})"
 
 
 def _coerce_iterable(values: Optional[Iterable[Any]]) -> List[Any]:
@@ -78,8 +103,14 @@ class Series:
     def __init__(self, data: Optional[Iterable[Any]] = None, index: Optional[Iterable[Any]] = None, name: Optional[str] = None):
         self._data = _coerce_iterable(data)
         if index is None:
-            index = range(len(self._data))
-        self.index = Index(index)
+            computed_index: Union[Index, RangeIndex, Iterable[Any]] = RangeIndex(len(self._data))
+        elif isinstance(index, range):
+            computed_index = RangeIndex.from_range(index)
+        elif isinstance(index, (Index, RangeIndex)):
+            computed_index = index.copy()
+        else:
+            computed_index = Index(index)
+        self.index = computed_index if isinstance(computed_index, Index) else Index(computed_index)
         self.name = name
         if len(self.index) != len(self._data):
             raise ValueError("Series data and index must be the same length")
@@ -327,7 +358,7 @@ class DataFrame:
 
     def __init__(self, data: Optional[Union[Dict[str, Iterable[Any]], List[Dict[str, Any]]]] = None):
         self._data: Dict[str, List[Any]] = {}
-        self.index: Index = Index()
+        self.index: Index = RangeIndex(0)
         self.columns: List[str] = []
         if data is None:
             return
@@ -337,7 +368,7 @@ class DataFrame:
             for key, values in data.items():
                 self._data[key] = _coerce_iterable(values)
             self.columns = list(data.keys())
-            self.index = Index(range(length))
+            self.index = RangeIndex(length)
         elif isinstance(data, list):
             if not data:
                 return
@@ -352,7 +383,7 @@ class DataFrame:
                 for col in columns:
                     rows[col].append(row.get(col))
             self._data = rows
-            self.index = Index(range(len(data)))
+            self.index = RangeIndex(len(data))
         else:
             raise TypeError("Unsupported data type for DataFrame")
 

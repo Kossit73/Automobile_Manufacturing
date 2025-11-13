@@ -40,6 +40,32 @@ class Index(list):
             seen.add(value)
         return True
 
+    @property
+    def nlevels(self) -> int:
+        """Always report a single level for the lightweight index."""
+
+        return 1
+
+    def get_level_values(self, level: Union[int, str]) -> "Index":
+        """Return the labels for the requested index level.
+
+        Streamlit's PyArrow bridge requests level values when exporting
+        DataFrames.  The shim only supports flat indexes, so any integer
+        level resolves to the lone level and string-based lookups fall back
+        to level ``0``.  This mirrors the behaviour pandas provides for
+        ``Index`` instances without named levels.
+        """
+
+        if isinstance(level, int):
+            if level not in (0, -1):
+                raise IndexError("Index level out of range")
+            return Index(self)
+        if level in (None, ""):
+            return Index(self)
+        # Fall back to the single level for unnamed indexes, matching pandas
+        # which treats the only level as addressable via any provided name.
+        return Index(self)
+
 
 class RangeIndex(Index):
     """Minimal implementation of :class:`pandas.RangeIndex`."""
@@ -68,6 +94,15 @@ class RangeIndex(Index):
     @property
     def is_unique(self) -> bool:
         return True
+
+    def get_level_values(self, level: Union[int, str]) -> "RangeIndex":
+        if isinstance(level, int):
+            if level not in (0, -1):
+                raise IndexError("Index level out of range")
+            return RangeIndex(self.start, self.stop, self.step)
+        if level in (None, ""):
+            return RangeIndex(self.start, self.stop, self.step)
+        return RangeIndex(self.start, self.stop, self.step)
 
 
 def _coerce_iterable(values: Optional[Iterable[Any]]) -> List[Any]:

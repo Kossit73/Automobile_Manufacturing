@@ -8,6 +8,7 @@ from __future__ import annotations
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from streamlit.delta_generator import DeltaGenerator
@@ -27,7 +28,7 @@ from labor_management import (
     LaborType,
     initialize_default_labor_structure,
 )
-from capex_management import CapexScheduleManager, initialize_default_capex
+from capex_management import CapexItem, CapexScheduleManager, initialize_default_capex
 
 # ---------------------------------------------------------------------------
 # AI & MACHINE LEARNING CONFIGURATION
@@ -180,6 +181,56 @@ def _safe_dataframe(data: Optional[pd.DataFrame], columns: Sequence[str]) -> pd.
 
 def _currency_series(values: Iterable[float]) -> List[str]:
     return [f"${value:,.0f}" for value in values]
+
+
+def _parse_spend_curve_input(text: str) -> Optional[Dict[int, float]]:
+    cleaned = text.strip()
+    if not cleaned:
+        return None
+
+    entries = re.split(r"[,\n]+", cleaned)
+    spend_curve: Dict[int, float] = {}
+    for entry in entries:
+        part = entry.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            raise ValueError(
+                "Spend curve entries must use the 'offset:share' format, e.g., '0:0.6, 1:0.4'."
+            )
+        offset_text, share_text = part.split(":", 1)
+        offset_text = offset_text.strip()
+        share_text = share_text.strip()
+
+        try:
+            offset = int(offset_text)
+        except ValueError as exc:
+            raise ValueError("Spend curve offsets must be whole numbers.") from exc
+
+        percentage = share_text.endswith("%")
+        if percentage:
+            share_text = share_text[:-1]
+
+        try:
+            share = float(share_text)
+        except ValueError as exc:
+            raise ValueError("Spend curve shares must be numeric values.") from exc
+
+        if percentage:
+            share /= 100.0
+
+        spend_curve[offset] = share
+
+    if not spend_curve:
+        raise ValueError("Provide at least one spend curve allocation or leave the field blank.")
+
+    return spend_curve
+
+
+def _format_spend_curve(spend_curve: Optional[Dict[int, float]]) -> str:
+    if not spend_curve:
+        return ""
+    return ", ".join(f"{offset}:{share:.4g}" for offset, share in sorted(spend_curve.items()))
 
 
 def _position_increment_schedule(position: LaborPosition, cfg: CompanyConfig) -> pd.DataFrame:
@@ -778,14 +829,201 @@ def _render_labor_management() -> None:
     )
 
 
+def _render_add_capital_project_form(manager: CapexScheduleManager, cfg: CompanyConfig) -> None:
+    st.markdown("#### Add Capital Project")
+    with st.form("add_capex_form"):
+        col1, col2 = st.columns(2)
+        name = col1.text_input("Project Name", key="add_capex_name")
+        category = col2.text_input("Category", value="General", key="add_capex_category")
+
+        col3, col4 = st.columns(2)
+        amount = col3.number_input(
+            "Capital Amount",
+            min_value=0.0,
+            value=250_000.0,
+            step=25_000.0,
+            key="add_capex_amount",
+        )
+        start_year = col4.number_input(
+            "Start Year",
+            value=int(cfg.start_year),
+            step=1,
+            key="add_capex_start_year",
+        )
+
+        col5, col6 = st.columns(2)
+        useful_life = col5.number_input(
+            "Useful Life (years)",
+            min_value=0,
+            value=10,
+            step=1,
+            key="add_capex_useful_life",
+        )
+        salvage_value = col6.number_input(
+            "Salvage Value",
+            min_value=0.0,
+            value=0.0,
+            step=5_000.0,
+            key="add_capex_salvage",
+        )
+
+        spend_curve_input = st.text_input(
+            "Spend Curve (offset:share, comma or newline separated)",
+            key="add_capex_spend_curve",
+            help="Example: '0:0.6, 1:0.4' allocates 60% in the start year and 40% the following year.",
+        )
+        notes = st.text_area("Notes", key="add_capex_notes")
+
+        submitted = st.form_submit_button("Add Project")
+
+    if submitted:
+        try:
+            spend_curve = _parse_spend_curve_input(spend_curve_input)
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+
+        try:
+            manager.add_item(
+                name=name.strip() or "New Project",
+                amount=float(amount),
+                start_year=int(start_year),
+                useful_life=int(useful_life),
+                salvage_value=float(salvage_value),
+                category=category.strip() or "General",
+                notes=notes.strip(),
+                spend_curve=spend_curve,
+            )
+            _run_model()
+            st.success("Capital project added successfully.")
+        except ValueError as exc:
+            st.error(str(exc))
+
+
+def _render_capex_item_editor(
+    item: CapexItem, manager: CapexScheduleManager, cfg: CompanyConfig
+) -> None:
+    header = f"{item.item_id} — {item.name}"
+    with st.expander(header, expanded=False):
+        form_key = f"edit_capex_form_{item.item_id}"
+        prefix = f"capex_{item.item_id}"
+        with st.form(form_key):
+            col1, col2 = st.columns(2)
+            name = col1.text_input(
+                "Project Name",
+                value=item.name,
+                key=f"{prefix}_name",
+            )
+            category = col2.text_input(
+                "Category",
+                value=item.category,
+                key=f"{prefix}_category",
+            )
+
+            col3, col4 = st.columns(2)
+            amount = col3.number_input(
+                "Capital Amount",
+                min_value=0.0,
+                value=float(item.amount),
+                step=25_000.0,
+                key=f"{prefix}_amount",
+            )
+            start_year = col4.number_input(
+                "Start Year",
+                value=int(item.start_year),
+                step=1,
+                key=f"{prefix}_start_year",
+            )
+
+            col5, col6 = st.columns(2)
+            useful_life = col5.number_input(
+                "Useful Life (years)",
+                min_value=0,
+                value=int(item.useful_life),
+                step=1,
+                key=f"{prefix}_useful_life",
+            )
+            salvage_value = col6.number_input(
+                "Salvage Value",
+                min_value=0.0,
+                value=float(item.salvage_value),
+                step=5_000.0,
+                key=f"{prefix}_salvage",
+            )
+
+            spend_curve_default = _format_spend_curve(item.spend_curve)
+            spend_curve_input = st.text_input(
+                "Spend Curve (offset:share, comma or newline separated)",
+                value=spend_curve_default,
+                key=f"{prefix}_spend_curve",
+                help="Leave blank for single-year spend or specify offsets such as '0:0.7, 1:0.3'.",
+            )
+            notes = st.text_area(
+                "Notes",
+                value=item.notes,
+                key=f"{prefix}_notes",
+            )
+
+            submitted = st.form_submit_button("Save Changes")
+
+        if submitted:
+            try:
+                spend_curve = _parse_spend_curve_input(spend_curve_input)
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                try:
+                    manager.edit_item(
+                        item.item_id,
+                        name=name.strip() or item.name,
+                        category=category.strip() or item.category,
+                        amount=float(amount),
+                        start_year=int(start_year),
+                        useful_life=int(useful_life),
+                        salvage_value=float(salvage_value),
+                        notes=notes.strip(),
+                        spend_curve=spend_curve,
+                    )
+                    _run_model()
+                    st.success("Capital project updated successfully.")
+                except ValueError as exc:
+                    st.error(str(exc))
+
+        remove = st.button(
+            "Remove Project",
+            key=f"remove_capex_{item.item_id}",
+            help="Delete this capital project from the plan.",
+        )
+        if remove:
+            try:
+                manager.remove_item(item.item_id)
+                _run_model()
+                st.success("Capital project removed successfully.")
+            except ValueError as exc:
+                st.error(str(exc))
+
+
 def _render_capex_management() -> None:
     manager: CapexScheduleManager = st.session_state["capex_manager"]
     cfg: CompanyConfig = st.session_state["company_config"]
 
     st.markdown("### Capital Projects")
-    items = manager.list_items()
+    _render_add_capital_project_form(manager, cfg)
+
+    items = sorted(manager.list_items(), key=lambda record: (record.start_year, record.item_id))
+    if items:
+        st.markdown("#### Manage Existing Projects")
+        for item in items:
+            _render_capex_item_editor(item, manager, cfg)
+    else:
+        st.info("No capital projects configured. Use the form above to add one.")
+
     items_data = [item.to_dict() for item in items]
     items_df = pd.DataFrame(items_data)
+    if not items_df.empty:
+        for column in ["amount", "salvage_value"]:
+            if column in items_df.columns:
+                items_df[column] = _currency_series(items_df[column])
     _display_schedule(
         "CAPEX Project Register",
         items_df,

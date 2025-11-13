@@ -1,0 +1,109 @@
+{
+  "company": "Volt Rider",
+  "period": "2026-2030",
+  "executive_summary": {
+    "enterprise_value": 418046550.2708808,
+    "final_cash_balance": 181982329.6875,
+    "total_revenue": 649850000.0,
+    "total_net_profit": 180752329.6875
+  },
+  "yearly_data": [
+    {
+      "year": 2026,
+      "revenue": 79250000.0,
+      "cogs": 47550000.0,
+      "opex": 3072000.0,
+      "ebitda": 28628000.0,
+      "net_profit": 21171000.0,
+      "fcf": 21571000.0,
+      "cash_balance": 22071000.0
+    },
+    {
+      "year": 2027,
+      "revenue": 110950000.0,
+      "cogs": 66570000.0,
+      "opex": 3222000.0,
+      "ebitda": 41158000.0,
+      "net_profit": 30568500.0,
+      "fcf": 30968500.0,
+      "cash_balance": 53009500.0
+    },
+    {
+      "year": 2028,
+      "revenue": 142650000.0,
+      "cogs": 85590000.0,
+      "opex": 3379500.0,
+      "ebitda": 53680500.0,
+      "net_profit": 39960375.0,
+      "fcf": 40360375.0,
+      "cash_balance": 93089875.0
+    },
+    {
+      "year": 2029,
+      "revenue": 158500000.0,
+      "cogs": 95100000.0,
+      "opex": 3544875.0000000005,
+      "ebitda": 59855125.0,
+      "net_profit": 44591343.75,
+      "fcf": 44991343.75,
+      "cash_balance": 137601218.75
+    },
+    {
+      "year": 2030,
+      "revenue": 158500000.0,
+      "cogs": 95100000.0,
+      "opex": 3718518.7500000005,
+      "ebitda": 59681481.25,
+      "net_profit": 44461110.9375,
+      "fcf": 44861110.9375,
+      "cash_balance": 181982329.6875
+    }
+  ],
+  "ratios": {
+    "Profitability": {
+      "Avg Net Margin (%)": 27.692638115893043,
+      "Avg ROE (%)": 48.367625878551394,
+      "Avg ROA (%)": 46.71094232866285
+    },
+    "Liquidity": {
+      "Avg Current Ratio": 651.6718979166667,
+      "Min Current Ratio": 148.47333333333333
+    },
+    "Leverage": {
+      "Avg Debt-to-Equity": 0.009943646174779833,
+      "Final Debt-to-Equity": 0.0
+    },
+    "Efficiency": {
+      "Avg Asset Turnover": 1.7011537439605413
+    }
+  },
+  "scenarios": [
+    {
+      "Scenario": "Pessimistic",
+      "Enterprise Value": 134077568.13765083,
+      "2030 Revenue": 118875000.0,
+      "2030 Net Profit": 19200173.4375,
+      "Avg Profit Margin": 15.835959259829192,
+      "Total FCF": 79182485.9375,
+      "Final Cash Balance": 78412485.9375
+    },
+    {
+      "Scenario": "Base Case",
+      "Enterprise Value": 418046550.2708808,
+      "2030 Revenue": 158500000.0,
+      "2030 Net Profit": 44461110.9375,
+      "Avg Profit Margin": 27.814469444871893,
+      "Total FCF": 182752329.6875,
+      "Final Cash Balance": 181982329.6875
+    },
+    {
+      "Scenario": "Optimistic",
+      "Enterprise Value": 868945290.3599964,
+      "2030 Revenue": 198125000.0,
+      "2030 Net Profit": 71207985.9375,
+      "Avg Profit Margin": 35.75157555589751,
+      "Total FCF": 292414517.1875,
+      "Final Cash Balance": 291644517.1875
+    }
+  ]
+}

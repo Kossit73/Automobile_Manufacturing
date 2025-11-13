@@ -282,6 +282,8 @@ initialize_session_state()
 
 PAGE_OPTIONS = [
     "Dashboard",
+    "Platform Settings",
+    "AI & Machine Learning",
     "Labor Management",
     "CAPEX Management",
     "Financial Model",
@@ -304,31 +306,6 @@ page = st.radio(
 # =====================================================
 
 with st.sidebar:
-    st.markdown("# Platform Settings")
-
-    st.divider()
-
-    # Global Settings
-    st.markdown("### Global Parameters")
-    
-    salary_growth = st.slider(
-        "Annual Salary Growth Rate (%)",
-        min_value=0,
-        max_value=10,
-        value=int(st.session_state.salary_growth_rate * 100),
-        help="Applied to all labor cost projections"
-    )
-    st.session_state.salary_growth_rate = salary_growth / 100
-
-    st.divider()
-
-    # AI & Machine Learning
-    st.markdown("### AI & Machine Learning")
-    _render_ai_settings(st.session_state.ai_payload)
-
-    st.divider()
-
-    # Platform Info
     st.markdown("### Platform Info")
     st.info(
         "**Manufacturing Financial Platform v1.0**\n\n"
@@ -437,7 +414,38 @@ if page == "Dashboard":
         st.metric("Annual Depreciation", f"${depreciation_first_year/1e3:.0f}K")
 
 # =====================================================
-# PAGE 2: LABOR MANAGEMENT
+# PAGE 2: PLATFORM SETTINGS
+# =====================================================
+
+elif page == "Platform Settings":
+    st.markdown("# Platform Settings")
+    st.markdown("## Global Parameters")
+
+    salary_growth = st.slider(
+        "Annual Salary Growth Rate (%)",
+        min_value=0,
+        max_value=10,
+        value=int(st.session_state.salary_growth_rate * 100),
+        help="Applied to all labor cost projections",
+    )
+    st.session_state.salary_growth_rate = salary_growth / 100
+
+    st.caption(
+        "Labor schedules and forecasts will refresh automatically with the selected growth rate."
+    )
+
+# =====================================================
+# PAGE 3: AI & MACHINE LEARNING
+# =====================================================
+
+elif page == "AI & Machine Learning":
+    st.markdown("# AI & Machine Learning")
+    st.markdown("Manage forecasting providers, algorithms, and generative reporting options.")
+
+    _render_ai_settings(st.session_state.ai_payload)
+
+# =====================================================
+# PAGE 4: LABOR MANAGEMENT
 # =====================================================
 
 elif page == "Labor Management":
@@ -586,7 +594,7 @@ elif page == "Labor Management":
                         st.error(f"Error: {str(e)}")
 
 # =====================================================
-# PAGE 3: CAPEX MANAGEMENT
+# PAGE 5: CAPEX MANAGEMENT
 # =====================================================
 
 elif page == "CAPEX Management":
@@ -747,7 +755,7 @@ elif page == "CAPEX Management":
                         st.error(f"Error: {str(e)}")
 
 # =====================================================
-# PAGE 4: FINANCIAL MODEL
+# PAGE 6: FINANCIAL MODEL
 # =====================================================
 
 elif page == "Financial Model":
@@ -890,7 +898,7 @@ elif page == "Financial Model":
             st.info("Run the model to see results")
 
 # =====================================================
-# PAGE 5: REPORTS
+# PAGE 7: REPORTS
 # =====================================================
 
 elif page == "Reports":

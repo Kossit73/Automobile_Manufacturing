@@ -123,6 +123,10 @@ class CompanyConfig:
     wacc: float = 0.12
     terminal_growth: float = 0.03
     working_capital_ratio: float = 0.12
+    receivable_days: float = 45.0
+    inventory_days: float = 30.0
+    payable_days: float = 30.0
+    accrued_expense_ratio: float = 0.04
 
     def __post_init__(self):
         if self.projection_years < 1:
@@ -147,6 +151,12 @@ class CompanyConfig:
                 else:
                     budgets[year] = last_budget
             self.marketing_budget = budgets
+
+        # Guardrail working-capital driver inputs to keep calculations stable.
+        self.receivable_days = max(0.0, float(self.receivable_days))
+        self.inventory_days = max(0.0, float(self.inventory_days))
+        self.payable_days = max(0.0, float(self.payable_days))
+        self.accrued_expense_ratio = max(0.0, float(self.accrued_expense_ratio))
 
 # Default Configuration
 config = CompanyConfig()
@@ -173,15 +183,53 @@ def _carry_forward(mapping: Dict[int, float], year: int, default: float) -> floa
     return default
 
 
-def calculate_working_capital_changes(years: Sequence[int], revenue: Dict[int, float], cfg: CompanyConfig) -> Dict[int, float]:
-    """Derive working capital changes as a ratio of revenue."""
+def calculate_working_capital_positions(
+    years: Sequence[int],
+    revenue: Dict[int, float],
+    cogs: Dict[int, float],
+    opex: Dict[int, float],
+    cfg: CompanyConfig,
+) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float], Dict[int, float], Dict[int, float], Dict[int, float]]:
+    """Return working-capital component balances and their year-over-year changes."""
+
+    receivables: Dict[int, float] = {}
+    inventory: Dict[int, float] = {}
+    payables: Dict[int, float] = {}
+    accrued_expenses: Dict[int, float] = {}
+    net_working_capital: Dict[int, float] = {}
     changes: Dict[int, float] = {}
-    previous_target = 0.0
+
+    sales_day_factor = 1.0 / 365.0
+
+    previous_nwc = 0.0
     for year in years:
-        target_wc = revenue.get(year, 0.0) * cfg.working_capital_ratio
-        changes[year] = target_wc - previous_target
-        previous_target = target_wc
-    return changes
+        rev = revenue.get(year, 0.0)
+        cost = cogs.get(year, 0.0)
+        operating = opex.get(year, 0.0)
+
+        receivables_balance = rev * cfg.receivable_days * sales_day_factor
+        inventory_balance = cost * cfg.inventory_days * sales_day_factor
+        payables_balance = cost * cfg.payable_days * sales_day_factor
+        accrued_balance = operating * cfg.accrued_expense_ratio
+
+        receivables[year] = receivables_balance
+        inventory[year] = inventory_balance
+        payables[year] = payables_balance
+        accrued_expenses[year] = accrued_balance
+
+        net_wc = receivables_balance + inventory_balance - payables_balance - accrued_balance
+        net_working_capital[year] = net_wc
+        changes[year] = net_wc - previous_nwc
+        previous_nwc = net_wc
+
+    return (
+        net_working_capital,
+        changes,
+        receivables,
+        inventory,
+        payables,
+        accrued_expenses,
+    )
 
 # =====================================================
 # 2. PRODUCTION & SALES FORECAST
@@ -389,7 +437,10 @@ def calculate_balance_sheet(
     cash_balance,
     depreciation,
     outstanding_debt,
-    cfi,
+    accounts_receivable,
+    inventory,
+    accounts_payable,
+    accrued_expenses,
 ):
     """Calculate balance sheet items"""
     years_list = list(years)
@@ -424,8 +475,14 @@ def calculate_balance_sheet(
                 accumulated_dep = depreciation * (years_since_start + 1)
             fixed_assets[y] = max(0, total_capex - accumulated_dep)
 
-    current_assets = {y: cash_balance[y] + 200_000 for y in years_list}
-    current_liabilities = {y: 150_000 for y in years_list}
+    current_assets = {
+        y: cash_balance[y] + accounts_receivable.get(y, 0.0) + inventory.get(y, 0.0)
+        for y in years_list
+    }
+    current_liabilities = {
+        y: accounts_payable.get(y, 0.0) + accrued_expenses.get(y, 0.0)
+        for y in years_list
+    }
     long_term_debt = {y: max(0.0, outstanding_debt[y]) for y in years_list}
 
     retained_earnings = {}
@@ -440,7 +497,15 @@ def calculate_balance_sheet(
     total_assets = {y: current_assets[y] + fixed_assets[y] for y in years_list}
     total_liab_equity = {y: current_liabilities[y] + long_term_debt[y] + total_equity[y] for y in years_list}
 
-    return fixed_assets, current_assets, current_liabilities, long_term_debt, total_equity, total_assets, total_liab_equity
+    return (
+        fixed_assets,
+        current_assets,
+        current_liabilities,
+        long_term_debt,
+        total_equity,
+        total_assets,
+        total_liab_equity,
+    )
 
 # =====================================================
 # MAIN CALCULATION ENGINE
@@ -460,8 +525,14 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
     ebitda, ebit, tax, net_profit, depreciation = calculate_income_statement(years, cfg, production_volume, revenue, cogs, opex)
     fcf, discounted_fcf, enterprise_value = calculate_dcf(years, ebit, cfg, depreciation)
 
-    # Cash flow components
-    change_in_working_capital = calculate_working_capital_changes(years, revenue, cfg)
+    (
+        net_working_capital,
+        change_in_working_capital,
+        accounts_receivable,
+        inventory,
+        accounts_payable,
+        accrued_expenses,
+    ) = calculate_working_capital_positions(years, revenue, cogs, opex, cfg)
 
     interest_payment, loan_repayment, outstanding_debt = build_debt_schedule(years, cfg)
 
@@ -486,7 +557,18 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
 
     # Balance sheet
     fixed_assets, current_assets, current_liabilities, long_term_debt, total_equity, total_assets, total_liab_equity = \
-        calculate_balance_sheet(years, cfg, net_profit, cash_balance, depreciation, outstanding_debt, cfi)
+        calculate_balance_sheet(
+            years,
+            cfg,
+            net_profit,
+            cash_balance,
+            depreciation,
+            outstanding_debt,
+            accounts_receivable,
+            inventory,
+            accounts_payable,
+            accrued_expenses,
+        )
     
     balance_check = {y: abs(total_assets[y] - total_liab_equity[y]) < 1e-2 for y in years}
     
@@ -514,6 +596,12 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         'interest_payment': interest_payment,
         'loan_repayment': loan_repayment,
         'outstanding_debt': outstanding_debt,
+        'accounts_receivable': accounts_receivable,
+        'inventory': inventory,
+        'accounts_payable': accounts_payable,
+        'accrued_expenses': accrued_expenses,
+        'net_working_capital': net_working_capital,
+        'change_in_working_capital': change_in_working_capital,
         'fixed_assets': fixed_assets,
         'current_assets': current_assets,
         'current_liabilities': current_liabilities,

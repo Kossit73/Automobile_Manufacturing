@@ -20,14 +20,41 @@ __all__ = ["DataFrame", "Series", "Index", "RangeIndex"]
 class Index(list):
     """Simple list-backed index with a pandas-like ``tolist`` helper."""
 
-    def __init__(self, values: Iterable[Any] = ()):  # type: ignore[override]
+    def __init__(self, values: Iterable[Any] = (), name: Optional[str] = None):  # type: ignore[override]
         super().__init__(values)
+        self._name: Optional[str] = name
 
     def tolist(self) -> List[Any]:
         return list(self)
 
     def copy(self) -> "Index":  # type: ignore[override]
-        return Index(self)
+        return Index(self, name=self._name)
+
+    # ------------------------------------------------------------------
+    # Name metadata
+    # ------------------------------------------------------------------
+    @property
+    def name(self) -> Optional[str]:
+        return self._name
+
+    @name.setter
+    def name(self, value: Optional[str]) -> None:
+        self._name = value
+
+    @property
+    def names(self) -> List[Optional[str]]:
+        return [self._name]
+
+    @names.setter
+    def names(self, value: Optional[Sequence[Optional[str]]]) -> None:
+        if value is None:
+            self._name = None
+            return
+        if not isinstance(value, Sequence):
+            raise TypeError("Index.names expects a sequence of names")
+        if len(value) != 1:
+            raise ValueError("Only single-level indexes are supported")
+        self._name = value[0]
 
     @property
     def is_unique(self) -> bool:
@@ -59,18 +86,18 @@ class Index(list):
         if isinstance(level, int):
             if level not in (0, -1):
                 raise IndexError("Index level out of range")
-            return Index(self)
+            return Index(self, name=self._name)
         if level in (None, ""):
-            return Index(self)
+            return Index(self, name=self._name)
         # Fall back to the single level for unnamed indexes, matching pandas
         # which treats the only level as addressable via any provided name.
-        return Index(self)
+        return Index(self, name=self._name)
 
 
 class RangeIndex(Index):
     """Minimal implementation of :class:`pandas.RangeIndex`."""
 
-    def __init__(self, start: int = 0, stop: Optional[int] = None, step: int = 1):
+    def __init__(self, start: int = 0, stop: Optional[int] = None, step: int = 1, name: Optional[str] = None):
         if step == 0:
             raise ValueError("RangeIndex step must not be zero")
         if stop is None:
@@ -79,14 +106,14 @@ class RangeIndex(Index):
         self.start = int(start)
         self.stop = int(stop)
         self.step = int(step)
-        super().__init__(range(self.start, self.stop, self.step))
+        super().__init__(range(self.start, self.stop, self.step), name=name)
 
     @classmethod
-    def from_range(cls, range_obj: range) -> "RangeIndex":
-        return cls(range_obj.start, range_obj.stop, range_obj.step)
+    def from_range(cls, range_obj: range, name: Optional[str] = None) -> "RangeIndex":
+        return cls(range_obj.start, range_obj.stop, range_obj.step, name=name)
 
     def copy(self) -> "RangeIndex":  # type: ignore[override]
-        return RangeIndex(self.start, self.stop, self.step)
+        return RangeIndex(self.start, self.stop, self.step, name=self._name)
 
     def __repr__(self) -> str:
         return f"RangeIndex(start={self.start}, stop={self.stop}, step={self.step})"
@@ -99,10 +126,10 @@ class RangeIndex(Index):
         if isinstance(level, int):
             if level not in (0, -1):
                 raise IndexError("Index level out of range")
-            return RangeIndex(self.start, self.stop, self.step)
+            return RangeIndex(self.start, self.stop, self.step, name=self._name)
         if level in (None, ""):
-            return RangeIndex(self.start, self.stop, self.step)
-        return RangeIndex(self.start, self.stop, self.step)
+            return RangeIndex(self.start, self.stop, self.step, name=self._name)
+        return RangeIndex(self.start, self.stop, self.step, name=self._name)
 
 
 def _coerce_iterable(values: Optional[Iterable[Any]]) -> List[Any]:

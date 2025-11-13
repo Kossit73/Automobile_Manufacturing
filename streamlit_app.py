@@ -104,7 +104,8 @@ def _ensure_state() -> None:
         st.session_state["labor_manager"] = initialize_default_labor_structure()
 
     if "capex_manager" not in st.session_state:
-        st.session_state["capex_manager"] = initialize_default_capex()
+        manager = CapexScheduleManager()
+        st.session_state["capex_manager"] = initialize_default_capex(manager)
 
     if "company_config" not in st.session_state:
         cfg = CompanyConfig()

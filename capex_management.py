@@ -150,6 +150,10 @@ def initialize_default_capex(manager: Optional[CapexScheduleManager] = None) -> 
 
     manager = manager or CapexScheduleManager()
 
+    # Avoid duplicating defaults when an existing manager already has entries.
+    if manager.items:
+        return manager
+
     # Add some default capex items
     manager.add_item(
         name="Land Acquisition",

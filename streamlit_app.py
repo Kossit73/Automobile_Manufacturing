@@ -15,7 +15,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # Import platform modules
-from financial_model import run_financial_model, CompanyConfig
+from financial_model import (
+    run_financial_model,
+    CompanyConfig,
+    generate_financial_statements,
+    generate_labor_statement,
+)
 from labor_management import (
     initialize_default_labor_structure, LaborScheduleManager, LaborCostSchedule,
     ProductionLinkedLabor, LaborType, EmploymentStatus, JobCategory
@@ -130,6 +135,18 @@ def _collect_series(model: Dict[str, Any], keys: Sequence[str], years: Sequence[
     """Convenience helper to gather multiple model series as ordered lists."""
 
     return {key: _series_for_years(model.get(key), years) for key in keys}
+
+
+def _get_start_year() -> int:
+    """Resolve the active model start year with a safe fallback."""
+
+    default_year = CompanyConfig().start_year
+    model = st.session_state.get("financial_model")
+    if isinstance(model, dict):
+        cfg = model.get("config")
+        if isinstance(cfg, CompanyConfig):
+            return cfg.start_year
+    return default_year
 
 
 def _render_ai_settings(payload: Dict[str, Any], container: Optional[DeltaGenerator] = None) -> None:
@@ -265,23 +282,34 @@ def initialize_session_state():
 
 initialize_session_state()
 
+PAGE_OPTIONS = [
+    "🏠 Dashboard",
+    "👥 Labor Management",
+    "🏗️ CAPEX Management",
+    "💰 Financial Model",
+    "📈 Reports",
+]
+
+default_page = st.session_state.get("active_page", PAGE_OPTIONS[0])
+page_index = PAGE_OPTIONS.index(default_page) if default_page in PAGE_OPTIONS else 0
+page = st.radio(
+    "Navigate Modules",
+    PAGE_OPTIONS,
+    horizontal=True,
+    index=page_index,
+    key="active_page",
+    help="Switch between dashboards and management tools",
+)
+
 # =====================================================
-# SIDEBAR - NAVIGATION & SETTINGS
+# SIDEBAR - SETTINGS
 # =====================================================
 
 with st.sidebar:
     st.markdown("# ⚙️ Platform Settings")
-    
-    # Navigation
-    page = st.radio(
-        "Select Module:",
-        ["🏠 Dashboard", "👥 Labor Management", "🏗️ CAPEX Management", 
-         "💰 Financial Model", "📈 Reports"],
-        help="Choose which module to work with"
-    )
-    
+
     st.divider()
-    
+
     # Global Settings
     st.markdown("### 📋 Global Parameters")
     
@@ -601,7 +629,36 @@ elif page == "🏗️ CAPEX Management":
         with col3:
             deprec_schedule = st.session_state.capex_manager.depreciation_schedule(2026, 5)
             st.metric("2026 Depreciation", f"${deprec_schedule.get(2026, 0)/1e3:.0f}K")
-    
+
+        capex_start = _get_start_year()
+        spend_schedule = st.session_state.capex_manager.yearly_capex_schedule(capex_start, 5)
+        st.markdown("### 🗓️ CAPEX Spend Schedule")
+        if spend_schedule:
+            spend_years = sorted(spend_schedule.keys())
+            spend_df = pd.DataFrame({
+                "Year": spend_years,
+                "CAPEX Spend": [spend_schedule[y] for y in spend_years],
+            })
+            spend_display = spend_df.copy()
+            spend_display["CAPEX Spend"] = spend_display["CAPEX Spend"].apply(lambda x: f"${x/1e6:.2f}M")
+            st.dataframe(spend_display, use_container_width=True, hide_index=True)
+        else:
+            st.info("No capital spending scheduled for the selected horizon")
+
+        depreciation_schedule = st.session_state.capex_manager.depreciation_schedule(capex_start, 5)
+        st.markdown("### 📉 Depreciation Schedule")
+        if depreciation_schedule:
+            dep_years = sorted(depreciation_schedule.keys())
+            dep_df = pd.DataFrame({
+                "Year": dep_years,
+                "Depreciation": [depreciation_schedule[y] for y in dep_years],
+            })
+            dep_display = dep_df.copy()
+            dep_display["Depreciation"] = dep_display["Depreciation"].apply(lambda x: f"${x/1e6:.2f}M")
+            st.dataframe(dep_display, use_container_width=True, hide_index=True)
+        else:
+            st.info("Depreciation schedule unavailable")
+
     # TAB 2: Add Asset
     with tab2:
         st.markdown("## Add New Capital Asset")
@@ -788,6 +845,47 @@ elif page == "💰 Financial Model":
             fig = px.line(chart_df, x='Year', y=['Revenue', 'EBIT', 'FCF'], markers=True,
                          title="5-Year Forecast")
             st.plotly_chart(fig, use_container_width=True)
+
+            income_df, cashflow_df, balance_df = generate_financial_statements(model)
+
+            st.markdown("### 📑 Income Statement Schedule")
+            income_display = income_df.copy()
+            for col in income_display.columns:
+                if col != "Year":
+                    income_display[col] = income_display[col].apply(lambda x: f"${x/1e6:.2f}M")
+            st.dataframe(income_display, use_container_width=True, hide_index=True)
+
+            st.markdown("### 💵 Cash Flow Schedule")
+            cash_display = cashflow_df.copy()
+            for col in cash_display.columns:
+                if col != "Year":
+                    cash_display[col] = cash_display[col].apply(lambda x: f"${x/1e6:.2f}M")
+            st.dataframe(cash_display, use_container_width=True, hide_index=True)
+
+            st.markdown("### 🧾 Balance Sheet Schedule")
+            balance_display = balance_df.copy()
+            for col in balance_display.columns:
+                if col not in ("Year", "Balanced?"):
+                    balance_display[col] = balance_display[col].apply(lambda x: f"${x/1e6:.2f}M")
+            st.dataframe(balance_display, use_container_width=True, hide_index=True)
+
+            debt_df = pd.DataFrame({
+                "Year": years,
+                "Interest Payment": [model['interest_payment'][y] for y in years],
+                "Principal Payment": [model['loan_repayment'][y] for y in years],
+                "Ending Balance": [model['outstanding_debt'][y] for y in years],
+            })
+            debt_display = debt_df.copy()
+            for col in ("Interest Payment", "Principal Payment", "Ending Balance"):
+                debt_display[col] = debt_display[col].apply(lambda x: f"${x/1e6:.2f}M")
+
+            st.markdown("### 🏦 Debt Amortization Schedule")
+            st.dataframe(debt_display, use_container_width=True, hide_index=True)
+
+            labor_statement = generate_labor_statement(model)
+            if not labor_statement.empty:
+                st.markdown("### 👥 Labor Cost Schedule")
+                st.dataframe(labor_statement, use_container_width=True, hide_index=True)
         else:
             st.info("Run the model to see results")
 
@@ -831,12 +929,20 @@ elif page == "📈 Reports":
         - Headcount: {st.session_state.labor_manager.get_total_headcount(2026)} employees
         - Labor Cost: ${(st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)['Direct'] + st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)['Indirect'])/1e6:.2f}M
         """
-        
+
         st.markdown(summary_text)
-        
+
+        forecast_display = export_df.copy()
+        for col in forecast_display.columns:
+            if col != "Year":
+                forecast_display[col] = forecast_display[col].apply(lambda x: f"${x/1e6:.2f}M")
+
+        st.markdown("## Financial Forecast Schedule")
+        st.dataframe(forecast_display, use_container_width=True, hide_index=True)
+
         # Export buttons
         st.markdown("## Download Reports")
-        
+
         # Financial summary
         export_df = pd.DataFrame({
             'Year': years,
@@ -859,7 +965,15 @@ elif page == "📈 Reports":
         # Labor summary
         cost_schedule = LaborCostSchedule(st.session_state.labor_manager)
         labor_df = cost_schedule.generate_5year_schedule(salary_growth=st.session_state.salary_growth_rate)
-        
+
+        labor_display = labor_df.copy()
+        currency_cols = ["Direct Labor Cost", "Indirect Labor Cost", "Total Labor Cost"]
+        for col in currency_cols:
+            labor_display[col] = labor_display[col].apply(lambda x: f"${x/1e6:.2f}M")
+
+        st.markdown("## Labor Cost Schedule")
+        st.dataframe(labor_display, use_container_width=True, hide_index=True)
+
         csv = labor_df.to_csv(index=False)
         st.download_button(
             "📥 Download Labor Schedule (CSV)",
@@ -867,6 +981,30 @@ elif page == "📈 Reports":
             "labor_schedule.csv",
             "text/csv"
         )
+
+        capex_start_year = _get_start_year()
+        capex_schedule = st.session_state.capex_manager.yearly_capex_schedule(capex_start_year, 5)
+        capex_display = pd.DataFrame({
+            "Year": sorted(capex_schedule.keys()),
+            "CAPEX Spend": [capex_schedule[y] for y in sorted(capex_schedule.keys())]
+        })
+        capex_display["CAPEX Spend"] = capex_display["CAPEX Spend"].apply(lambda x: f"${x/1e6:.2f}M")
+
+        st.markdown("## CAPEX Spend Schedule")
+        st.dataframe(capex_display, use_container_width=True, hide_index=True)
+
+        debt_df = pd.DataFrame({
+            "Year": years,
+            "Interest Payment": [model['interest_payment'][y] for y in years],
+            "Principal Payment": [model['loan_repayment'][y] for y in years],
+            "Ending Balance": [model['outstanding_debt'][y] for y in years],
+        })
+        debt_display = debt_df.copy()
+        for col in ("Interest Payment", "Principal Payment", "Ending Balance"):
+            debt_display[col] = debt_display[col].apply(lambda x: f"${x/1e6:.2f}M")
+
+        st.markdown("## Debt Amortization Schedule")
+        st.dataframe(debt_display, use_container_width=True, hide_index=True)
     else:
         st.info("Run the financial model first to generate reports")
 

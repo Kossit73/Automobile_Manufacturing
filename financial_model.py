@@ -198,6 +198,36 @@ def calculate_dcf(years: range, ebit, cfg: CompanyConfig, depreciation) -> Tuple
 # =====================================================
 # 7. CASH FLOW STATEMENT CALCULATION
 # =====================================================
+def build_debt_schedule(years: range, cfg: CompanyConfig) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float]]:
+    """Construct interest, principal, and ending balance schedules for the loan."""
+    interest_payment: Dict[int, float] = {}
+    principal_payment: Dict[int, float] = {}
+    ending_balance: Dict[int, float] = {}
+
+    balance = cfg.loan_amount
+    for y in years:
+        years_since_start = y - cfg.start_year
+        if years_since_start < 0:
+            interest = 0.0
+            principal = 0.0
+        elif years_since_start >= cfg.loan_term or balance <= 0:
+            interest = 0.0
+            principal = 0.0
+        else:
+            interest = balance * cfg.loan_interest_rate
+            scheduled_principal = cfg.loan_amount / cfg.loan_term
+            principal = min(scheduled_principal, balance)
+            balance = max(0.0, balance - principal)
+
+        interest_payment[y] = interest
+        principal_payment[y] = principal
+        ending_balance[y] = balance
+
+    return interest_payment, principal_payment, ending_balance
+
+# =====================================================
+# 7. CASH FLOW STATEMENT CALCULATION
+# =====================================================
 def calculate_cash_flow(years: range, cfg: CompanyConfig, net_profit, depreciation, cfo, cfi, cff):
     """Calculate cumulative cash balance"""
     cash_balance = {}
@@ -212,8 +242,8 @@ def calculate_cash_flow(years: range, cfg: CompanyConfig, net_profit, depreciati
 # =====================================================
 # 8. BALANCE SHEET CALCULATION
 # =====================================================
-def calculate_balance_sheet(years: range, cfg: CompanyConfig, net_profit, cash_balance, 
-                           depreciation, loan_repayment, cfi):
+def calculate_balance_sheet(years: range, cfg: CompanyConfig, net_profit, cash_balance,
+                           depreciation, outstanding_debt, cfi):
     """Calculate balance sheet items"""
     # Determine total capex and compute fixed assets net of accumulated depreciation
     if cfg.capex_manager is not None:
@@ -240,12 +270,15 @@ def calculate_balance_sheet(years: range, cfg: CompanyConfig, net_profit, cash_b
         fixed_assets = {}
         for y in years:
             years_since_start = y - cfg.start_year
-            accumulated_dep = depreciation * (years_since_start + 1)
+            if isinstance(depreciation, dict):
+                accumulated_dep = sum(depreciation.get(t, 0.0) for t in years if t <= y)
+            else:
+                accumulated_dep = depreciation * (years_since_start + 1)
             fixed_assets[y] = max(0, total_capex - accumulated_dep)
     
     current_assets = {y: cash_balance[y] + 200_000 for y in years}
     current_liabilities = {y: 150_000 for y in years}
-    long_term_debt = {y: cfg.loan_amount - (loan_repayment[y] * (y - cfg.start_year + 1)) for y in years}
+    long_term_debt = {y: max(0.0, outstanding_debt[y]) for y in years}
     
     retained_earnings = {}
     for i, y in enumerate(years):
@@ -283,8 +316,7 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
     change_in_working_capital = {cfg.start_year: -500_000, cfg.start_year + 1: -250_000,
                                  cfg.start_year + 2: 0, cfg.start_year + 3: 200_000, cfg.start_year + 4: 200_000}
 
-    interest_payment = {y: cfg.loan_amount * cfg.loan_interest_rate for y in years}
-    loan_repayment = {y: cfg.loan_amount / cfg.loan_term if y - cfg.start_year < cfg.loan_term else 0 for y in years}
+    interest_payment, loan_repayment, outstanding_debt = build_debt_schedule(years, cfg)
 
     # Determine CAPEX cash flows and total capex
     if cfg.capex_manager is not None:
@@ -301,12 +333,13 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         dep_y = depreciation[y] if isinstance(depreciation, dict) else depreciation
         cfo[y] = net_profit[y] + dep_y - change_in_working_capital.get(y, 0)
 
-    cff = {y: (cfg.equity_investment + cfg.loan_amount) if y == cfg.start_year else -loan_repayment[y] - interest_payment[y] for y in years}
+    cff = {y: (cfg.equity_investment + cfg.loan_amount) if y == cfg.start_year else -loan_repayment[y] - interest_payment[y]
+           for y in years}
     cash_balance = calculate_cash_flow(years, cfg, net_profit, depreciation, cfo, cfi, cff)
-    
+
     # Balance sheet
     fixed_assets, current_assets, current_liabilities, long_term_debt, total_equity, total_assets, total_liab_equity = \
-        calculate_balance_sheet(years, cfg, net_profit, cash_balance, depreciation, loan_repayment, cfi)
+        calculate_balance_sheet(years, cfg, net_profit, cash_balance, depreciation, outstanding_debt, cfi)
     
     balance_check = {y: abs(total_assets[y] - total_liab_equity[y]) < 1e-2 for y in years}
     
@@ -331,6 +364,9 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         'cfi': cfi,
         'cff': cff,
         'cash_balance': cash_balance,
+        'interest_payment': interest_payment,
+        'loan_repayment': loan_repayment,
+        'outstanding_debt': outstanding_debt,
         'fixed_assets': fixed_assets,
         'current_assets': current_assets,
         'current_liabilities': current_liabilities,

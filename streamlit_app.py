@@ -9,6 +9,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
+from typing import Any, Dict, Optional
+from streamlit.delta_generator import DeltaGenerator
 import plotly.express as px
 import plotly.graph_objects as go
 
@@ -19,6 +21,178 @@ from labor_management import (
     ProductionLinkedLabor, LaborType, EmploymentStatus, JobCategory
 )
 from capex_management import initialize_default_capex, CapexScheduleManager
+
+# =====================================================
+# AI & MACHINE LEARNING CONFIGURATION CONSTANTS
+# =====================================================
+
+AI_PROVIDER_OPTIONS = (
+    "OpenAI",
+    "Azure OpenAI",
+    "Anthropic",
+    "Google Vertex AI",
+    "AWS Bedrock",
+)
+
+ML_METHOD_LABELS: Dict[str, str] = {
+    "linear_regression": "Linear Regression",
+    "random_forest": "Random Forest",
+    "xgboost": "Gradient Boosting (XGBoost)",
+    "prophet": "Prophet Forecasting",
+    "lstm": "LSTM Neural Network",
+    "arima": "ARIMA Time Series",
+}
+
+GEN_AI_FEATURE_LABELS: Dict[str, str] = {
+    "summary": "Executive Summary",
+    "risk_alerts": "Risk Alerts",
+    "opportunities": "Growth Opportunities",
+    "scenario_analysis": "Scenario Insights",
+    "sensitivity": "Sensitivity Commentary",
+}
+
+ML_LABEL_TO_CODE: Dict[str, str] = {label: code for code, label in ML_METHOD_LABELS.items()}
+GEN_AI_LABEL_TO_CODE: Dict[str, str] = {
+    label: code for code, label in GEN_AI_FEATURE_LABELS.items()
+}
+
+
+def _payload_to_ai_settings(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Normalize persisted payload into session-ready AI settings."""
+
+    payload = payload or {}
+    ml_methods = payload.get("ml_methods", ["linear_regression"])
+    features = payload.get("generative_features", ["summary"])
+
+    return {
+        "enabled": bool(payload.get("enabled", False)),
+        "provider": payload.get("provider", "OpenAI"),
+        "model": payload.get("model", "gpt-4"),
+        "forecast_horizon": int(payload.get("forecast_horizon", 3)),
+        "ml_methods": ml_methods if isinstance(ml_methods, list) else ["linear_regression"],
+        "generative_features": features if isinstance(features, list) else ["summary"],
+        "api_key": payload.get("api_key", ""),
+    }
+
+
+def _ai_settings_to_payload(settings: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    """Persist AI settings back into a mutable payload dictionary."""
+
+    payload.clear()
+    payload.update(
+        {
+            "enabled": bool(settings.get("enabled", False)),
+            "provider": settings.get("provider", "OpenAI"),
+            "model": settings.get("model", "gpt-4"),
+            "forecast_horizon": int(settings.get("forecast_horizon", 3)),
+            "ml_methods": settings.get("ml_methods", ["linear_regression"]),
+            "generative_features": settings.get("generative_features", ["summary"]),
+            "api_key": settings.get("api_key", ""),
+        }
+    )
+
+
+def _rerun() -> None:
+    """Trigger a rerun of the Streamlit app to apply updated configuration."""
+
+    st.experimental_rerun()
+
+
+def _render_ai_settings(payload: Dict[str, Any], container: Optional[DeltaGenerator] = None) -> None:
+    target = container or st
+    settings = st.session_state.setdefault("ai_settings", _payload_to_ai_settings(payload))
+    st.session_state.setdefault("ai_api_key", settings.get("api_key", ""))
+
+    provider_options = list(AI_PROVIDER_OPTIONS)
+    if settings.get("provider") not in provider_options:
+        provider_options.append(settings.get("provider"))
+
+    current_provider = settings.get("provider", "OpenAI")
+    try:
+        provider_index = provider_options.index(current_provider)
+    except ValueError:
+        provider_index = 0
+
+    ml_defaults = [
+        ML_METHOD_LABELS.get(code, code.replace("_", " ").title())
+        for code in settings.get("ml_methods", ["linear_regression"])
+    ]
+    feature_defaults = [
+        GEN_AI_FEATURE_LABELS.get(code, code.replace("_", " ").title())
+        for code in settings.get("generative_features", ["summary"])
+    ]
+
+    form = target.form("ai_settings_form")
+    with form:
+        enabled = form.checkbox(
+            "Enable AI Enhancements",
+            value=bool(settings.get("enabled", False)),
+            help="Toggle machine-learning forecasts and generative commentary.",
+        )
+        provider = form.selectbox(
+            "Provider",
+            provider_options,
+            index=provider_index,
+            help="Select the API provider powering generative insights.",
+        )
+        model = form.text_input(
+            "Model",
+            value=settings.get("model", "gpt-4"),
+            help="Name of the deployed model (for example `gpt-4o-mini`).",
+        )
+        horizon = form.number_input(
+            "Forecast Horizon (years)",
+            min_value=0,
+            max_value=20,
+            value=int(settings.get("forecast_horizon", 3)),
+            step=1,
+            help="Number of additional years used for machine-learning revenue forecasts.",
+        )
+
+        ml_selection = form.multiselect(
+            "Machine Learning Methods",
+            list(ML_METHOD_LABELS.values()),
+            default=ml_defaults,
+            help="Choose algorithms applied to projected net revenue.",
+        )
+        feature_selection = form.multiselect(
+            "Generative Features",
+            list(GEN_AI_FEATURE_LABELS.values()),
+            default=feature_defaults,
+            help="Pick the narrative focus areas generated by the AI summary.",
+        )
+        api_key = form.text_input(
+            "API Key",
+            value=st.session_state.get("ai_api_key", ""),
+            type="password",
+            help="Store your provider API key securely. Keys are retained only for the current session.",
+        )
+
+        submitted = form.form_submit_button("Save AI Configuration")
+
+    if submitted:
+        ml_codes = [ML_LABEL_TO_CODE.get(label, label.replace(" ", "_").lower()) for label in ml_selection]
+        feature_codes = [
+            GEN_AI_LABEL_TO_CODE.get(label, label.replace(" ", "_").lower())
+            for label in feature_selection
+        ]
+
+        settings.update(
+            {
+                "enabled": enabled,
+                "provider": provider,
+                "model": model.strip() or "gpt-4",
+                "forecast_horizon": int(horizon),
+                "ml_methods": ml_codes or ["linear_regression"],
+                "generative_features": feature_codes or ["summary"],
+                "api_key": api_key.strip(),
+            }
+        )
+        st.session_state["ai_settings"] = settings
+        st.session_state["ai_api_key"] = settings.get("api_key", "")
+        _ai_settings_to_payload(settings, payload)
+        st.success("AI configuration updated. Rerunning the model with the new settings.")
+        _rerun()
 
 # =====================================================
 # PAGE CONFIG
@@ -42,13 +216,16 @@ def initialize_session_state():
     
     if 'capex_manager' not in st.session_state:
         st.session_state.capex_manager = initialize_default_capex(CapexScheduleManager())
-    
+
     if 'financial_model' not in st.session_state:
         st.session_state.financial_model = None
-    
+
+    if 'ai_payload' not in st.session_state:
+        st.session_state.ai_payload = {}
+
     if 'salary_growth_rate' not in st.session_state:
         st.session_state.salary_growth_rate = 0.05
-    
+
     if 'last_update' not in st.session_state:
         st.session_state.last_update = None
 
@@ -82,9 +259,15 @@ with st.sidebar:
         help="Applied to all labor cost projections"
     )
     st.session_state.salary_growth_rate = salary_growth / 100
-    
+
     st.divider()
-    
+
+    # AI & Machine Learning
+    st.markdown("### 🤖 AI & Machine Learning")
+    _render_ai_settings(st.session_state.ai_payload)
+
+    st.divider()
+
     # Platform Info
     st.markdown("### ℹ️ Platform Info")
     st.info(

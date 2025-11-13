@@ -9,7 +9,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence, List
 from streamlit.delta_generator import DeltaGenerator
 import plotly.express as px
 import plotly.graph_objects as go
@@ -96,6 +96,40 @@ def _rerun() -> None:
     """Trigger a rerun of the Streamlit app to apply updated configuration."""
 
     st.experimental_rerun()
+
+
+def _get_model_years(model: Dict[str, Any]) -> List[int]:
+    """Return an ordered list of projection years from the financial model."""
+
+    years = model.get("years", [])
+    if isinstance(years, range):
+        return list(years)
+    if isinstance(years, (list, tuple)):
+        return list(years)
+    return list(years) if years else []
+
+
+def _series_for_years(data: Any, years: Sequence[int]) -> List[Any]:
+    """Normalize model series (dict keyed by year or iterable) into a list."""
+
+    if data is None:
+        return []
+    if isinstance(data, dict):
+        return [data[year] for year in years if year in data]
+    if isinstance(data, (list, tuple)):
+        return list(data)
+    if hasattr(data, "values"):
+        try:
+            return list(data.values())
+        except TypeError:
+            pass
+    return [data]
+
+
+def _collect_series(model: Dict[str, Any], keys: Sequence[str], years: Sequence[int]) -> Dict[str, List[Any]]:
+    """Convenience helper to gather multiple model series as ordered lists."""
+
+    return {key: _series_for_years(model.get(key), years) for key in keys}
 
 
 def _render_ai_settings(payload: Dict[str, Any], container: Optional[DeltaGenerator] = None) -> None:
@@ -293,18 +327,24 @@ if page == "🏠 Dashboard":
     )
     model = run_financial_model(cfg)
     st.session_state.financial_model = model
-    
+    years = _get_model_years(model)
+    series = _collect_series(
+        model,
+        ["revenue", "net_profit", "ebit", "fcf", "cash_balance", "depreciation", "cogs", "opex"],
+        years,
+    )
+
     # Key Metrics
     st.markdown("## 📈 Key Performance Indicators")
-    
+
     col1, col2, col3, col4 = st.columns(4)
-    
+
     with col1:
-        revenue_2026 = model['revenue'][0]
+        revenue_2026 = series["revenue"][0] if series["revenue"] else 0
         st.metric("2026 Revenue", f"${revenue_2026/1e6:.1f}M", delta="Year 1")
-    
+
     with col2:
-        profit_2026 = model['net_profit'][0]
+        profit_2026 = series["net_profit"][0] if series["net_profit"] else 0
         margin = (profit_2026/revenue_2026*100) if revenue_2026 > 0 else 0
         st.metric("2026 Net Profit", f"${profit_2026/1e6:.1f}M", delta=f"{margin:.1f}%")
     
@@ -315,22 +355,22 @@ if page == "🏠 Dashboard":
     with col4:
         ev = model['enterprise_value']
         st.metric("Enterprise Value", f"${ev/1e6:.1f}M", delta="DCF")
-    
+
     # Financial Overview
     st.markdown("## 💼 5-Year Financial Forecast")
-    
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
         forecast_df = pd.DataFrame({
-            'Year': range(2026, 2031),
-            'Revenue ($M)': [x/1e6 for x in model['revenue']],
-            'EBIT ($M)': [x/1e6 for x in model['ebit']],
-            'Net Profit ($M)': [x/1e6 for x in model['net_profit']],
-            'FCF ($M)': [x/1e6 for x in model['fcf']]
+            'Year': years,
+            'Revenue ($M)': [x/1e6 for x in series['revenue']],
+            'EBIT ($M)': [x/1e6 for x in series['ebit']],
+            'Net Profit ($M)': [x/1e6 for x in series['net_profit']],
+            'FCF ($M)': [x/1e6 for x in series['fcf']]
         })
         st.dataframe(forecast_df, use_container_width=True, hide_index=True)
-    
+
     with col2:
         fig = px.line(
             forecast_df,
@@ -367,7 +407,8 @@ if page == "🏠 Dashboard":
         st.markdown("### Capital Assets (2026)")
         st.metric("Total CAPEX", f"${total_capex/1e6:.2f}M")
         st.metric("# Assets", f"{len(capex_items)}")
-        st.metric("Annual Depreciation", f"${model['depreciation'][0]/1e3:.0f}K")
+        depreciation_first_year = series["depreciation"][0] if series["depreciation"] else 0
+        st.metric("Annual Depreciation", f"${depreciation_first_year/1e3:.0f}K")
 
 # =====================================================
 # PAGE 2: LABOR MANAGEMENT
@@ -700,39 +741,48 @@ elif page == "💰 Financial Model":
     with tab2:
         if st.session_state.financial_model:
             model = st.session_state.financial_model
-            
+            years = _get_model_years(model)
+            series = _collect_series(
+                model,
+                ["revenue", "ebit", "fcf", "cash_balance"],
+                years,
+            )
+
             st.markdown("## Financial Results")
-            
+
             # Metrics
             col1, col2, col3, col4 = st.columns(4)
-            
+
             with col1:
                 st.metric("Enterprise Value", f"${model['enterprise_value']/1e6:.1f}M")
             with col2:
-                st.metric("5-Year FCF", f"${sum(model['fcf'])/1e6:.1f}M")
+                total_fcf = sum(series["fcf"]) if series["fcf"] else 0
+                st.metric("5-Year FCF", f"${total_fcf/1e6:.1f}M")
             with col3:
-                ev_revenue = model['enterprise_value'] / model['revenue'][0]
+                first_revenue = series["revenue"][0] if series["revenue"] else 0
+                ev_revenue = (model['enterprise_value'] / first_revenue) if first_revenue else 0
                 st.metric("EV/Revenue", f"{ev_revenue:.1f}x")
             with col4:
-                st.metric("Terminal Value", f"${model['revenue'][4]*5/1e6:.1f}M")
-            
+                terminal_revenue = series["revenue"][-1] if series["revenue"] else 0
+                st.metric("Terminal Value", f"${terminal_revenue*5/1e6:.1f}M")
+
             # Forecast table
             forecast_df = pd.DataFrame({
-                'Year': range(2026, 2031),
-                'Revenue': [f"${x/1e6:.1f}M" for x in model['revenue']],
-                'EBIT': [f"${x/1e6:.1f}M" for x in model['ebit']],
-                'FCF': [f"${x/1e6:.1f}M" for x in model['fcf']],
-                'Cash': [f"${x/1e6:.1f}M" for x in model['cash_balance']]
+                'Year': years,
+                'Revenue': [f"${x/1e6:.1f}M" for x in series['revenue']],
+                'EBIT': [f"${x/1e6:.1f}M" for x in series['ebit']],
+                'FCF': [f"${x/1e6:.1f}M" for x in series['fcf']],
+                'Cash': [f"${x/1e6:.1f}M" for x in series['cash_balance']]
             })
-            
+
             st.dataframe(forecast_df, use_container_width=True, hide_index=True)
-            
+
             # Charts
             chart_df = pd.DataFrame({
-                'Year': range(2026, 2031),
-                'Revenue': model['revenue'],
-                'EBIT': model['ebit'],
-                'FCF': model['fcf']
+                'Year': years,
+                'Revenue': series['revenue'],
+                'EBIT': series['ebit'],
+                'FCF': series['fcf']
             })
             
             fig = px.line(chart_df, x='Year', y=['Revenue', 'EBIT', 'FCF'], markers=True,
@@ -750,21 +800,33 @@ elif page == "📈 Reports":
     
     if st.session_state.financial_model:
         model = st.session_state.financial_model
-        
+        years = _get_model_years(model)
+        series = _collect_series(
+            model,
+            ["revenue", "ebit", "net_profit", "fcf", "cogs", "opex"],
+            years,
+        )
+
         # Summary Report
         st.markdown("## Executive Summary")
-        
+
+        first_revenue = series["revenue"][0] if series["revenue"] else 0
+        first_ebit = series["ebit"][0] if series["ebit"] else 0
+        first_net_profit = series["net_profit"][0] if series["net_profit"] else 0
+        first_fcf = series["fcf"][0] if series["fcf"] else 0
+        total_fcf = sum(series["fcf"]) if series["fcf"] else 0
+
         summary_text = f"""
         **2026 Financials:**
-        - Revenue: ${model['revenue'][0]/1e6:.1f}M
-        - EBIT: ${model['ebit'][0]/1e6:.1f}M
-        - Net Profit: ${model['net_profit'][0]/1e6:.1f}M
-        - FCF: ${model['fcf'][0]/1e6:.1f}M
-        
+        - Revenue: ${first_revenue/1e6:.1f}M
+        - EBIT: ${first_ebit/1e6:.1f}M
+        - Net Profit: ${first_net_profit/1e6:.1f}M
+        - FCF: ${first_fcf/1e6:.1f}M
+
         **Valuation:**
         - Enterprise Value: ${model['enterprise_value']/1e6:.1f}M
-        - 5-Year FCF: ${sum(model['fcf'])/1e6:.1f}M
-        
+        - 5-Year FCF: ${total_fcf/1e6:.1f}M
+
         **Workforce:**
         - Headcount: {st.session_state.labor_manager.get_total_headcount(2026)} employees
         - Labor Cost: ${(st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)['Direct'] + st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)['Indirect'])/1e6:.2f}M
@@ -777,13 +839,13 @@ elif page == "📈 Reports":
         
         # Financial summary
         export_df = pd.DataFrame({
-            'Year': range(2026, 2031),
-            'Revenue': model['revenue'],
-            'COGS': model['cogs'],
-            'OPEX': model['opex'],
-            'EBIT': model['ebit'],
-            'Net Profit': model['net_profit'],
-            'FCF': model['fcf']
+            'Year': years,
+            'Revenue': series['revenue'],
+            'COGS': series['cogs'],
+            'OPEX': series['opex'],
+            'EBIT': series['ebit'],
+            'Net Profit': series['net_profit'],
+            'FCF': series['fcf']
         })
         
         csv = export_df.to_csv(index=False)

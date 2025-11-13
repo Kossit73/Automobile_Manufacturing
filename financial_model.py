@@ -425,11 +425,21 @@ def generate_labor_statement(model_data: dict) -> pd.DataFrame:
     """Generate labor cost statement if labor metrics available"""
     labor_metrics = model_data.get('labor_metrics', {})
     
+    columns = [
+        "Year",
+        "Direct Labor HC",
+        "Direct Labor Cost",
+        "Indirect Labor HC",
+        "Indirect Labor Cost",
+        "Total Headcount",
+        "Total Labor Cost",
+    ]
+
     if not labor_metrics:
-        return pd.DataFrame()
-    
+        return pd.DataFrame(columns=columns)
+
     years = sorted(labor_metrics.keys())
-    
+
     labor_df = pd.DataFrame({
         "Year": years,
         "Direct Labor HC": [labor_metrics[y]['direct_headcount'] for y in years],
@@ -439,7 +449,7 @@ def generate_labor_statement(model_data: dict) -> pd.DataFrame:
         "Total Headcount": [labor_metrics[y]['total_headcount'] for y in years],
         "Total Labor Cost": [f"${labor_metrics[y]['total_labor_cost']:,.0f}" for y in years],
     })
-    
+
     return labor_df
 
 # =====================================================

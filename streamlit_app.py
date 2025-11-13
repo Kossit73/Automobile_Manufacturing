@@ -610,11 +610,11 @@ elif page == "CAPEX Management":
                 'Start Year': item.start_year
             })
         
-        if items_data:
-            items_df = pd.DataFrame(items_data)
-            st.dataframe(items_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No capital assets configured")
+        items_columns = ['ID', 'Name', 'Category', 'Amount ($M)', 'Life (years)', 'Start Year']
+        items_df = pd.DataFrame(items_data, columns=items_columns)
+        st.dataframe(items_df, use_container_width=True, hide_index=True)
+        if not items_data:
+            st.caption("No capital assets configured yet. Add assets to populate this schedule.")
         
         # Summary
         col1, col2, col3 = st.columns(3)
@@ -631,31 +631,31 @@ elif page == "CAPEX Management":
         capex_start = _get_start_year()
         spend_schedule = st.session_state.capex_manager.yearly_capex_schedule(capex_start, 5)
         st.markdown("### CAPEX Spend Schedule")
-        if spend_schedule:
-            spend_years = sorted(spend_schedule.keys())
-            spend_df = pd.DataFrame({
-                "Year": spend_years,
-                "CAPEX Spend": [spend_schedule[y] for y in spend_years],
-            })
-            spend_display = spend_df.copy()
+        spend_years = sorted(spend_schedule.keys()) if spend_schedule else []
+        spend_df = pd.DataFrame({
+            "Year": spend_years,
+            "CAPEX Spend": [spend_schedule[y] for y in spend_years],
+        }) if spend_years else pd.DataFrame(columns=["Year", "CAPEX Spend"])
+        spend_display = spend_df.copy()
+        if not spend_display.empty:
             spend_display["CAPEX Spend"] = spend_display["CAPEX Spend"].apply(lambda x: f"${x/1e6:.2f}M")
-            st.dataframe(spend_display, use_container_width=True, hide_index=True)
-        else:
-            st.info("No capital spending scheduled for the selected horizon")
+        st.dataframe(spend_display, use_container_width=True, hide_index=True)
+        if spend_display.empty:
+            st.caption("No capital spending scheduled for the selected horizon.")
 
         depreciation_schedule = st.session_state.capex_manager.depreciation_schedule(capex_start, 5)
         st.markdown("### Depreciation Schedule")
-        if depreciation_schedule:
-            dep_years = sorted(depreciation_schedule.keys())
-            dep_df = pd.DataFrame({
-                "Year": dep_years,
-                "Depreciation": [depreciation_schedule[y] for y in dep_years],
-            })
-            dep_display = dep_df.copy()
+        dep_years = sorted(depreciation_schedule.keys()) if depreciation_schedule else []
+        dep_df = pd.DataFrame({
+            "Year": dep_years,
+            "Depreciation": [depreciation_schedule[y] for y in dep_years],
+        }) if dep_years else pd.DataFrame(columns=["Year", "Depreciation"])
+        dep_display = dep_df.copy()
+        if not dep_display.empty:
             dep_display["Depreciation"] = dep_display["Depreciation"].apply(lambda x: f"${x/1e6:.2f}M")
-            st.dataframe(dep_display, use_container_width=True, hide_index=True)
-        else:
-            st.info("Depreciation schedule unavailable")
+        st.dataframe(dep_display, use_container_width=True, hide_index=True)
+        if dep_display.empty:
+            st.caption("Depreciation schedule unavailable for the selected horizon.")
 
     # TAB 2: Add Asset
     with tab2:
@@ -882,9 +882,10 @@ elif page == "Financial Model":
             st.dataframe(debt_display, use_container_width=True, hide_index=True)
 
             labor_statement = generate_labor_statement(model)
-            if not labor_statement.empty:
-                st.markdown("### Labor Cost Schedule")
-                st.dataframe(labor_statement, use_container_width=True, hide_index=True)
+            st.markdown("### Labor Cost Schedule")
+            if labor_statement.empty:
+                st.caption("Labor schedule data will appear here once labor metrics are generated.")
+            st.dataframe(labor_statement, use_container_width=True, hide_index=True)
         else:
             st.info("Run the model to see results")
 
@@ -983,13 +984,18 @@ elif page == "Reports":
 
         capex_start_year = _get_start_year()
         capex_schedule = st.session_state.capex_manager.yearly_capex_schedule(capex_start_year, 5)
-        capex_display = pd.DataFrame({
-            "Year": sorted(capex_schedule.keys()),
-            "CAPEX Spend": [capex_schedule[y] for y in sorted(capex_schedule.keys())]
-        })
-        capex_display["CAPEX Spend"] = capex_display["CAPEX Spend"].apply(lambda x: f"${x/1e6:.2f}M")
+        capex_years = sorted(capex_schedule.keys()) if capex_schedule else []
+        capex_df = pd.DataFrame({
+            "Year": capex_years,
+            "CAPEX Spend": [capex_schedule[y] for y in capex_years]
+        }) if capex_years else pd.DataFrame(columns=["Year", "CAPEX Spend"])
+        capex_display = capex_df.copy()
+        if not capex_display.empty:
+            capex_display["CAPEX Spend"] = capex_display["CAPEX Spend"].apply(lambda x: f"${x/1e6:.2f}M")
 
         st.markdown("## CAPEX Spend Schedule")
+        if capex_display.empty:
+            st.caption("CAPEX spending will populate once capital projects are scheduled.")
         st.dataframe(capex_display, use_container_width=True, hide_index=True)
 
         debt_df = pd.DataFrame({

@@ -145,10 +145,42 @@ class CapexScheduleManager:
         return sum(item.amount for item in self.items.values())
 
 # Helper initializer
-def initialize_default_capex(manager: CapexScheduleManager) -> CapexScheduleManager:
+def initialize_default_capex(manager: Optional[CapexScheduleManager] = None) -> CapexScheduleManager:
+    """Populate a CAPEX manager with default assets, creating one if needed."""
+
+    manager = manager or CapexScheduleManager()
+
     # Add some default capex items
-    manager.add_item(name="Land Acquisition", amount=1_000_000, start_year=2026, useful_life=30, salvage_value=0, category="Land")
-    manager.add_item(name="Factory Construction", amount=2_500_000, start_year=2026, useful_life=30, salvage_value=0, category="Buildings")
-    manager.add_item(name="Machinery & Automation", amount=500_000, start_year=2026, useful_life=10, salvage_value=50_000, category="Machinery")
-    manager.add_item(name="Tooling & Fixtures", amount=150_000, start_year=2027, useful_life=7, salvage_value=5_000, category="Equipment")
+    manager.add_item(
+        name="Land Acquisition",
+        amount=1_000_000,
+        start_year=2026,
+        useful_life=30,
+        salvage_value=0,
+        category="Land",
+    )
+    manager.add_item(
+        name="Factory Construction",
+        amount=2_500_000,
+        start_year=2026,
+        useful_life=30,
+        salvage_value=0,
+        category="Buildings",
+    )
+    manager.add_item(
+        name="Machinery & Automation",
+        amount=500_000,
+        start_year=2026,
+        useful_life=10,
+        salvage_value=50_000,
+        category="Machinery",
+    )
+    manager.add_item(
+        name="Tooling & Fixtures",
+        amount=150_000,
+        start_year=2027,
+        useful_life=7,
+        salvage_value=5_000,
+        category="Equipment",
+    )
     return manager

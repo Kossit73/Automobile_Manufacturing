@@ -20,7 +20,11 @@ from financial_model import (
     run_financial_model,
 )
 from labor_management import (
+    EmploymentStatus,
+    JobCategory,
+    LaborPosition,
     LaborScheduleManager,
+    LaborType,
     initialize_default_labor_structure,
 )
 from capex_management import CapexScheduleManager, initialize_default_capex
@@ -57,6 +61,15 @@ GEN_AI_FEATURE_LABELS: Dict[str, str] = {
 ML_LABEL_TO_CODE: Dict[str, str] = {label: code for code, label in ML_METHOD_LABELS.items()}
 GEN_AI_LABEL_TO_CODE: Dict[str, str] = {
     label: code for code, label in GEN_AI_FEATURE_LABELS.items()
+}
+
+
+LABOR_TYPE_OPTIONS: Dict[str, LaborType] = {labor_type.value: labor_type for labor_type in LaborType}
+JOB_CATEGORY_OPTIONS: Dict[str, JobCategory] = {
+    category.value: category for category in JobCategory
+}
+EMPLOYMENT_STATUS_OPTIONS: Dict[str, EmploymentStatus] = {
+    status.value: status for status in EmploymentStatus
 }
 
 
@@ -168,6 +181,368 @@ def _safe_dataframe(data: Optional[pd.DataFrame], columns: Sequence[str]) -> pd.
 def _currency_series(values: Iterable[float]) -> List[str]:
     return [f"${value:,.0f}" for value in values]
 
+
+def _position_increment_schedule(position: LaborPosition, cfg: CompanyConfig) -> pd.DataFrame:
+    years = _config_years(cfg)
+    rows: List[Dict[str, Any]] = []
+    for year in years:
+        if year < position.start_year:
+            continue
+        if position.end_year is not None and year > position.end_year:
+            continue
+
+        years_since_start = year - position.start_year
+        growth_factor = (1 + cfg.annual_salary_growth) ** years_since_start
+        base_salary = position.annual_salary * growth_factor
+        total_cost = position.calculate_annual_cost(growth_factor - 1)
+        per_headcount = total_cost / position.headcount if position.headcount else 0.0
+
+        rows.append(
+            {
+                "Year": year,
+                "Base Salary (per HC)": base_salary,
+                "Total Compensation (per HC)": per_headcount,
+                "Total Role Cost": total_cost,
+            }
+        )
+
+    schedule = pd.DataFrame(rows)
+    if schedule.empty:
+        return pd.DataFrame(
+            columns=[
+                "Year",
+                "Base Salary (per HC)",
+                "Total Compensation (per HC)",
+                "Total Role Cost",
+            ]
+        )
+
+    for column in [
+        "Base Salary (per HC)",
+        "Total Compensation (per HC)",
+        "Total Role Cost",
+    ]:
+        schedule[column] = _currency_series(schedule[column])
+
+    return schedule
+
+
+def _render_add_position_form(manager: LaborScheduleManager, cfg: CompanyConfig) -> None:
+    st.markdown("#### Add Labor Position")
+    with st.form("add_position_form"):
+        col1, col2 = st.columns(2)
+        position_name = col1.text_input("Position Name", key="add_position_name")
+        labor_type_labels = list(LABOR_TYPE_OPTIONS.keys())
+        labor_type_label = col2.selectbox(
+            "Labor Type",
+            labor_type_labels,
+            index=0 if labor_type_labels else 0,
+            key="add_labor_type",
+        )
+
+        job_category_labels = list(JOB_CATEGORY_OPTIONS.keys())
+        status_labels = list(EMPLOYMENT_STATUS_OPTIONS.keys())
+
+        col3, col4 = st.columns(2)
+        job_category_label = col3.selectbox(
+            "Job Category",
+            job_category_labels,
+            index=0 if job_category_labels else 0,
+            key="add_job_category",
+        )
+        status_label = col4.selectbox(
+            "Employment Status",
+            status_labels,
+            index=0 if status_labels else 0,
+            key="add_status",
+        )
+
+        col5, col6 = st.columns(2)
+        headcount = col5.number_input(
+            "Headcount", min_value=0, value=1, step=1, key="add_headcount"
+        )
+        annual_salary = col6.number_input(
+            "Annual Salary",
+            min_value=0.0,
+            value=60000.0,
+            step=1000.0,
+            key="add_annual_salary",
+        )
+
+        col7, col8 = st.columns(2)
+        start_year = col7.number_input(
+            "Start Year",
+            value=int(cfg.start_year),
+            step=1,
+            key="add_start_year",
+        )
+        end_year_text = col8.text_input(
+            "End Year (leave blank if ongoing)",
+            value="",
+            key="add_end_year",
+        )
+
+        benefits_percent = st.slider(
+            "Benefits Percent",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.25,
+            step=0.01,
+            key="add_benefits_percent",
+        )
+
+        col9, col10 = st.columns(2)
+        overtime_hours = col9.number_input(
+            "Overtime Hours (Annual)",
+            min_value=0.0,
+            value=0.0,
+            step=10.0,
+            key="add_overtime_hours",
+        )
+        overtime_rate = col10.number_input(
+            "Overtime Rate Multiplier",
+            min_value=1.0,
+            value=1.5,
+            step=0.1,
+            key="add_overtime_rate",
+        )
+
+        col11, col12 = st.columns(2)
+        training_cost = col11.number_input(
+            "Training Cost (Annual)",
+            min_value=0.0,
+            value=0.0,
+            step=500.0,
+            key="add_training_cost",
+        )
+        equipment_cost = col12.number_input(
+            "Equipment Cost (Annual)",
+            min_value=0.0,
+            value=0.0,
+            step=500.0,
+            key="add_equipment_cost",
+        )
+
+        notes = st.text_area("Notes", key="add_notes")
+        submitted = st.form_submit_button("Add Position")
+
+    if submitted:
+        try:
+            end_year = int(end_year_text) if end_year_text.strip() else None
+        except ValueError:
+            st.error("End year must be a whole number.")
+            return
+
+        try:
+            manager.add_position(
+                position_name=position_name.strip() or "New Position",
+                labor_type=LABOR_TYPE_OPTIONS.get(labor_type_label, LaborType.DIRECT),
+                job_category=JOB_CATEGORY_OPTIONS.get(job_category_label, JobCategory.ASSEMBLY),
+                headcount=int(headcount),
+                annual_salary=float(annual_salary),
+                status=EMPLOYMENT_STATUS_OPTIONS.get(status_label, EmploymentStatus.ACTIVE),
+                start_year=int(start_year),
+                end_year=end_year,
+                benefits_percent=float(benefits_percent),
+                overtime_hours_annual=float(overtime_hours),
+                overtime_rate=float(overtime_rate),
+                training_cost=float(training_cost),
+                equipment_cost=float(equipment_cost),
+                notes=notes.strip(),
+            )
+            _run_model()
+            st.success("Labor position added successfully.")
+        except ValueError as exc:
+            st.error(str(exc))
+
+
+def _render_position_editor(
+    position: LaborPosition, manager: LaborScheduleManager, cfg: CompanyConfig
+) -> None:
+    header = f"{position.position_id} — {position.position_name}"
+    with st.expander(header, expanded=False):
+        form_key = f"edit_form_{position.position_id}"
+        with st.form(form_key):
+            prefix = f"edit_{position.position_id}"
+
+            col1, col2 = st.columns(2)
+            position_name = col1.text_input(
+                "Position Name",
+                value=position.position_name,
+                key=f"{prefix}_name",
+            )
+            labor_type_labels = list(LABOR_TYPE_OPTIONS.keys())
+            labor_type_value = position.labor_type.value
+            labor_type_index = (
+                labor_type_labels.index(labor_type_value)
+                if labor_type_value in labor_type_labels
+                else 0
+            )
+            labor_type_label = col2.selectbox(
+                "Labor Type",
+                labor_type_labels,
+                index=labor_type_index,
+                key=f"{prefix}_labor_type",
+            )
+
+            job_category_labels = list(JOB_CATEGORY_OPTIONS.keys())
+            job_category_value = position.job_category.value
+            job_category_index = (
+                job_category_labels.index(job_category_value)
+                if job_category_value in job_category_labels
+                else 0
+            )
+            status_labels = list(EMPLOYMENT_STATUS_OPTIONS.keys())
+            status_value = position.status.value
+            status_index = (
+                status_labels.index(status_value) if status_value in status_labels else 0
+            )
+
+            col3, col4 = st.columns(2)
+            job_category_label = col3.selectbox(
+                "Job Category",
+                job_category_labels,
+                index=job_category_index,
+                key=f"{prefix}_job_category",
+            )
+            status_label = col4.selectbox(
+                "Employment Status",
+                status_labels,
+                index=status_index,
+                key=f"{prefix}_status",
+            )
+
+            col5, col6 = st.columns(2)
+            headcount = col5.number_input(
+                "Headcount",
+                min_value=0,
+                value=int(position.headcount),
+                step=1,
+                key=f"{prefix}_headcount",
+            )
+            annual_salary = col6.number_input(
+                "Annual Salary",
+                min_value=0.0,
+                value=float(position.annual_salary),
+                step=1000.0,
+                key=f"{prefix}_salary",
+            )
+
+            col7, col8 = st.columns(2)
+            start_year = col7.number_input(
+                "Start Year",
+                value=int(position.start_year),
+                step=1,
+                key=f"{prefix}_start_year",
+            )
+            end_year_default = "" if position.end_year is None else str(position.end_year)
+            end_year_text = col8.text_input(
+                "End Year (leave blank if ongoing)",
+                value=end_year_default,
+                key=f"{prefix}_end_year",
+            )
+
+            benefits_percent = st.slider(
+                "Benefits Percent",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(position.benefits_percent),
+                step=0.01,
+                key=f"{prefix}_benefits",
+            )
+
+            col9, col10 = st.columns(2)
+            overtime_hours = col9.number_input(
+                "Overtime Hours (Annual)",
+                min_value=0.0,
+                value=float(position.overtime_hours_annual),
+                step=10.0,
+                key=f"{prefix}_overtime_hours",
+            )
+            overtime_rate = col10.number_input(
+                "Overtime Rate Multiplier",
+                min_value=1.0,
+                value=float(position.overtime_rate),
+                step=0.1,
+                key=f"{prefix}_overtime_rate",
+            )
+
+            col11, col12 = st.columns(2)
+            training_cost = col11.number_input(
+                "Training Cost (Annual)",
+                min_value=0.0,
+                value=float(position.training_cost_annual),
+                step=500.0,
+                key=f"{prefix}_training",
+            )
+            equipment_cost = col12.number_input(
+                "Equipment Cost (Annual)",
+                min_value=0.0,
+                value=float(position.equipment_cost_annual),
+                step=500.0,
+                key=f"{prefix}_equipment",
+            )
+
+            notes = st.text_area(
+                "Notes",
+                value=position.notes,
+                key=f"{prefix}_notes",
+            )
+
+            submitted = st.form_submit_button("Save Changes")
+
+        if submitted:
+            try:
+                end_year = int(end_year_text) if end_year_text.strip() else None
+            except ValueError:
+                st.error("End year must be a whole number.")
+            else:
+                try:
+                    manager.edit_position(
+                        position.position_id,
+                        position_name=position_name.strip() or position.position_name,
+                        labor_type=LABOR_TYPE_OPTIONS.get(labor_type_label, position.labor_type),
+                        job_category=JOB_CATEGORY_OPTIONS.get(
+                            job_category_label, position.job_category
+                        ),
+                        headcount=int(headcount),
+                        annual_salary=float(annual_salary),
+                        status=EMPLOYMENT_STATUS_OPTIONS.get(
+                            status_label, position.status
+                        ),
+                        start_year=int(start_year),
+                        end_year=end_year,
+                        benefits_percent=float(benefits_percent),
+                        overtime_hours_annual=float(overtime_hours),
+                        overtime_rate=float(overtime_rate),
+                        training_cost_annual=float(training_cost),
+                        equipment_cost_annual=float(equipment_cost),
+                        notes=notes.strip(),
+                    )
+                    _run_model()
+                    st.success("Position updated successfully.")
+                except ValueError as exc:
+                    st.error(str(exc))
+
+        increment_df = _position_increment_schedule(position, cfg)
+        st.markdown("**Yearly Increment Helper**")
+        if increment_df.empty:
+            st.caption("No projection years available for this position.")
+        else:
+            _render_table(increment_df)
+
+        remove = st.button(
+            "Remove Position",
+            key=f"remove_{position.position_id}",
+            help="Delete this labor position from the schedule.",
+        )
+        if remove:
+            try:
+                manager.remove_position(position.position_id)
+                _run_model()
+                st.success("Position removed from the schedule.")
+            except ValueError as exc:
+                st.error(str(exc))
 
 def _build_labor_cost_schedule(manager: LaborScheduleManager, cfg: CompanyConfig) -> pd.DataFrame:
     years = _config_years(cfg)
@@ -381,9 +756,18 @@ def _render_labor_management() -> None:
     cfg: CompanyConfig = st.session_state["company_config"]
 
     st.markdown("### Labor Positions")
+    _render_add_position_form(manager, cfg)
+
+    positions = manager.get_all_positions()
+    if positions:
+        st.markdown("#### Manage Existing Positions")
+        for position in positions:
+            _render_position_editor(position, manager, cfg)
+    else:
+        st.info("No labor positions configured. Use the form above to add one.")
+
+    st.markdown("#### Labor Position Summary")
     summary = manager.get_position_summary()
-    if summary.empty:
-        st.write("No labor positions configured.")
     _render_table(summary)
 
     schedule = _build_labor_cost_schedule(manager, cfg)

@@ -651,6 +651,25 @@ def _capex_depreciation_schedule(manager: CapexScheduleManager, cfg: CompanyConf
     return df
 
 
+def _production_horizon_table(cfg: CompanyConfig) -> pd.DataFrame:
+    years = _config_years(cfg)
+    records: List[Dict[str, Any]] = []
+
+    for year in years:
+        utilization = float(cfg.capacity_utilization.get(year, 0.0))
+        utilization = max(0.0, min(1.0, utilization))
+        projected_units = cfg.annual_capacity * utilization
+        records.append(
+            {
+                "Year": year,
+                "Capacity Utilization": f"{utilization * 100:.1f}%",
+                "Projected Units": f"{projected_units:,.0f}",
+            }
+        )
+
+    return pd.DataFrame(records, columns=["Year", "Capacity Utilization", "Projected Units"])
+
+
 def _debt_schedule(model: Dict[str, Any]) -> pd.DataFrame:
     years = _projection_years(model)
     rows = []
@@ -1155,6 +1174,51 @@ def _render_platform_settings() -> None:
         if st.button("Recalculate Model"):
             _run_model()
             st.success("Model recalculated.")
+
+        st.markdown("### Production Horizon")
+        production_years = _config_years(cfg)
+        horizon_form = st.form("production_horizon_form")
+        with horizon_form:
+            st.write(
+                "Adjust annual capacity assumptions and the utilization ramp so production aligns with the forecast horizon."
+            )
+            annual_capacity = horizon_form.number_input(
+                "Annual Capacity (units)",
+                value=float(cfg.annual_capacity),
+                min_value=0.0,
+                step=100.0,
+            )
+            working_days = horizon_form.number_input(
+                "Working Days per Year",
+                value=int(cfg.working_days),
+                min_value=1,
+                max_value=366,
+                step=1,
+            )
+            utilization_inputs: Dict[int, float] = {}
+            for year in production_years:
+                utilization_inputs[year] = horizon_form.slider(
+                    f"Utilization {year}",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=float(cfg.capacity_utilization.get(year, 0.0)),
+                    step=0.05,
+                )
+            save_horizon = horizon_form.form_submit_button("Save Production Horizon")
+
+        if save_horizon:
+            cfg.annual_capacity = float(annual_capacity)
+            cfg.working_days = int(working_days)
+            cfg.capacity_utilization = {
+                year: float(utilization_inputs.get(year, 0.0)) for year in production_years
+            }
+            cfg.__post_init__()
+            _run_model()
+            st.success("Production horizon updated. Financial model refreshed.")
+
+        st.markdown("#### Production Horizon Schedule")
+        horizon_df = _production_horizon_table(cfg)
+        _render_table(horizon_df, hide_index=True)
 
     with labor_tab:
         _render_labor_management()

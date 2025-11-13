@@ -271,7 +271,7 @@ class LaborScheduleManager:
                 if pos.status == EmploymentStatus.ACTIVE or pos.status == EmploymentStatus.SEASONAL:
                     years_since_start = year - pos.start_year
                     growth_factor = (1 + salary_growth) ** years_since_start
-                    annual_cost = pos.calculate_annual_cost(salary_growth * years_since_start)
+                    annual_cost = pos.calculate_annual_cost(growth_factor - 1)
                     
                     if pos.labor_type == LaborType.DIRECT:
                         costs['Direct'] += annual_cost
@@ -288,7 +288,9 @@ class LaborScheduleManager:
             if pos.start_year <= year and (pos.end_year is None or pos.end_year >= year):
                 if pos.status == EmploymentStatus.ACTIVE or pos.status == EmploymentStatus.SEASONAL:
                     category = pos.job_category.value
-                    annual_cost = pos.calculate_annual_cost(salary_growth * (year - pos.start_year))
+                    years_since_start = year - pos.start_year
+                    growth_factor = (1 + salary_growth) ** years_since_start
+                    annual_cost = pos.calculate_annual_cost(growth_factor - 1)
                     costs[category] = costs.get(category, 0) + annual_cost
         
         return costs

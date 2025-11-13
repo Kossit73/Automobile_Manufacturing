@@ -29,6 +29,17 @@ class Index(list):
     def copy(self) -> "Index":  # type: ignore[override]
         return Index(self)
 
+    @property
+    def is_unique(self) -> bool:
+        """Return ``True`` when all labels in the index are unique."""
+
+        seen = set()
+        for value in self:
+            if value in seen:
+                return False
+            seen.add(value)
+        return True
+
 
 class RangeIndex(Index):
     """Minimal implementation of :class:`pandas.RangeIndex`."""
@@ -53,6 +64,10 @@ class RangeIndex(Index):
 
     def __repr__(self) -> str:
         return f"RangeIndex(start={self.start}, stop={self.stop}, step={self.step})"
+
+    @property
+    def is_unique(self) -> bool:
+        return True
 
 
 def _coerce_iterable(values: Optional[Iterable[Any]]) -> List[Any]:
@@ -359,7 +374,7 @@ class DataFrame:
     def __init__(self, data: Optional[Union[Dict[str, Iterable[Any]], List[Dict[str, Any]]]] = None):
         self._data: Dict[str, List[Any]] = {}
         self.index: Index = RangeIndex(0)
-        self.columns: List[str] = []
+        self.columns: Index = Index()
         if data is None:
             return
         if isinstance(data, dict):
@@ -367,7 +382,7 @@ class DataFrame:
             length = lengths.pop() if lengths else 0
             for key, values in data.items():
                 self._data[key] = _coerce_iterable(values)
-            self.columns = list(data.keys())
+            self.columns = Index(list(data.keys()))
             self.index = RangeIndex(length)
         elif isinstance(data, list):
             if not data:
@@ -377,7 +392,7 @@ class DataFrame:
                 for key in row.keys():
                     if key not in columns:
                         columns.append(key)
-            self.columns = columns
+            self.columns = Index(columns)
             rows: Dict[str, List[Any]] = {col: [] for col in columns}
             for row in data:
                 for col in columns:

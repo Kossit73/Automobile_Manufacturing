@@ -268,11 +268,59 @@ def _forecast_schedule(model: Dict[str, Any]) -> pd.DataFrame:
     return df
 
 
+def _dataframe_to_markdown(df: Optional[pd.DataFrame], hide_index: bool = True) -> str:
+    df = df if df is not None else pd.DataFrame()
+    columns: List[str] = list(getattr(df, "columns", []))
+    if not columns:
+        return ""
+
+    rows: List[Dict[str, Any]]
+    if getattr(df, "empty", True):
+        rows = []
+    else:
+        try:
+            rows = df.to_dict(orient="records")  # type: ignore[attr-defined]
+        except Exception:
+            rows = []
+
+    headers = columns.copy()
+    if not hide_index:
+        headers = ["index"] + headers
+
+    lines = [
+        "| " + " | ".join(str(header) for header in headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+
+    if rows:
+        index_values: Sequence[Any] = list(getattr(df, "index", [])) if not hide_index else []
+        for position, record in enumerate(rows):
+            values = [str(record.get(column, "")) for column in columns]
+            if not hide_index:
+                index_value = ""
+                if position < len(index_values):
+                    index_value = str(index_values[position])
+                values = [index_value] + values
+            lines.append("| " + " | ".join(values) + " |")
+
+    return "\n".join(lines)
+
+
+def _render_table(df: Optional[pd.DataFrame], hide_index: bool = True) -> None:
+    using_shim = bool(getattr(pd, "USING_PANDAS_SHIM", False))
+    if using_shim:
+        markdown = _dataframe_to_markdown(df, hide_index=hide_index)
+        if markdown:
+            st.markdown(markdown)
+    else:
+        st.dataframe(df, use_container_width=True, hide_index=hide_index)
+
+
 def _display_schedule(title: str, df: pd.DataFrame, note: str = "") -> None:
     st.subheader(title)
     if df.empty and note:
         st.write(note)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    _render_table(df, hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +367,7 @@ def _render_dashboard(model: Dict[str, Any]) -> None:
     snapshot = income_df.copy()
     snapshot["Revenue"] = _currency_series(snapshot["Revenue"])
     snapshot["Net Profit"] = _currency_series(snapshot["Net Profit"])
-    st.dataframe(snapshot[["Year", "Revenue", "Net Profit"]], use_container_width=True, hide_index=True)
+    _render_table(snapshot[["Year", "Revenue", "Net Profit"]])
 
 
 def _render_labor_management() -> None:
@@ -330,7 +378,7 @@ def _render_labor_management() -> None:
     summary = manager.get_position_summary()
     if summary.empty:
         st.write("No labor positions configured.")
-    st.dataframe(summary, use_container_width=True, hide_index=True)
+    _render_table(summary)
 
     schedule = _build_labor_cost_schedule(manager, cfg)
     _display_schedule(

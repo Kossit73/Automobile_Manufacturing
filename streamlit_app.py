@@ -932,6 +932,17 @@ elif page == "📈 Reports":
 
         st.markdown(summary_text)
 
+        # Financial summary
+        export_df = pd.DataFrame({
+            'Year': years,
+            'Revenue': series['revenue'],
+            'COGS': series['cogs'],
+            'OPEX': series['opex'],
+            'EBIT': series['ebit'],
+            'Net Profit': series['net_profit'],
+            'FCF': series['fcf']
+        })
+
         forecast_display = export_df.copy()
         for col in forecast_display.columns:
             if col != "Year":
@@ -943,17 +954,6 @@ elif page == "📈 Reports":
         # Export buttons
         st.markdown("## Download Reports")
 
-        # Financial summary
-        export_df = pd.DataFrame({
-            'Year': years,
-            'Revenue': series['revenue'],
-            'COGS': series['cogs'],
-            'OPEX': series['opex'],
-            'EBIT': series['ebit'],
-            'Net Profit': series['net_profit'],
-            'FCF': series['fcf']
-        })
-        
         csv = export_df.to_csv(index=False)
         st.download_button(
             "📥 Download Financial Forecast (CSV)",

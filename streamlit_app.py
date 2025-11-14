@@ -844,6 +844,69 @@ def _cost_structure_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]]
     return pd.DataFrame(rows, columns=columns)
 
 
+def _operating_expense_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    model = model or {}
+    years = _config_years(cfg)
+
+    revenue_map: Dict[int, float] = model.get("revenue", {})
+    opex_map: Dict[int, float] = model.get("opex", {})
+    labor_metrics: Dict[int, Dict[str, float]] = model.get("labor_metrics", {})
+
+    marketing_budget: Dict[int, float] = {}
+    if isinstance(getattr(cfg, "marketing_budget", None), dict):
+        marketing_budget = {int(year): float(value) for year, value in cfg.marketing_budget.items()}
+
+    columns = [
+        "Year",
+        "Marketing Spend",
+        "Labor Cost",
+        "Other Operating Expense",
+        "Total Operating Expense",
+        "Operating Expense % of Revenue",
+    ]
+
+    def _percent(value: float, revenue: float) -> str:
+        if revenue <= 0:
+            return "—"
+        return f"{(value / revenue) * 100:.1f}%"
+
+    rows: List[Dict[str, Any]] = []
+    for year in years:
+        revenue_value = float(revenue_map.get(year, 0.0))
+        total_opex = float(opex_map.get(year, 0.0))
+
+        if labor_metrics and year in labor_metrics:
+            labor_cost = float(labor_metrics[year].get("total_labor_cost", 0.0))
+        else:
+            years_since_start = max(0, year - cfg.start_year)
+            baseline_salary = cfg.avg_salary * cfg.headcount * 12
+            labor_cost = baseline_salary * ((1 + cfg.annual_salary_growth) ** years_since_start)
+
+        planned_marketing = float(marketing_budget.get(year, 0.0))
+        marketing_cost = planned_marketing if planned_marketing > 0 else max(0.0, total_opex - labor_cost)
+
+        labor_cost = max(0.0, labor_cost)
+        marketing_cost = max(0.0, marketing_cost)
+
+        other_opex = max(0.0, total_opex - labor_cost - marketing_cost)
+
+        if total_opex <= 0.0:
+            total_opex = labor_cost + marketing_cost + other_opex
+
+        rows.append(
+            {
+                "Year": year,
+                "Marketing Spend": f"${marketing_cost:,.0f}",
+                "Labor Cost": f"${labor_cost:,.0f}",
+                "Other Operating Expense": f"${other_opex:,.0f}",
+                "Total Operating Expense": f"${total_opex:,.0f}",
+                "Operating Expense % of Revenue": _percent(total_opex, revenue_value),
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns)
+
+
 def _debt_schedule(model: Dict[str, Any]) -> pd.DataFrame:
     years = _projection_years(model)
     rows = []
@@ -1416,6 +1479,12 @@ def _render_platform_settings() -> None:
         if cost_df.empty:
             st.write("Run the financial model to populate cost structure projections across the horizon.")
         _render_table(cost_df, hide_index=True)
+
+        st.markdown("#### Operating Expense Schedule")
+        opex_df = _operating_expense_schedule(cfg, model)
+        if opex_df.empty:
+            st.write("Run the financial model to populate operating expense projections across the horizon.")
+        _render_table(opex_df, hide_index=True)
 
         st.markdown("#### Debt Amortization Schedule")
         debt_df = _debt_schedule(model)

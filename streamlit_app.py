@@ -371,34 +371,11 @@ def _render_inline_row_editor(
     row_id_column: str = "Year",
     empty_message: str = "No rows available.",
 ) -> None:
-    """Render a polished inline editor for platform schedules."""
+    """Render a compact inline editor with per-row edit buttons."""
 
     if df.empty:
         st.info(empty_message)
         return
-
-    style_key = "_schedule_style_injected"
-    if not st.session_state.get(style_key):
-        st.markdown(
-            """
-            <style>
-            .schedule-header {background: rgba(0,0,0,0.03); padding: 0.6rem 0.75rem; font-weight: 600; font-size: 0.85rem; letter-spacing: 0.02em; border-radius: 0.5rem;}
-            .schedule-cell {background: var(--background-color); padding: 0.65rem 0.75rem; border: 1px solid rgba(0,0,0,0.05); border-radius: 0.5rem; min-height: 3.5rem; display: flex; flex-direction: column; justify-content: center; gap: 0.2rem;}
-            .schedule-cell:last-child {border-right: none;}
-            .schedule-label {font-size: 0.65rem; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(0,0,0,0.55);}
-            .schedule-value {font-size: 0.95rem; font-weight: 600; color: rgba(0,0,0,0.85);}
-            .schedule-row-actions {display: flex; gap: 0.5rem; justify-content: flex-end; padding-top: 0.5rem;}
-            .schedule-row-wrapper {padding: 0.35rem 0.1rem 0.6rem; border-radius: 0.75rem; transition: box-shadow 0.2s ease, border 0.2s ease, background 0.2s ease;}
-            .schedule-row-wrapper:hover {box-shadow: 0 4px 18px rgba(15, 23, 42, 0.08); background: rgba(15, 23, 42, 0.02);}
-            .schedule-row-wrapper.editing {border: 1px solid rgba(37, 99, 235, 0.35); box-shadow: 0 8px 22px rgba(37, 99, 235, 0.18); background: rgba(37, 99, 235, 0.08);}
-            .schedule-status {margin-bottom: 0.75rem;}
-            div[data-testid="stNumberInput"] label, div[data-testid="stTextInput"] label {font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(37, 99, 235, 0.9);}
-            div[data-testid="stNumberInput"] input, div[data-testid="stTextInput"] input {border-radius: 0.4rem;}
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.session_state[style_key] = True
 
     status_key = f"{key}_status"
     if status_key in st.session_state:
@@ -410,167 +387,116 @@ def _render_inline_row_editor(
     header_columns = st.columns(len(field_definitions) + 1)
     for idx, field in enumerate(field_definitions):
         label = field.get("label", field.get("column", ""))
-        header_columns[idx].markdown(
-            f"<div class='schedule-header'>{label}</div>",
-            unsafe_allow_html=True,
-        )
-    header_columns[-1].markdown(
-        "<div class='schedule-header'>Actions</div>", unsafe_allow_html=True
-    )
+        header_columns[idx].markdown(f"**{label}**")
+    header_columns[-1].markdown("**Action**")
+
+    row_lookup: Dict[str, pd.Series] = {}
 
     for _, row in df.iterrows():
         row_id_value = row.get(row_id_column)
         row_key = str(row_id_value)
-        is_editing = current_editing == row_key
+        row_lookup[row_key] = row
 
-        if is_editing:
-            updated_values: Dict[str, Any] = {}
-            with st.form(key=f"{key}_form_{row_key}"):
-                form_block = st.container()
-                form_block.markdown(
-                    "<div class='schedule-row-wrapper editing'>",
-                    unsafe_allow_html=True,
-                )
-                form_block.markdown(
-                    f"<div class='schedule-cell'>"
-                    f"<div class='schedule-label'>Editing</div>"
-                    f"<div class='schedule-value'>{row_id_column}: {row_id_value}</div>"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-                form_columns = form_block.columns(len(field_definitions))
-                for idx, field in enumerate(field_definitions):
-                    column_name = field.get("column")
-                    label = field.get("label", column_name)
-                    data_key = field.get("data_key", column_name)
-                    field_type = field.get("type", "text")
-                    value = row.get(column_name)
-                    col = form_columns[idx]
-                    widget_key = f"{key}_{row_key}_{data_key}"
-                    col.markdown(
-                        f"<div class='schedule-label'>{label}</div>",
-                        unsafe_allow_html=True,
-                    )
-                    if not field.get("editable", True):
-                        display_value = _format_display_value(value, field)
-                        col.markdown(
-                            f"<div class='schedule-value'>{display_value}</div>",
-                            unsafe_allow_html=True,
-                        )
-                        continue
-                    if field_type in {"float", "currency", "percent"}:
-                        base_value = float(value or 0.0)
-                        input_kwargs: Dict[str, Any] = {
-                            "key": widget_key,
-                            "value": base_value,
-                            "step": field.get("step", 1.0),
-                            "label": "",
-                            "label_visibility": "collapsed",
-                        }
-                        if field.get("min") is not None:
-                            input_kwargs["min_value"] = float(field["min"])
-                        if field.get("max") is not None:
-                            input_kwargs["max_value"] = float(field["max"])
-                        if field_type == "currency":
-                            input_kwargs.setdefault("step", field.get("step", 1000.0))
-                            input_kwargs["format"] = field.get("format", "%.0f")
-                        elif field_type == "percent":
-                            input_kwargs.setdefault("step", field.get("step", 1.0))
-                            input_kwargs["format"] = field.get("format", "%.2f")
-                        else:
-                            input_kwargs["format"] = field.get("format", "%.2f")
-                        updated_values[data_key] = col.number_input(**input_kwargs)
-                    elif field_type == "int":
-                        base_value = int(round(float(value or 0)))
-                        input_kwargs = {
-                            "key": widget_key,
-                            "value": base_value,
-                            "step": int(field.get("step", 1)),
-                            "format": "%d",
-                            "label": "",
-                            "label_visibility": "collapsed",
-                        }
-                        if field.get("min") is not None:
-                            input_kwargs["min_value"] = int(field["min"])
-                        if field.get("max") is not None:
-                            input_kwargs["max_value"] = int(field["max"])
-                        updated_values[data_key] = col.number_input(**input_kwargs)
-                    else:
-                        updated_values[data_key] = col.text_input(
-                            "",
-                            value=str(value or ""),
-                            key=widget_key,
-                            label_visibility="collapsed",
-                        )
+        columns = st.columns(len(field_definitions) + 1)
+        for idx, field in enumerate(field_definitions):
+            column_name = field.get("column")
+            value = row.get(column_name)
+            display_value = _format_display_value(value, field)
+            columns[idx].markdown(display_value)
 
-                form_block.markdown("</div>", unsafe_allow_html=True)
+        if columns[-1].button("Edit", key=f"{key}_edit_{row_key}"):
+            st.session_state[editing_state_key] = row_key
+            current_editing = row_key
 
-                action_cols = st.columns([1, 1])
-                save_clicked = action_cols[0].form_submit_button(
-                    "Save Changes",
-                    use_container_width=True,
-                    type="primary",
-                )
-                cancel_clicked = action_cols[1].form_submit_button(
-                    "Cancel",
-                    use_container_width=True,
-                )
+    if not current_editing:
+        return
 
-            if save_clicked:
-                try:
-                    message = on_save(row, updated_values)
-                except ValueError as exc:
-                    st.error(str(exc))
+    row = row_lookup.get(current_editing)
+    if row is None:
+        st.session_state.pop(editing_state_key, None)
+        return
+
+    st.divider()
+    st.markdown(f"**Editing {row_id_column}: {row.get(row_id_column)}**")
+
+    updated_values: Dict[str, Any] = {}
+    with st.form(key=f"{key}_form_{current_editing}"):
+        form_columns = st.columns(len(field_definitions))
+        for idx, field in enumerate(field_definitions):
+            column_name = field.get("column")
+            label = field.get("label", column_name)
+            data_key = field.get("data_key", column_name)
+            field_type = field.get("type", "text")
+            editable = field.get("editable", True)
+            value = row.get(column_name)
+            col = form_columns[idx]
+
+            if not editable:
+                col.markdown(f"**{label}**")
+                col.markdown(_format_display_value(value, field))
+                continue
+
+            widget_key = f"{key}_{current_editing}_{data_key}"
+
+            if field_type in {"float", "currency", "percent"}:
+                base_value = float(value or 0.0)
+                input_kwargs: Dict[str, Any] = {
+                    "label": label,
+                    "key": widget_key,
+                    "value": base_value,
+                    "step": field.get("step", 1.0),
+                }
+                if field.get("min") is not None:
+                    input_kwargs["min_value"] = float(field["min"])
+                if field.get("max") is not None:
+                    input_kwargs["max_value"] = float(field["max"])
+                if field_type == "currency":
+                    input_kwargs.setdefault("step", field.get("step", 1000.0))
+                    input_kwargs["format"] = field.get("format", "%.0f")
+                elif field_type == "percent":
+                    input_kwargs.setdefault("step", field.get("step", 1.0))
+                    input_kwargs["format"] = field.get("format", "%.2f")
                 else:
-                    st.session_state[editing_state_key] = None
-                    _run_model()
-                    st.session_state[status_key] = message or "Row updated successfully."
-                    _rerun()
-                    return
-            elif cancel_clicked:
-                st.session_state[editing_state_key] = None
-                _rerun()
-                return
-            continue
-
-        row_container = st.container()
-        with row_container:
-            row_columns = st.columns(len(field_definitions) + 1)
-            for idx, field in enumerate(field_definitions):
-                column_name = field.get("column")
-                label = field.get("label", column_name)
-                value = row.get(column_name)
-                display_value = _format_display_value(value, field)
-                row_columns[idx].markdown(
-                    "<div class='schedule-row-wrapper'>"
-                    "<div class='schedule-cell'>"
-                    f"<div class='schedule-label'>{label}</div>"
-                    f"<div class='schedule-value'>{display_value}</div>"
-                    "</div>"
-                    "</div>",
-                    unsafe_allow_html=True,
+                    input_kwargs["format"] = field.get("format", "%.2f")
+                updated_values[data_key] = col.number_input(**input_kwargs)
+            elif field_type == "int":
+                base_value = int(round(float(value or 0)))
+                input_kwargs = {
+                    "label": label,
+                    "key": widget_key,
+                    "value": base_value,
+                    "step": int(field.get("step", 1)),
+                    "format": "%d",
+                }
+                if field.get("min") is not None:
+                    input_kwargs["min_value"] = int(field["min"])
+                if field.get("max") is not None:
+                    input_kwargs["max_value"] = int(field["max"])
+                updated_values[data_key] = col.number_input(**input_kwargs)
+            else:
+                updated_values[data_key] = col.text_input(
+                    label,
+                    value=str(value or ""),
+                    key=widget_key,
                 )
 
-            action_container = row_columns[-1]
-            with action_container:
-                st.markdown(
-                    "<div class='schedule-row-wrapper'><div class='schedule-cell'>"
-                    "<div class='schedule-label'>Actions</div>"
-                    "<div class='schedule-row-actions'>",
-                    unsafe_allow_html=True,
-                )
-                edit_clicked = st.button(
-                    "Edit Row",
-                    key=f"{key}_edit_{row_key}",
-                    use_container_width=True,
-                )
-                st.markdown("</div></div></div>", unsafe_allow_html=True)
+        col_actions = st.columns([1, 1])
+        save_clicked = col_actions[0].form_submit_button("Save", type="primary")
+        cancel_clicked = col_actions[1].form_submit_button("Cancel")
 
-            if edit_clicked:
-                st.session_state[editing_state_key] = row_key
-                _rerun()
-                return
-
+    if save_clicked:
+        try:
+            result = on_save(row, updated_values)
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            if result:
+                st.session_state[status_key] = result
+            st.session_state.pop(editing_state_key, None)
+            _rerun()
+    elif cancel_clicked:
+        st.session_state.pop(editing_state_key, None)
+        _rerun()
 
 
 def _projection_years(model: Dict[str, Any]) -> List[int]:

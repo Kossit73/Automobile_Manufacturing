@@ -1003,6 +1003,447 @@ def _debt_schedule(model: Dict[str, Any]) -> pd.DataFrame:
     return df
 
 
+def _render_production_horizon_editor(cfg: CompanyConfig) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    st.markdown("##### Edit Production Horizon")
+    for year in years:
+        with st.expander(f"Edit Production Horizon – {year}", expanded=False):
+            with st.form(f"production_horizon_form_{year}"):
+                utilization = st.slider(
+                    "Capacity Utilization",
+                    min_value=0.0,
+                    max_value=1.5,
+                    value=float(cfg.capacity_utilization.get(year, 0.0)),
+                    step=0.01,
+                    key=f"prod_util_{year}",
+                )
+                annual_capacity = st.number_input(
+                    "Annual Capacity",
+                    min_value=0.0,
+                    value=float(cfg.annual_capacity),
+                    step=100.0,
+                    key=f"prod_capacity_{year}",
+                )
+                working_days = st.number_input(
+                    "Working Days",
+                    min_value=1,
+                    max_value=366,
+                    value=int(cfg.working_days),
+                    step=1,
+                    key=f"prod_days_{year}",
+                )
+                submitted = st.form_submit_button("Save Production Horizon")
+
+            if submitted:
+                cfg.capacity_utilization[year] = float(utilization)
+                cfg.annual_capacity = float(annual_capacity)
+                cfg.working_days = int(working_days)
+                cfg.__post_init__()
+                _run_model()
+                st.success(f"Production horizon updated for {year}.")
+
+
+def _render_production_capacity_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    production_volume: Dict[int, float] = model.get("production_volume", {}) if model else {}
+    st.markdown("##### Edit Production Capacity Targets")
+    for year in years:
+        default_units = cfg.annual_capacity * float(cfg.capacity_utilization.get(year, 0.0))
+        planned_units = float(production_volume.get(year, default_units))
+        with st.expander(f"Edit Capacity Target – {year}", expanded=False):
+            with st.form(f"capacity_form_{year}"):
+                planned = st.number_input(
+                    "Planned Production Units",
+                    min_value=0.0,
+                    value=float(planned_units),
+                    step=100.0,
+                    key=f"capacity_units_{year}",
+                )
+                submitted = st.form_submit_button("Save Capacity Target")
+
+            if submitted:
+                if cfg.annual_capacity > 0:
+                    utilization = max(0.0, min(1.5, planned / float(cfg.annual_capacity)))
+                    cfg.capacity_utilization[year] = utilization
+                cfg.__post_init__()
+                _run_model()
+                st.success(f"Capacity target updated for {year}.")
+
+
+def _render_pricing_schedule_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    products = list(cfg.product_portfolio.keys())
+    product_prices: Dict[int, Dict[str, float]] = model.get("product_prices", {}) if model else {}
+
+    if not products:
+        return
+
+    st.markdown("##### Edit Pricing Schedule")
+    for year in years:
+        with st.expander(f"Edit Pricing – {year}", expanded=False):
+            with st.form(f"pricing_form_{year}"):
+                inputs: Dict[str, float] = {}
+                prices_for_year = product_prices.get(year, {}) if product_prices else {}
+                years_since_start = max(0, year - cfg.start_year)
+
+                for product in products:
+                    current_price = prices_for_year.get(product)
+                    if current_price is None:
+                        base_price = cfg.product_portfolio.get(product, {}).get("price", 0.0)
+                        growth = cfg.product_portfolio.get(product, {}).get("price_growth", 0.0)
+                        current_price = base_price * ((1 + growth) ** years_since_start)
+                    inputs[product] = st.number_input(
+                        f"{_product_label(product)} Price",
+                        min_value=0.0,
+                        value=float(current_price),
+                        step=100.0,
+                        key=f"pricing_{product}_{year}",
+                    )
+                submitted = st.form_submit_button("Save Pricing")
+
+            if submitted:
+                years_since_start = max(0, year - cfg.start_year)
+                for product, price_value in inputs.items():
+                    base_price = cfg.product_portfolio.get(product, {}).get("price", 0.0)
+                    if years_since_start == 0 or base_price <= 0:
+                        cfg.product_portfolio[product]["price"] = float(price_value)
+                    else:
+                        if base_price <= 0:
+                            base_price = 1.0
+                        growth = (float(price_value) / base_price) ** (1 / years_since_start) - 1
+                        cfg.product_portfolio[product]["price_growth"] = growth
+                cfg.__post_init__()
+                _run_model()
+                st.success(f"Pricing updated for {year}.")
+
+
+def _render_revenue_schedule_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    product_units: Dict[int, Dict[str, float]] = model.get("product_units", {}) if model else {}
+    products = list(cfg.product_portfolio.keys())
+
+    if not products:
+        return
+
+    st.markdown("##### Edit Revenue Schedule")
+    for year in years:
+        with st.expander(f"Edit Revenue Mix – {year}", expanded=False):
+            with st.form(f"revenue_form_{year}"):
+                overrides: Dict[str, float] = {}
+                units_for_year = product_units.get(year, {}) if product_units else {}
+                for product in products:
+                    current_units = units_for_year.get(product, 0.0)
+                    overrides[product] = st.number_input(
+                        f"{_product_label(product)} Units",
+                        min_value=0.0,
+                        value=float(current_units),
+                        step=100.0,
+                        key=f"revenue_units_{product}_{year}",
+                    )
+                reset = st.checkbox(
+                    "Reset overrides for this year",
+                    value=False,
+                    key=f"revenue_reset_{year}",
+                )
+                submitted = st.form_submit_button("Save Revenue Mix")
+
+            if submitted:
+                cfg.product_unit_overrides = cfg.product_unit_overrides or {}
+                if reset:
+                    cfg.product_unit_overrides.pop(year, None)
+                else:
+                    cfg.product_unit_overrides[year] = {product: float(value) for product, value in overrides.items()}
+                cfg.__post_init__()
+                _run_model()
+                st.success(f"Revenue mix updated for {year}.")
+
+
+def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    variable_cogs: Dict[int, float] = model.get("variable_cogs", {}) if model else {}
+    fixed_cogs: Dict[int, float] = model.get("fixed_cogs", {}) if model else {}
+
+    st.markdown("##### Edit Cost Structure")
+    for year in years:
+        with st.expander(f"Edit Cost Structure – {year}", expanded=False):
+            with st.form(f"cost_form_{year}"):
+                variable_default = float(variable_cogs.get(year, 0.0))
+                fixed_default = float(fixed_cogs.get(year, 0.0))
+                marketing_default = float(cfg.marketing_budget.get(year, 0.0))
+                variable_value = st.number_input(
+                    "Variable Production Cost",
+                    min_value=0.0,
+                    value=variable_default,
+                    step=1000.0,
+                    key=f"cost_variable_{year}",
+                )
+                fixed_value = st.number_input(
+                    "Fixed Manufacturing Cost",
+                    min_value=0.0,
+                    value=fixed_default,
+                    step=1000.0,
+                    key=f"cost_fixed_{year}",
+                )
+                marketing_value = st.number_input(
+                    "Marketing Spend",
+                    min_value=0.0,
+                    value=marketing_default,
+                    step=1000.0,
+                    key=f"cost_marketing_{year}",
+                )
+                clear = st.checkbox(
+                    "Reset overrides for this year",
+                    value=False,
+                    key=f"cost_reset_{year}",
+                )
+                submitted = st.form_submit_button("Save Cost Structure")
+
+            if submitted:
+                cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
+                cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
+                cfg.marketing_budget = cfg.marketing_budget or {}
+
+                if clear:
+                    cfg.variable_cost_overrides.pop(year, None)
+                    cfg.fixed_cost_overrides.pop(year, None)
+                else:
+                    cfg.variable_cost_overrides[year] = float(variable_value)
+                    cfg.fixed_cost_overrides[year] = float(fixed_value)
+                    cfg.marketing_budget[year] = float(marketing_value)
+
+                if clear:
+                    cfg.marketing_budget[year] = float(marketing_value)
+
+                cfg.__post_init__()
+                _run_model()
+                st.success(f"Cost structure updated for {year}.")
+
+
+def _render_operating_expense_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    st.markdown("##### Edit Operating Expenses")
+    for year in years:
+        with st.expander(f"Edit Operating Expenses – {year}", expanded=False):
+            with st.form(f"opex_form_{year}"):
+                marketing_default = float(cfg.marketing_budget.get(year, 0.0))
+                other_default = 0.0
+                if cfg.other_opex_overrides:
+                    other_default = float(cfg.other_opex_overrides.get(year, 0.0))
+                marketing_value = st.number_input(
+                    "Marketing Spend",
+                    min_value=0.0,
+                    value=marketing_default,
+                    step=1000.0,
+                    key=f"opex_marketing_{year}",
+                )
+                other_value = st.number_input(
+                    "Other Operating Expense",
+                    min_value=0.0,
+                    value=other_default,
+                    step=1000.0,
+                    key=f"opex_other_{year}",
+                )
+                reset = st.checkbox(
+                    "Reset other expense override",
+                    value=False,
+                    key=f"opex_reset_{year}",
+                )
+                submitted = st.form_submit_button("Save Operating Expenses")
+
+            if submitted:
+                cfg.marketing_budget = cfg.marketing_budget or {}
+                cfg.other_opex_overrides = cfg.other_opex_overrides or {}
+                cfg.marketing_budget[year] = float(marketing_value)
+                if reset:
+                    cfg.other_opex_overrides.pop(year, None)
+                else:
+                    cfg.other_opex_overrides[year] = float(other_value)
+                cfg.__post_init__()
+                _run_model()
+                st.success(f"Operating expenses updated for {year}.")
+
+
+def _render_working_capital_editor(cfg: CompanyConfig) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    st.markdown("##### Edit Working Capital Drivers")
+    for year in years:
+        with st.expander(f"Edit Working Capital – {year}", expanded=False):
+            with st.form(f"working_capital_form_{year}"):
+                year_overrides = {}
+                if cfg.working_capital_overrides:
+                    year_overrides = cfg.working_capital_overrides.get(year, {})
+
+                receivable_days = st.number_input(
+                    "Receivable Days",
+                    min_value=0.0,
+                    value=float(year_overrides.get("receivable_days", cfg.receivable_days)),
+                    step=1.0,
+                    key=f"wc_receivable_{year}",
+                )
+                inventory_days = st.number_input(
+                    "Inventory Days",
+                    min_value=0.0,
+                    value=float(year_overrides.get("inventory_days", cfg.inventory_days)),
+                    step=1.0,
+                    key=f"wc_inventory_{year}",
+                )
+                payable_days = st.number_input(
+                    "Payable Days",
+                    min_value=0.0,
+                    value=float(year_overrides.get("payable_days", cfg.payable_days)),
+                    step=1.0,
+                    key=f"wc_payable_{year}",
+                )
+                accrued_ratio = st.number_input(
+                    "Accrued Expense Ratio",
+                    min_value=0.0,
+                    value=float(year_overrides.get("accrued_expense_ratio", cfg.accrued_expense_ratio)),
+                    step=0.01,
+                    key=f"wc_accrued_{year}",
+                )
+                reset = st.checkbox(
+                    "Reset overrides",
+                    value=False,
+                    key=f"wc_reset_{year}",
+                )
+                submitted = st.form_submit_button("Save Working Capital Drivers")
+
+            if submitted:
+                cfg.working_capital_overrides = cfg.working_capital_overrides or {}
+                if reset:
+                    cfg.working_capital_overrides.pop(year, None)
+                else:
+                    cfg.working_capital_overrides[year] = {
+                        "receivable_days": float(receivable_days),
+                        "inventory_days": float(inventory_days),
+                        "payable_days": float(payable_days),
+                        "accrued_expense_ratio": float(accrued_ratio),
+                    }
+                cfg.__post_init__()
+                _run_model()
+                st.success(f"Working capital drivers updated for {year}.")
+
+
+def _render_debt_schedule_editor(cfg: CompanyConfig) -> None:
+    years = _config_years(cfg)
+    instruments = list(getattr(cfg, "debt_instruments", []) or [])
+
+    if not years or not instruments:
+        return
+
+    st.markdown("##### Edit Debt Schedule")
+    for year in years:
+        with st.expander(f"Edit Debt Activity – {year}", expanded=False):
+            with st.form(f"debt_form_{year}"):
+                draw_inputs: Dict[int, float] = {}
+                name_inputs: Dict[int, str] = {}
+                principal_inputs: Dict[int, float] = {}
+                rate_inputs: Dict[int, float] = {}
+                term_inputs: Dict[int, int] = {}
+                io_inputs: Dict[int, int] = {}
+                start_year_inputs: Dict[int, int] = {}
+
+                for idx, instrument in enumerate(instruments):
+                    name_inputs[idx] = st.text_input(
+                        f"Instrument {idx + 1} Name",
+                        value=instrument.name,
+                        key=f"debt_name_{idx}_{year}",
+                    )
+                    principal_inputs[idx] = st.number_input(
+                        f"{instrument.name} Principal",
+                        min_value=0.0,
+                        value=float(instrument.principal),
+                        step=1000.0,
+                        key=f"debt_principal_{idx}_{year}",
+                    )
+                    rate_inputs[idx] = st.number_input(
+                        f"{instrument.name} Interest Rate",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=float(instrument.interest_rate),
+                        step=0.001,
+                        format="%.4f",
+                        key=f"debt_rate_{idx}_{year}",
+                    )
+                    term_inputs[idx] = st.number_input(
+                        f"{instrument.name} Term (years)",
+                        min_value=1,
+                        max_value=50,
+                        value=int(max(1, instrument.term)),
+                        step=1,
+                        key=f"debt_term_{idx}_{year}",
+                    )
+                    io_inputs[idx] = st.number_input(
+                        f"{instrument.name} Interest-Only Years",
+                        min_value=0,
+                        max_value=50,
+                        value=int(max(0, instrument.interest_only_years)),
+                        step=1,
+                        key=f"debt_io_{idx}_{year}",
+                    )
+                    start_year_inputs[idx] = st.number_input(
+                        f"{instrument.name} Start Year",
+                        min_value=cfg.start_year,
+                        max_value=cfg.start_year + cfg.projection_years - 1,
+                        value=int(instrument.start_year),
+                        step=1,
+                        key=f"debt_start_{idx}_{year}",
+                    )
+                    draw_inputs[idx] = st.number_input(
+                        f"{instrument.name} Draw {year}",
+                        min_value=0.0,
+                        value=float(instrument.draw_schedule.get(year, 0.0)),
+                        step=1000.0,
+                        key=f"debt_draw_{idx}_{year}",
+                    )
+
+                reset_draws = st.checkbox(
+                    "Remove draw for this year",
+                    value=False,
+                    key=f"debt_reset_{year}",
+                )
+                submitted = st.form_submit_button("Save Debt Settings")
+
+            if submitted:
+                for idx, instrument in enumerate(instruments):
+                    instrument.name = name_inputs[idx]
+                    instrument.principal = float(principal_inputs[idx])
+                    instrument.interest_rate = float(rate_inputs[idx])
+                    instrument.term = int(term_inputs[idx])
+                    instrument.interest_only_years = int(io_inputs[idx])
+                    instrument.start_year = int(start_year_inputs[idx])
+                    if reset_draws:
+                        instrument.draw_schedule.pop(year, None)
+                    else:
+                        instrument.draw_schedule[year] = float(draw_inputs[idx])
+                    instrument.__post_init__()
+
+                cfg.debt_instruments = instruments
+                cfg.__post_init__()
+                _run_model()
+                st.success(f"Debt schedule updated for {year}.")
+
 def _forecast_schedule(model: Dict[str, Any]) -> pd.DataFrame:
     years = _projection_years(model)
     rows = []
@@ -1527,47 +1968,55 @@ def _render_platform_settings() -> None:
         st.markdown("#### Production Horizon Schedule")
         horizon_df = _production_horizon_table(cfg)
         _render_table(horizon_df, hide_index=True)
+        _render_production_horizon_editor(cfg)
 
         st.markdown("#### Production Capacity Schedule")
         model: Dict[str, Any] = st.session_state.get("financial_model", {})
         capacity_df = _production_capacity_schedule(cfg, model)
         _render_table(capacity_df, hide_index=True)
+        _render_production_capacity_editor(cfg, model)
 
         st.markdown("#### Pricing Schedule")
         pricing_df = _pricing_schedule(cfg, model)
         if pricing_df.empty:
             st.write("Run the financial model to populate product pricing across the horizon.")
         _render_table(pricing_df, hide_index=True)
+        _render_pricing_schedule_editor(cfg, model)
 
         st.markdown("#### Revenue Schedule")
         revenue_df = _revenue_schedule(cfg, model)
         if revenue_df.empty:
             st.write("Run the financial model to populate revenue projections across the horizon.")
         _render_table(revenue_df, hide_index=True)
+        _render_revenue_schedule_editor(cfg, model)
 
         st.markdown("#### Cost Structure Schedule")
         cost_df = _cost_structure_schedule(cfg, model)
         if cost_df.empty:
             st.write("Run the financial model to populate cost structure projections across the horizon.")
         _render_table(cost_df, hide_index=True)
+        _render_cost_structure_editor(cfg, model)
 
         st.markdown("#### Operating Expense Schedule")
         opex_df = _operating_expense_schedule(cfg, model)
         if opex_df.empty:
             st.write("Run the financial model to populate operating expense projections across the horizon.")
         _render_table(opex_df, hide_index=True)
+        _render_operating_expense_editor(cfg, model)
 
         st.markdown("#### Working Capital Expense Schedule")
         working_capital_df = _working_capital_expense_schedule(cfg, model)
         if working_capital_df.empty:
             st.write("Run the financial model to populate working capital projections across the horizon.")
         _render_table(working_capital_df, hide_index=True)
+        _render_working_capital_editor(cfg)
 
         st.markdown("#### Debt Amortization Schedule")
         debt_df = _debt_schedule(model)
         if debt_df.empty:
             st.write("Configure debt instruments in the financing settings to populate the schedule.")
         _render_table(debt_df, hide_index=True)
+        _render_debt_schedule_editor(cfg)
 
     with labor_tab:
         _render_labor_management()

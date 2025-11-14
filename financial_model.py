@@ -8,6 +8,69 @@ import pandas as pd
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional, Sequence, Iterable
 
+
+def _sanitize_numeric_mapping(raw: Optional[Dict], allow_negative: bool = False) -> Dict[int, float]:
+    """Convert arbitrary mappings into ``{year: value}`` dictionaries."""
+
+    if not raw:
+        return {}
+
+    cleaned: Dict[int, float] = {}
+    for raw_key, raw_value in raw.items():
+        try:
+            year = int(raw_key)
+        except (TypeError, ValueError):
+            continue
+
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+
+        if not allow_negative and value < 0:
+            value = 0.0
+
+        cleaned[year] = value
+
+    return cleaned
+
+
+def _sanitize_nested_numeric_mapping(
+    raw: Optional[Dict], allow_negative: bool = False
+) -> Dict[int, Dict[str, float]]:
+    """Sanitize nested mappings keyed by year with numeric payloads."""
+
+    if not raw:
+        return {}
+
+    cleaned: Dict[int, Dict[str, float]] = {}
+    for raw_key, raw_value in raw.items():
+        try:
+            year = int(raw_key)
+        except (TypeError, ValueError):
+            continue
+
+        if not isinstance(raw_value, dict):
+            continue
+
+        inner: Dict[str, float] = {}
+        for inner_key, inner_value in raw_value.items():
+            label = str(inner_key)
+            try:
+                value = float(inner_value)
+            except (TypeError, ValueError):
+                continue
+
+            if not allow_negative and value < 0:
+                value = 0.0
+
+            inner[label] = value
+
+        if inner:
+            cleaned[year] = inner
+
+    return cleaned
+
 # =====================================================
 # 1. INPUT PARAMETERS (CONFIGURABLE)
 # =====================================================
@@ -538,6 +601,11 @@ class CompanyConfig:
     inventory_days: float = 30.0
     payable_days: float = 30.0
     accrued_expense_ratio: float = 0.04
+    product_unit_overrides: Optional[Dict[int, Dict[str, float]]] = None
+    variable_cost_overrides: Optional[Dict[int, float]] = None
+    fixed_cost_overrides: Optional[Dict[int, float]] = None
+    other_opex_overrides: Optional[Dict[int, float]] = None
+    working_capital_overrides: Optional[Dict[int, Dict[str, float]]] = None
 
     def __post_init__(self):
         if self.projection_years < 1:
@@ -623,6 +691,14 @@ class CompanyConfig:
             0.0, min(1.0, float(self.fixed_cost_utilization_sensitivity))
         )
 
+        self.product_unit_overrides = _sanitize_nested_numeric_mapping(self.product_unit_overrides)
+        self.variable_cost_overrides = _sanitize_numeric_mapping(self.variable_cost_overrides)
+        self.fixed_cost_overrides = _sanitize_numeric_mapping(self.fixed_cost_overrides)
+        self.other_opex_overrides = _sanitize_numeric_mapping(self.other_opex_overrides)
+        self.working_capital_overrides = _sanitize_nested_numeric_mapping(
+            self.working_capital_overrides
+        )
+
 # Default Configuration
 config = CompanyConfig()
 
@@ -687,10 +763,24 @@ def calculate_working_capital_positions(
         cost = cogs.get(year, 0.0)
         operating = opex.get(year, 0.0)
 
-        receivables_balance = rev * cfg.receivable_days * sales_day_factor
-        inventory_balance = cost * cfg.inventory_days * sales_day_factor
-        payables_balance = cost * cfg.payable_days * sales_day_factor
-        accrued_balance = operating * cfg.accrued_expense_ratio
+        overrides = {}
+        if getattr(cfg, "working_capital_overrides", None):
+            overrides = cfg.working_capital_overrides.get(year, {})
+
+        receivable_days = float(overrides.get("receivable_days", cfg.receivable_days))
+        inventory_days = float(overrides.get("inventory_days", cfg.inventory_days))
+        payable_days = float(overrides.get("payable_days", cfg.payable_days))
+        accrued_ratio = float(overrides.get("accrued_expense_ratio", cfg.accrued_expense_ratio))
+
+        receivable_days = max(0.0, receivable_days)
+        inventory_days = max(0.0, inventory_days)
+        payable_days = max(0.0, payable_days)
+        accrued_ratio = max(0.0, accrued_ratio)
+
+        receivables_balance = rev * receivable_days * sales_day_factor
+        inventory_balance = cost * inventory_days * sales_day_factor
+        payables_balance = cost * payable_days * sales_day_factor
+        accrued_balance = operating * accrued_ratio
 
         receivables[year] = receivables_balance
         inventory[year] = inventory_balance
@@ -746,6 +836,33 @@ def calculate_production_forecast(cfg: CompanyConfig):
             revenue_for_year[product] = revenue_value
             total_revenue += revenue_value
 
+        override_units = {}
+        if getattr(cfg, "product_unit_overrides", None):
+            override_units = cfg.product_unit_overrides.get(y, {})
+
+        if override_units:
+            override_total = 0.0
+            for product, override_value in override_units.items():
+                try:
+                    override_amount = max(0.0, float(override_value))
+                except (TypeError, ValueError):
+                    continue
+                units_for_year[product] = override_amount
+                override_total += override_amount
+
+            if override_total > 0:
+                production_volume[y] = sum(units_for_year.values())
+                total_revenue = 0.0
+                for product in cfg.product_portfolio.keys():
+                    if product not in prices_for_year:
+                        continue
+                    price = prices_for_year[product]
+                    revenue_value = units_for_year.get(product, 0.0) * price
+                    revenue_for_year[product] = revenue_value
+                    total_revenue += revenue_value
+            else:
+                cfg.product_unit_overrides.pop(y, None)
+
         product_units[y] = units_for_year
         product_prices[y] = prices_for_year
         product_revenue[y] = revenue_for_year
@@ -791,6 +908,27 @@ def calculate_cogs(
 
         fixed_cost = _fixed_production_cost(cfg, y)
 
+        override_variable = None
+        if getattr(cfg, "variable_cost_overrides", None):
+            override_variable = cfg.variable_cost_overrides.get(y)
+
+        if override_variable is not None:
+            override_variable = max(0.0, float(override_variable))
+            if variable_total > 0 and per_product:
+                scale = override_variable / variable_total
+                per_product = {product: value * scale for product, value in per_product.items()}
+            elif per_product:
+                even_share = override_variable / len(per_product)
+                per_product = {product: even_share for product in per_product.keys()}
+            variable_total = override_variable
+
+        override_fixed = None
+        if getattr(cfg, "fixed_cost_overrides", None):
+            override_fixed = cfg.fixed_cost_overrides.get(y)
+
+        if override_fixed is not None:
+            fixed_cost = max(0.0, float(override_fixed))
+
         total_cogs[y] = variable_total + fixed_cost
         variable_cogs[y] = variable_total
         fixed_cogs[y] = fixed_cost
@@ -807,7 +945,15 @@ def calculate_opex(years: Sequence[int], cfg: CompanyConfig) -> Dict[int, float]
     for y in years:
         annual_payroll = (cfg.avg_salary * cfg.headcount * 12) * (1 + cfg.annual_salary_growth) ** (y - cfg.start_year)
         marketing = _carry_forward(cfg.marketing_budget, y, 72_000)
-        opex[y] = marketing + annual_payroll
+        other_override = None
+        if getattr(cfg, "other_opex_overrides", None):
+            other_override = cfg.other_opex_overrides.get(y)
+
+        total = marketing + annual_payroll
+        if other_override is not None:
+            total = marketing + annual_payroll + max(0.0, float(other_override))
+
+        opex[y] = total
     return opex
 
 def calculate_opex_with_labor_manager(years: Sequence[int], cfg: CompanyConfig) -> Dict[int, float]:
@@ -822,7 +968,15 @@ def calculate_opex_with_labor_manager(years: Sequence[int], cfg: CompanyConfig) 
         indirect_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Indirect', 0)
         labor_cost = direct_cost + indirect_cost
         marketing = _carry_forward(cfg.marketing_budget, y, 72_000)
-        opex[y] = marketing + labor_cost
+        other_override = None
+        if getattr(cfg, "other_opex_overrides", None):
+            other_override = cfg.other_opex_overrides.get(y)
+
+        total = marketing + labor_cost
+        if other_override is not None:
+            total = marketing + labor_cost + max(0.0, float(other_override))
+
+        opex[y] = total
     return opex
 
 def get_labor_metrics(cfg: CompanyConfig, years: Sequence[int]) -> Dict[int, Dict[str, float]]:

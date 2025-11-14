@@ -187,6 +187,12 @@ def _apply_increment(value: float, increment_pct: float) -> float:
     return value * (1 + increment_pct / 100.0)
 
 
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    """Clamp ``value`` between ``minimum`` and ``maximum``."""
+
+    return max(minimum, min(maximum, value))
+
+
 def _next_available_year(years: Sequence[int], candidate: int) -> int:
     """Return the first year at or after ``candidate`` that is not already present."""
 
@@ -325,6 +331,288 @@ def _schedule_table_editor(
         status_placeholder.caption("No edits pending.")
 
     return edited_df, status_placeholder, warnings, has_changes
+
+def _format_display_value(value: Any, field: Dict[str, Any]) -> str:
+    if value is None or value == "":
+        return "—"
+
+    field_type = field.get("type", "text")
+    if field_type == "currency":
+        try:
+            return f"${float(value):,.0f}"
+        except (TypeError, ValueError):
+            return str(value)
+    if field_type == "percent":
+        try:
+            precision = field.get("precision", 1)
+            return f"{float(value):.{precision}f}%"
+        except (TypeError, ValueError):
+            return str(value)
+    if field_type == "float":
+        try:
+            precision = field.get("precision", 2)
+            return f"{float(value):,.{precision}f}"
+        except (TypeError, ValueError):
+            return str(value)
+    if field_type == "int":
+        try:
+            return f"{int(round(float(value))):,}"
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def _render_inline_row_editor(
+    key: str,
+    df: pd.DataFrame,
+    field_definitions: Sequence[Dict[str, Any]],
+    *,
+    on_save: Callable[[pd.Series, Dict[str, Any]], Optional[str]],
+    row_id_column: str = "Year",
+    empty_message: str = "No rows available.",
+) -> None:
+    if df.empty:
+        st.info(empty_message)
+        return
+
+    style_key = "_schedule_style_injected"
+    if not st.session_state.get(style_key):
+        st.markdown(
+            """
+            <style>
+            .schedule-row {background-color: var(--background-color); border-bottom: 1px solid rgba(0,0,0,0.05); padding: 0.35rem 0.5rem; border-radius: 0.25rem;}
+            .schedule-header {border-bottom: 1px solid rgba(0,0,0,0.1); padding: 0.25rem 0.5rem; font-weight: 600;}
+            .schedule-actions .stButton>button {width: 100%;}
+            </style>
+            """
+            ,
+            unsafe_allow_html=True,
+        )
+        st.session_state[style_key] = True
+
+    status_key = f"{key}_status"
+    if status_key in st.session_state:
+        st.success(st.session_state.pop(status_key))
+
+    editing_state_key = f"{key}_editing"
+    current_editing = st.session_state.get(editing_state_key)
+
+    header_columns = st.columns(len(field_definitions) + 1)
+    for idx, field in enumerate(field_definitions):
+        label = field.get("label", field.get("column", ""))
+        header_columns[idx].markdown(f"<div class='schedule-header'>{label}</div>", unsafe_allow_html=True)
+    header_columns[-1].markdown("<div class='schedule-header'>Actions</div>", unsafe_allow_html=True)
+
+    for _, row in df.iterrows():
+        row_id_value = row.get(row_id_column)
+        row_key = str(row_id_value)
+        is_editing = current_editing == row_key
+        row_columns = st.columns(len(field_definitions) + 1)
+        updated_values: Dict[str, Any] = {}
+
+        for idx, field in enumerate(field_definitions):
+            column_name = field.get("column")
+            label = field.get("label", column_name)
+            data_key = field.get("data_key", column_name)
+            cell_container = row_columns[idx]
+            value = row.get(column_name)
+            if is_editing and field.get("editable", True):
+                field_type = field.get("type", "text")
+                input_key = f"{key}_{row_key}_{data_key}"
+                if field_type in {"float", "currency", "percent"}:
+                    base_value = float(value or 0.0)
+                    input_kwargs: Dict[str, Any] = {
+                        "key": input_key,
+                        "value": base_value,
+                        "step": field.get("step", 1.0),
+                    }
+                    if field.get("min") is not None:
+                        input_kwargs["min_value"] = float(field["min"])
+                    if field.get("max") is not None:
+                        input_kwargs["max_value"] = float(field["max"])
+                    if field_type == "currency":
+                        input_kwargs.setdefault("step", field.get("step", 1000.0))
+                        input_kwargs["format"] = field.get("format", "%.0f")
+                    elif field_type == "percent":
+                        input_kwargs.setdefault("step", field.get("step", 1.0))
+                        input_kwargs["format"] = field.get("format", "%.2f")
+                    else:
+                        input_kwargs["format"] = field.get("format", "%.2f")
+                    updated_values[data_key] = cell_container.number_input(label, **input_kwargs)
+                elif field_type == "int":
+                    base_value = int(round(float(value or 0)))
+                    input_kwargs = {
+                        "key": input_key,
+                        "value": base_value,
+                        "step": int(field.get("step", 1)),
+                        "format": "%d",
+                    }
+                    if field.get("min") is not None:
+                        input_kwargs["min_value"] = int(field["min"])
+                    if field.get("max") is not None:
+                        input_kwargs["max_value"] = int(field["max"])
+                    updated_values[data_key] = cell_container.number_input(label, **input_kwargs)
+                else:
+                    updated_values[data_key] = cell_container.text_input(
+                        label, value=str(value or ""), key=input_key
+                    )
+            else:
+                display_value = _format_display_value(value, field)
+                cell_container.markdown(
+                    f"<div class='schedule-row'>{display_value}</div>", unsafe_allow_html=True
+                )
+
+        action_container = row_columns[-1]
+        action_container.markdown("<div class='schedule-row schedule-actions'></div>", unsafe_allow_html=True)
+        if is_editing:
+            action_cols = action_container.columns(2)
+            if action_cols[0].button("Save", key=f"{key}_save_{row_key}"):
+                try:
+                    message = on_save(row, updated_values)
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state[editing_state_key] = None
+                    _run_model()
+                    st.session_state[status_key] = message or "Row updated successfully."
+                    _rerun()
+                    return
+            if action_cols[1].button("Cancel", key=f"{key}_cancel_{row_key}"):
+                st.session_state[editing_state_key] = None
+                _rerun()
+                return
+        else:
+            if action_container.button("Edit", key=f"{key}_edit_{row_key}"):
+                st.session_state[editing_state_key] = row_key
+                _rerun()
+                return
+
+
+def _render_inline_row_editor(
+    key: str,
+    df: pd.DataFrame,
+    field_definitions: Sequence[Dict[str, Any]],
+    *,
+    on_save: Callable[[pd.Series, Dict[str, Any]], Optional[str]],
+    row_id_column: str = "Year",
+    empty_message: str = "No rows available.",
+) -> None:
+    if df.empty:
+        st.info(empty_message)
+        return
+
+    style_key = "_schedule_style_injected"
+    if not st.session_state.get(style_key):
+        st.markdown(
+            """
+            <style>
+            .schedule-row {background-color: var(--background-color); border-bottom: 1px solid rgba(0,0,0,0.05); padding: 0.35rem 0.5rem; border-radius: 0.25rem;}
+            .schedule-header {border-bottom: 1px solid rgba(0,0,0,0.1); padding: 0.25rem 0.5rem; font-weight: 600;}
+            .schedule-actions .stButton>button {width: 100%;}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.session_state[style_key] = True
+
+    status_key = f"{key}_status"
+    if status_key in st.session_state:
+        st.success(st.session_state.pop(status_key))
+
+    editing_state_key = f"{key}_editing"
+    current_editing = st.session_state.get(editing_state_key)
+
+    header_columns = st.columns(len(field_definitions) + 1)
+    for idx, field in enumerate(field_definitions):
+        label = field.get("label", field.get("column", ""))
+        header_columns[idx].markdown(f"<div class='schedule-header'>{label}</div>", unsafe_allow_html=True)
+    header_columns[-1].markdown("<div class='schedule-header'>Actions</div>", unsafe_allow_html=True)
+
+    for _, row in df.iterrows():
+        row_id_value = row.get(row_id_column)
+        row_key = str(row_id_value)
+        is_editing = current_editing == row_key
+        row_columns = st.columns(len(field_definitions) + 1)
+        updated_values: Dict[str, Any] = {}
+
+        for idx, field in enumerate(field_definitions):
+            column_name = field.get("column")
+            label = field.get("label", column_name)
+            data_key = field.get("data_key", column_name)
+            cell_container = row_columns[idx]
+            value = row.get(column_name)
+            if is_editing and field.get("editable", True):
+                field_type = field.get("type", "text")
+                input_key = f"{key}_{row_key}_{data_key}"
+                if field_type in {"float", "currency", "percent"}:
+                    base_value = float(value or 0.0)
+                    input_kwargs: Dict[str, Any] = {
+                        "key": input_key,
+                        "value": base_value,
+                        "step": field.get("step", 1.0),
+                    }
+                    if field.get("min") is not None:
+                        input_kwargs["min_value"] = float(field["min"])
+                    if field.get("max") is not None:
+                        input_kwargs["max_value"] = float(field["max"])
+                    if field_type == "currency":
+                        input_kwargs.setdefault("step", field.get("step", 1000.0))
+                        input_kwargs["format"] = field.get("format", "%.0f")
+                    elif field_type == "percent":
+                        input_kwargs.setdefault("step", field.get("step", 1.0))
+                        input_kwargs["format"] = field.get("format", "%.2f")
+                    else:
+                        input_kwargs["format"] = field.get("format", "%.2f")
+                    updated_values[data_key] = cell_container.number_input(label, **input_kwargs)
+                elif field_type == "int":
+                    base_value = int(round(float(value or 0)))
+                    input_kwargs = {
+                        "key": input_key,
+                        "value": base_value,
+                        "step": int(field.get("step", 1)),
+                        "format": "%d",
+                    }
+                    if field.get("min") is not None:
+                        input_kwargs["min_value"] = int(field["min"])
+                    if field.get("max") is not None:
+                        input_kwargs["max_value"] = int(field["max"])
+                    updated_values[data_key] = cell_container.number_input(label, **input_kwargs)
+                else:
+                    updated_values[data_key] = cell_container.text_input(
+                        label, value=str(value or ""), key=input_key
+                    )
+            else:
+                display_value = _format_display_value(value, field)
+                cell_container.markdown(
+                    f"<div class='schedule-row'>{display_value}</div>", unsafe_allow_html=True
+                )
+
+        action_container = row_columns[-1]
+        action_container.markdown("<div class='schedule-row schedule-actions'></div>", unsafe_allow_html=True)
+        if is_editing:
+            action_cols = action_container.columns(2)
+            if action_cols[0].button("Save", key=f"{key}_save_{row_key}"):
+                try:
+                    message = on_save(row, updated_values)
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state[editing_state_key] = None
+                    _run_model()
+                    st.session_state[status_key] = message or "Row updated successfully."
+                    _rerun()
+                    return
+            if action_cols[1].button("Cancel", key=f"{key}_cancel_{row_key}"):
+                st.session_state[editing_state_key] = None
+                _rerun()
+                return
+        else:
+            if action_container.button("Edit", key=f"{key}_edit_{row_key}"):
+                st.session_state[editing_state_key] = row_key
+                _rerun()
+                return
+
+
 
 def _projection_years(model: Dict[str, Any]) -> List[int]:
     years = model.get("years", [])
@@ -1224,6 +1512,56 @@ def _render_production_horizon_editor(cfg: CompanyConfig) -> None:
         "Planned Units",
     ])
 
+    def _save_production_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        utilization_pct = float(values.get("Capacity Utilization %", row["Capacity Utilization %"]))
+        annual_capacity = float(values.get("Annual Capacity", row["Annual Capacity"]))
+        working_days = int(values.get("Working Days", row["Working Days"]))
+        if annual_capacity <= 0:
+            raise ValueError("Annual capacity must be positive.")
+        if working_days <= 0:
+            raise ValueError("Working days must be positive.")
+        cfg.capacity_utilization[year] = _clamp(utilization_pct / 100.0, 0.0, 1.5)
+        cfg.annual_capacity = annual_capacity
+        cfg.working_days = working_days
+        cfg.__post_init__()
+        return f"Production assumptions updated for {year}."
+
+    _render_inline_row_editor(
+        "production_horizon_inline",
+        base_df,
+        [
+            {"column": "Year", "label": "Year", "type": "int", "editable": False},
+            {
+                "column": "Capacity Utilization %",
+                "label": "Capacity Utilization %",
+                "type": "percent",
+                "min": 0.0,
+                "max": 150.0,
+                "step": 1.0,
+            },
+            {
+                "column": "Annual Capacity",
+                "label": "Annual Capacity",
+                "type": "float",
+                "min": 0.0,
+                "step": 1000.0,
+            },
+            {
+                "column": "Working Days",
+                "label": "Working Days",
+                "type": "int",
+                "min": 0,
+                "max": 400,
+                "step": 1,
+            },
+            {"column": "Planned Units", "label": "Planned Units", "type": "float", "editable": False},
+        ],
+        on_save=_save_production_row,
+        row_id_column="Year",
+        empty_message="Add projection years to edit production assumptions.",
+    )
+
     edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
         "production_horizon",
         base_df,
@@ -1353,6 +1691,48 @@ def _render_production_capacity_editor(cfg: CompanyConfig, model: Dict[str, Any]
     }
 
     base_df = pd.DataFrame(rows, columns=["Year", "Planned Units", "Implied Utilization %", "Remaining Headroom"])
+
+    def _save_capacity_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        planned_units = max(0.0, float(values.get("Planned Units", row["Planned Units"])))
+        if cfg.annual_capacity <= 0:
+            raise ValueError("Set an annual capacity before editing planned units.")
+        utilization = _clamp(planned_units / float(cfg.annual_capacity), 0.0, 1.5)
+        cfg.capacity_utilization[year] = utilization
+        cfg.__post_init__()
+        return f"Capacity target updated for {year}."
+
+    _render_inline_row_editor(
+        "production_capacity_inline",
+        base_df,
+        [
+            {"column": "Year", "label": "Year", "type": "int", "editable": False},
+            {
+                "column": "Planned Units",
+                "label": "Planned Units",
+                "type": "float",
+                "min": 0.0,
+                "step": 1000.0,
+            },
+            {
+                "column": "Implied Utilization %",
+                "label": "Implied Utilization %",
+                "type": "percent",
+                "precision": 2,
+                "editable": False,
+            },
+            {
+                "column": "Remaining Headroom",
+                "label": "Remaining Headroom",
+                "type": "float",
+                "precision": 0,
+                "editable": False,
+            },
+        ],
+        on_save=_save_capacity_row,
+        row_id_column="Year",
+        empty_message="Add capacity rows to begin editing targets.",
+    )
 
     edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
         "production_capacity",
@@ -1485,6 +1865,45 @@ def _render_pricing_schedule_editor(cfg: CompanyConfig, model: Dict[str, Any]) -
 
     base_df = pd.DataFrame(rows)
 
+    product_labels = {_product_label(product): product for product in products}
+
+    def _save_pricing_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        overrides: Dict[str, float] = {}
+        for label, product in product_labels.items():
+            price_value = float(values.get(product, row.get(label, 0.0)))
+            if price_value < 0:
+                raise ValueError("Prices cannot be negative.")
+            overrides[product] = price_value
+        cfg.product_price_overrides = cfg.product_price_overrides or {}
+        cfg.product_price_overrides[year] = overrides
+        cfg.__post_init__()
+        return f"Pricing updated for {year}."
+
+    pricing_fields: List[Dict[str, Any]] = [
+        {"column": "Year", "label": "Year", "type": "int", "editable": False}
+    ]
+    for label, product in product_labels.items():
+        pricing_fields.append(
+            {
+                "column": label,
+                "label": f"{label} Price",
+                "type": "currency",
+                "min": 0.0,
+                "step": 100.0,
+                "data_key": product,
+            }
+        )
+
+    _render_inline_row_editor(
+        "pricing_schedule_inline",
+        base_df,
+        pricing_fields,
+        on_save=_save_pricing_row,
+        row_id_column="Year",
+        empty_message="Add pricing rows to begin editing values.",
+    )
+
     non_negative_columns = [_product_label(product) for product in products]
 
     edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
@@ -1605,6 +2024,46 @@ def _render_revenue_schedule_editor(cfg: CompanyConfig, model: Dict[str, Any]) -
         rows.append(row)
 
     base_df = pd.DataFrame(rows)
+
+    unit_labels = {_product_label(product): product for product in products}
+
+    def _save_revenue_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        overrides: Dict[str, float] = {}
+        for label, product in unit_labels.items():
+            units_value = float(values.get(product, row.get(label, 0.0)))
+            if units_value < 0:
+                raise ValueError("Units cannot be negative.")
+            overrides[product] = units_value
+        cfg.product_unit_overrides = cfg.product_unit_overrides or {}
+        cfg.product_unit_overrides[year] = overrides
+        cfg.__post_init__()
+        return f"Unit plan updated for {year}."
+
+    revenue_fields: List[Dict[str, Any]] = [
+        {"column": "Year", "label": "Year", "type": "int", "editable": False}
+    ]
+    for label, product in unit_labels.items():
+        revenue_fields.append(
+            {
+                "column": label,
+                "label": f"{label} Units",
+                "type": "float",
+                "min": 0.0,
+                "step": 100.0,
+                "data_key": product,
+            }
+        )
+
+    _render_inline_row_editor(
+        "revenue_schedule_inline",
+        base_df,
+        revenue_fields,
+        on_save=_save_revenue_row,
+        row_id_column="Year",
+        empty_message="Add revenue rows to begin editing unit volumes.",
+    )
+
     non_negative_columns = [_product_label(product) for product in products]
 
     edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
@@ -1730,6 +2189,53 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
         )
 
     base_df = pd.DataFrame(rows)
+
+    def _save_cost_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        variable_value = max(0.0, float(values.get("Variable Production Cost", row["Variable Production Cost"])))
+        fixed_value = max(0.0, float(values.get("Fixed Manufacturing Cost", row["Fixed Manufacturing Cost"])))
+        marketing_value = max(0.0, float(values.get("Marketing Spend", row["Marketing Spend"])))
+        cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
+        cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
+        cfg.marketing_budget = cfg.marketing_budget or {}
+        cfg.variable_cost_overrides[year] = variable_value
+        cfg.fixed_cost_overrides[year] = fixed_value
+        cfg.marketing_budget[year] = marketing_value
+        cfg.__post_init__()
+        return f"Cost structure updated for {year}."
+
+    _render_inline_row_editor(
+        "cost_structure_inline",
+        base_df,
+        [
+            {"column": "Year", "label": "Year", "type": "int", "editable": False},
+            {
+                "column": "Variable Production Cost",
+                "label": "Variable Production Cost",
+                "type": "currency",
+                "min": 0.0,
+                "step": 1000.0,
+            },
+            {
+                "column": "Fixed Manufacturing Cost",
+                "label": "Fixed Manufacturing Cost",
+                "type": "currency",
+                "min": 0.0,
+                "step": 1000.0,
+            },
+            {
+                "column": "Marketing Spend",
+                "label": "Marketing Spend",
+                "type": "currency",
+                "min": 0.0,
+                "step": 1000.0,
+            },
+        ],
+        on_save=_save_cost_row,
+        row_id_column="Year",
+        empty_message="Add cost rows to begin editing values.",
+    )
+
     edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
         "cost_structure",
         base_df,
@@ -1852,6 +2358,43 @@ def _render_operating_expense_editor(cfg: CompanyConfig, model: Dict[str, Any]) 
         )
 
     base_df = pd.DataFrame(rows)
+
+    def _save_opex_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        marketing_value = max(0.0, float(values.get("Marketing Spend", row["Marketing Spend"])))
+        other_value = max(0.0, float(values.get("Other Operating Expense", row["Other Operating Expense"])))
+        cfg.marketing_budget = cfg.marketing_budget or {}
+        cfg.other_opex_overrides = cfg.other_opex_overrides or {}
+        cfg.marketing_budget[year] = marketing_value
+        cfg.other_opex_overrides[year] = other_value
+        cfg.__post_init__()
+        return f"Operating expenses updated for {year}."
+
+    _render_inline_row_editor(
+        "operating_expense_inline",
+        base_df,
+        [
+            {"column": "Year", "label": "Year", "type": "int", "editable": False},
+            {
+                "column": "Marketing Spend",
+                "label": "Marketing Spend",
+                "type": "currency",
+                "min": 0.0,
+                "step": 1000.0,
+            },
+            {
+                "column": "Other Operating Expense",
+                "label": "Other Operating Expense",
+                "type": "currency",
+                "min": 0.0,
+                "step": 1000.0,
+            },
+        ],
+        on_save=_save_opex_row,
+        row_id_column="Year",
+        empty_message="Add operating expense rows to begin editing values.",
+    )
+
     edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
         "operating_expense",
         base_df,
@@ -1980,6 +2523,61 @@ def _render_working_capital_editor(cfg: CompanyConfig) -> None:
 
     base_df = pd.DataFrame(rows)
 
+    def _save_working_capital_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        receivable = max(0.0, float(values.get("Receivable Days", row["Receivable Days"])))
+        inventory = max(0.0, float(values.get("Inventory Days", row["Inventory Days"])))
+        payable = max(0.0, float(values.get("Payable Days", row["Payable Days"])))
+        accrued = max(0.0, float(values.get("Accrued Expense Ratio", row["Accrued Expense Ratio"])))
+        cfg.working_capital_overrides = cfg.working_capital_overrides or {}
+        cfg.working_capital_overrides[year] = {
+            "receivable_days": receivable,
+            "inventory_days": inventory,
+            "payable_days": payable,
+            "accrued_expense_ratio": accrued,
+        }
+        cfg.__post_init__()
+        return f"Working capital drivers updated for {year}."
+
+    _render_inline_row_editor(
+        "working_capital_inline",
+        base_df,
+        [
+            {"column": "Year", "label": "Year", "type": "int", "editable": False},
+            {
+                "column": "Receivable Days",
+                "label": "Receivable Days",
+                "type": "float",
+                "min": 0.0,
+                "step": 5.0,
+            },
+            {
+                "column": "Inventory Days",
+                "label": "Inventory Days",
+                "type": "float",
+                "min": 0.0,
+                "step": 5.0,
+            },
+            {
+                "column": "Payable Days",
+                "label": "Payable Days",
+                "type": "float",
+                "min": 0.0,
+                "step": 5.0,
+            },
+            {
+                "column": "Accrued Expense Ratio",
+                "label": "Accrued Expense Ratio",
+                "type": "float",
+                "min": 0.0,
+                "step": 1.0,
+            },
+        ],
+        on_save=_save_working_capital_row,
+        row_id_column="Year",
+        empty_message="Add working capital rows to begin editing values.",
+    )
+
     edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
         "working_capital",
         base_df,
@@ -2101,6 +2699,41 @@ def _render_debt_schedule_editor(cfg: CompanyConfig) -> None:
         rows.append(row)
 
     base_df = pd.DataFrame(rows)
+
+    def _save_debt_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        for idx, instrument in enumerate(instruments):
+            label = column_labels[idx]
+            draw_value = max(0.0, float(values.get(str(idx), row.get(label, 0.0))))
+            instrument.draw_schedule[year] = draw_value
+            instrument.__post_init__()
+        cfg.debt_instruments = instruments
+        cfg.__post_init__()
+        return f"Debt draws updated for {year}."
+
+    _debt_fields: List[Dict[str, Any]] = [
+        {"column": "Year", "label": "Year", "type": "int", "editable": False}
+    ]
+    for idx, label in column_labels.items():
+        _debt_fields.append(
+            {
+                "column": label,
+                "label": label,
+                "type": "currency",
+                "min": 0.0,
+                "step": 1000.0,
+                "data_key": str(idx),
+            }
+        )
+
+    _render_inline_row_editor(
+        "debt_schedule_inline",
+        base_df,
+        _debt_fields,
+        on_save=_save_debt_row,
+        row_id_column="Year",
+        empty_message="Add debt schedule rows to begin editing draws.",
+    )
 
     non_negative_columns = list(column_labels.values())
 

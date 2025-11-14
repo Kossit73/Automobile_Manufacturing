@@ -187,6 +187,15 @@ def _apply_increment(value: float, increment_pct: float) -> float:
     return value * (1 + increment_pct / 100.0)
 
 
+def _next_available_year(years: Sequence[int], candidate: int) -> int:
+    """Return the first year at or after ``candidate`` that is not already present."""
+
+    existing = {int(year) for year in years}
+    while candidate in existing:
+        candidate += 1
+    return candidate
+
+
 def _schedule_toolbar(
     prefix: str,
     years: Sequence[int],
@@ -207,6 +216,7 @@ def _schedule_toolbar(
             target_year = st.selectbox(
                 "Target Year",
                 options=list(years),
+                index=len(years) - 1,
                 key=f"{prefix}_toolbar_year",
             )
 
@@ -1183,7 +1193,7 @@ def _render_production_horizon_editor(cfg: CompanyConfig) -> None:
             st.success(f"Production horizon entry removed for {target_year}.")
             return
         if action["action"] == "add":
-            new_year = target_year + 1
+            new_year = _next_available_year(years, target_year + 1)
             _ensure_year_in_horizon(cfg, new_year)
             baseline = float(cfg.capacity_utilization.get(target_year, 0.0))
             cfg.capacity_utilization[new_year] = max(0.0, min(1.5, baseline))
@@ -1299,7 +1309,7 @@ def _render_production_capacity_editor(cfg: CompanyConfig, model: Dict[str, Any]
             st.success(f"Capacity target removed for {target_year}.")
             return
         if action["action"] == "add":
-            new_year = target_year + 1
+            new_year = _next_available_year(years, target_year + 1)
             _ensure_year_in_horizon(cfg, new_year)
             baseline_units = production_volume.get(
                 target_year,
@@ -1454,7 +1464,7 @@ def _render_pricing_schedule_editor(cfg: CompanyConfig, model: Dict[str, Any]) -
             st.success(f"Pricing row removed for {target_year}.")
             return
         if action["action"] == "add":
-            new_year = target_year + 1
+            new_year = _next_available_year(years, target_year + 1)
             _ensure_year_in_horizon(cfg, new_year)
             base_prices = price_defaults.get(target_year, {})
             cfg.product_price_overrides = cfg.product_price_overrides or {}
@@ -1575,7 +1585,7 @@ def _render_revenue_schedule_editor(cfg: CompanyConfig, model: Dict[str, Any]) -
             st.success(f"Revenue row removed for {target_year}.")
             return
         if action["action"] == "add":
-            new_year = target_year + 1
+            new_year = _next_available_year(years, target_year + 1)
             _ensure_year_in_horizon(cfg, new_year)
             base_units = unit_defaults.get(target_year, {})
             cfg.product_unit_overrides = cfg.product_unit_overrides or {}
@@ -1693,7 +1703,7 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
             st.success(f"Cost structure row removed for {target_year}.")
             return
         if action["action"] == "add":
-            new_year = target_year + 1
+            new_year = _next_available_year(years, target_year + 1)
             _ensure_year_in_horizon(cfg, new_year)
             defaults = cost_defaults.get(target_year, {"variable": 0.0, "fixed": 0.0, "marketing": 0.0})
             cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
@@ -1818,7 +1828,7 @@ def _render_operating_expense_editor(cfg: CompanyConfig, model: Dict[str, Any]) 
             st.success(f"Operating expense row removed for {target_year}.")
             return
         if action["action"] == "add":
-            new_year = target_year + 1
+            new_year = _next_available_year(years, target_year + 1)
             _ensure_year_in_horizon(cfg, new_year)
             defaults = opex_defaults.get(target_year, {"marketing": 0.0, "other": 0.0})
             cfg.marketing_budget = cfg.marketing_budget or {}
@@ -1940,7 +1950,7 @@ def _render_working_capital_editor(cfg: CompanyConfig) -> None:
             st.success(f"Working capital row removed for {target_year}.")
             return
         if action["action"] == "add":
-            new_year = target_year + 1
+            new_year = _next_available_year(years, target_year + 1)
             _ensure_year_in_horizon(cfg, new_year)
             defaults = wc_defaults.get(target_year, base_wc_values)
             cfg.working_capital_overrides = cfg.working_capital_overrides or {}
@@ -2065,7 +2075,7 @@ def _render_debt_schedule_editor(cfg: CompanyConfig) -> None:
             st.success(f"Debt draws removed for {target_year}.")
             return
         if action["action"] == "add":
-            new_year = target_year + 1
+            new_year = _next_available_year(years, target_year + 1)
             _ensure_year_in_horizon(cfg, new_year)
             for idx, instrument in enumerate(instruments):
                 base_draw = draw_defaults.get(target_year, {}).get(idx, 0.0)

@@ -907,6 +907,77 @@ def _operating_expense_schedule(cfg: CompanyConfig, model: Optional[Dict[str, An
     return pd.DataFrame(rows, columns=columns)
 
 
+def _working_capital_expense_schedule(
+    cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None
+) -> pd.DataFrame:
+    model = model or {}
+    years = _config_years(cfg)
+
+    revenue_map: Dict[int, float] = model.get("revenue", {})
+    receivables_map: Dict[int, float] = model.get("accounts_receivable", {})
+    inventory_map: Dict[int, float] = model.get("inventory", {})
+    payables_map: Dict[int, float] = model.get("accounts_payable", {})
+    accrued_map: Dict[int, float] = model.get("accrued_expenses", {})
+    net_wc_map: Dict[int, float] = model.get("net_working_capital", {})
+    change_map: Dict[int, float] = model.get("change_in_working_capital", {})
+
+    columns = [
+        "Year",
+        "Accounts Receivable",
+        "Inventory",
+        "Accounts Payable",
+        "Accrued Expenses",
+        "Net Working Capital",
+        "Change in Working Capital",
+        "Net Working Capital % of Revenue",
+    ]
+
+    def _percent(value: float, revenue: float) -> str:
+        if revenue <= 0:
+            return "—"
+        return f"{(value / revenue) * 100:.1f}%"
+
+    rows: List[Dict[str, Any]] = []
+    for year in years:
+        revenue_value = float(revenue_map.get(year, 0.0))
+        receivables = float(receivables_map.get(year, 0.0))
+        inventory = float(inventory_map.get(year, 0.0))
+        payables = float(payables_map.get(year, 0.0))
+        accrued = float(accrued_map.get(year, 0.0))
+        net_wc = float(net_wc_map.get(year, receivables + inventory - payables - accrued))
+        change_wc = float(change_map.get(year, 0.0))
+
+        rows.append(
+            {
+                "Year": year,
+                "Accounts Receivable": receivables,
+                "Inventory": inventory,
+                "Accounts Payable": payables,
+                "Accrued Expenses": accrued,
+                "Net Working Capital": net_wc,
+                "Change in Working Capital": change_wc,
+                "Net Working Capital % of Revenue": _percent(net_wc, revenue_value),
+            }
+        )
+
+    df = pd.DataFrame(rows, columns=columns)
+    if df.empty:
+        return df
+
+    currency_columns = [
+        "Accounts Receivable",
+        "Inventory",
+        "Accounts Payable",
+        "Accrued Expenses",
+        "Net Working Capital",
+        "Change in Working Capital",
+    ]
+    for column in currency_columns:
+        df[column] = _currency_series(df[column])
+
+    return df
+
+
 def _debt_schedule(model: Dict[str, Any]) -> pd.DataFrame:
     years = _projection_years(model)
     rows = []
@@ -1485,6 +1556,12 @@ def _render_platform_settings() -> None:
         if opex_df.empty:
             st.write("Run the financial model to populate operating expense projections across the horizon.")
         _render_table(opex_df, hide_index=True)
+
+        st.markdown("#### Working Capital Expense Schedule")
+        working_capital_df = _working_capital_expense_schedule(cfg, model)
+        if working_capital_df.empty:
+            st.write("Run the financial model to populate working capital projections across the horizon.")
+        _render_table(working_capital_df, hide_index=True)
 
         st.markdown("#### Debt Amortization Schedule")
         debt_df = _debt_schedule(model)

@@ -602,6 +602,7 @@ class CompanyConfig:
     payable_days: float = 30.0
     accrued_expense_ratio: float = 0.04
     product_unit_overrides: Optional[Dict[int, Dict[str, float]]] = None
+    product_price_overrides: Optional[Dict[int, Dict[str, float]]] = None
     variable_cost_overrides: Optional[Dict[int, float]] = None
     fixed_cost_overrides: Optional[Dict[int, float]] = None
     other_opex_overrides: Optional[Dict[int, float]] = None
@@ -619,6 +620,8 @@ class CompanyConfig:
         self.product_portfolio = _normalize_product_portfolio(
             self.start_year, self.projection_years, self.product_portfolio, self.cogs_ratio
         )
+
+        self.product_price_overrides = _sanitize_nested_numeric_mapping(self.product_price_overrides)
 
         # Update the blended cogs ratio so downstream analytics remain meaningful.
         blended_ratio = sum(
@@ -826,9 +829,18 @@ def calculate_production_forecast(cfg: CompanyConfig):
         total_revenue = 0.0
         years_since_start = max(0, y - cfg.start_year)
 
+        price_overrides = {}
+        if getattr(cfg, "product_price_overrides", None):
+            price_overrides = cfg.product_price_overrides.get(y, {})
+
         for product, drivers in cfg.product_portfolio.items():
             units = production_volume[y] * drivers["mix"]
             price = drivers["price"] * ((1 + drivers.get("price_growth", 0.0)) ** years_since_start)
+
+            if price_overrides and product in price_overrides:
+                override_price = price_overrides[product]
+                if override_price >= 0:
+                    price = override_price
 
             units_for_year[product] = units
             prices_for_year[product] = price

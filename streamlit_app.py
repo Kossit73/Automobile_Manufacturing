@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import datetime
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence
+from scipy import optimize
 
 from streamlit.delta_generator import DeltaGenerator
 import plotly.graph_objects as go
@@ -29,6 +31,23 @@ from labor_management import (
     initialize_default_labor_structure,
 )
 from capex_management import CapexItem, CapexScheduleManager, initialize_default_capex
+from advanced_analytics import (
+    AdvancedSensitivityAnalyzer,
+    StressTestEngine,
+    TrendDecomposition,
+    SegmentationAnalyzer,
+    MonteCarloSimulator,
+    WhatIfAnalyzer,
+    GoalSeekOptimizer,
+    RegressionModeler,
+    TimeSeriesAnalyzer,
+    RiskAnalyzer,
+    PortfolioOptimizer,
+    RealOptionsAnalyzer,
+    MacroeconomicLinker,
+    ESGAnalyzer,
+    ProbabilisticValuation,
+)
 
 # ---------------------------------------------------------------------------
 # AI & MACHINE LEARNING CONFIGURATION
@@ -1872,6 +1891,553 @@ def _display_schedule(title: str, df: pd.DataFrame, note: str = "") -> None:
 # RENDER FUNCTIONS
 # ---------------------------------------------------------------------------
 
+def _render_advanced_analytics(model: Dict[str, Any]) -> None:
+    cfg: CompanyConfig = st.session_state["company_config"]
+    years = _projection_years(model)
+    if not years:
+        st.info("Run the financial model to explore advanced analytics.")
+        return
+
+    st.markdown("### Advanced Analytics Workbench")
+    st.write(
+        "Stress test the plan, explore probabilistic outcomes, and connect macro drivers "
+        "to valuation using the tools below."
+    )
+
+    base_ev = float(model.get("enterprise_value", 0.0))
+    final_year = years[-1]
+
+    sensitivity_analyzer = AdvancedSensitivityAnalyzer(model, cfg)
+    stress_engine = StressTestEngine(model, cfg)
+    trend_analyzer = TrendDecomposition(model)
+    segmentation_analyzer = SegmentationAnalyzer(model)
+    monte_carlo = MonteCarloSimulator(model, cfg, num_simulations=500)
+    what_if_analyzer = WhatIfAnalyzer(cfg)
+    goal_seeker = GoalSeekOptimizer(cfg)
+    ts_analyzer = TimeSeriesAnalyzer()
+    risk_analyzer = RiskAnalyzer()
+    macro_linker = MacroeconomicLinker()
+    esg_analyzer = ESGAnalyzer()
+    real_options = RealOptionsAnalyzer()
+
+    product_units_all = model.get("product_units", {})
+    product_revenue_all = model.get("product_revenue", {})
+    variable_cogs_all = model.get("variable_cogs_breakdown", {})
+
+    units_year = product_units_all.get(final_year, {})
+    revenue_year = product_revenue_all.get(final_year, {})
+    cogs_year = variable_cogs_all.get(final_year, {})
+
+    segment_payload: Dict[str, Dict[str, float]] = {}
+    for product_key, revenue_value in sorted(revenue_year.items()):
+        label = _product_label(product_key)
+        units = units_year.get(product_key, 0.0)
+        cost_value = cogs_year.get(product_key, 0.0)
+        segment_payload[label] = {
+            "revenue": float(revenue_value),
+            "cost": float(cost_value),
+            "units": float(units) if units else 1.0,
+        }
+
+    segment_df = segmentation_analyzer.segment_analysis(segment_payload) if segment_payload else pd.DataFrame()
+
+    mc_params = {
+        "cogs_ratio": ("normal", float(cfg.cogs_ratio), max(0.01, float(cfg.cogs_ratio) * 0.05)),
+        "wacc": ("normal", float(cfg.wacc), 0.02),
+        "tax_rate": ("normal", float(cfg.tax_rate), 0.015),
+    }
+    mc_stats = monte_carlo.run_simulation(mc_params)
+    ev_distribution = mc_stats.get("enterprise_values", {}).get("distribution", [])
+    profit_distribution = mc_stats.get("final_profits", {}).get("distribution", [])
+
+    returns_matrix = np.array([])
+    product_returns: Dict[str, List[float]] = {}
+    for product_key in revenue_year:
+        series: List[float] = []
+        previous = None
+        for year in years:
+            revenue_value = product_revenue_all.get(year, {}).get(product_key, 0.0)
+            if previous is not None and previous:
+                series.append((revenue_value - previous) / previous)
+            previous = revenue_value
+        if series:
+            product_returns[_product_label(product_key)] = series
+
+    if product_returns:
+        returns_matrix = np.array(list(zip(*product_returns.values())))
+
+    tabs = st.tabs([
+        "Drivers & Scenarios",
+        "Forecast Intelligence",
+        "Risk & Portfolio",
+        "Strategic & Valuation",
+    ])
+
+    with tabs[0]:
+        st.subheader("Sensitivity analysis to quantify key driver impacts")
+        range_cols = st.columns(4)
+        cogs_range = range_cols[0].slider("COGS shock (%)", 5, 40, 20, step=1)
+        tax_range = range_cols[1].slider("Tax shock (%)", 5, 30, 10, step=1)
+        wacc_range = range_cols[2].slider("WACC shock (%)", 5, 30, 15, step=1)
+        capacity_range = range_cols[3].slider("Capacity shock (%)", 5, 50, 20, step=1)
+
+        sensitivity_ranges = {
+            "cogs_ratio": cogs_range / 100.0,
+            "tax_rate": tax_range / 100.0,
+            "wacc": wacc_range / 100.0,
+            "annual_capacity": capacity_range / 100.0,
+        }
+        sensitivity_df = sensitivity_analyzer.pareto_sensitivity(
+            ["cogs_ratio", "tax_rate", "wacc", "annual_capacity"], sensitivity_ranges
+        )
+        if sensitivity_df.empty:
+            st.write("Sensitivity results will appear once the model returns baseline metrics.")
+        else:
+            display = sensitivity_df[
+                ["parameter", "impact_pct", "ev_range", "low_ev", "high_ev", "elasticity"]
+            ].copy()
+            display.rename(columns={
+                "parameter": "Parameter",
+                "impact_pct": "Impact %",
+                "ev_range": "EV Range",
+                "low_ev": "Low EV",
+                "high_ev": "High EV",
+                "elasticity": "Elasticity",
+            }, inplace=True)
+            _render_table(display, hide_index=True)
+
+        st.subheader("Scenario stress testing for severe shocks")
+        stress_results = stress_engine.extreme_scenarios()
+        stress_rows = []
+        for name, metrics in stress_results.items():
+            stress_rows.append(
+                {
+                    "Scenario": name,
+                    "Enterprise Value": metrics.get("enterprise_value", 0.0),
+                    "Revenue": metrics.get("revenue_2030", metrics.get("revenue", 0.0)),
+                    "Net Profit": metrics.get("net_profit_2030", 0.0),
+                    "Closing Cash": metrics.get("final_cash", 0.0),
+                    "Recovery Score": metrics.get("recovery_probability", 0.0),
+                }
+            )
+        _render_table(pd.DataFrame(stress_rows), hide_index=True)
+
+        st.subheader("Monte Carlo simulation for probabilistic outcomes")
+        mc_rows = []
+        for metric, stats_dict in mc_stats.items():
+            if not isinstance(stats_dict, dict):
+                continue
+            mc_rows.append(
+                {
+                    "Metric": metric.replace("_", " ").title(),
+                    "Mean": stats_dict.get("mean", 0.0),
+                    "Std Dev": stats_dict.get("std_dev", 0.0),
+                    "P5": stats_dict.get("p5", 0.0),
+                    "P50": stats_dict.get("median", 0.0),
+                    "P95": stats_dict.get("p95", 0.0),
+                }
+            )
+        _render_table(pd.DataFrame(mc_rows), hide_index=True)
+
+        st.subheader("What-if analysis to adjust assumptions interactively")
+        with st.form("what_if_form"):
+            cogs_override = st.slider(
+                "Revised COGS ratio",
+                min_value=0.30,
+                max_value=0.95,
+                value=float(cfg.cogs_ratio),
+                step=0.01,
+            )
+            capacity_shift = st.slider(
+                "Capacity change (%)",
+                min_value=-25,
+                max_value=50,
+                value=0,
+                step=1,
+            )
+            wacc_shift = st.slider(
+                "WACC change (%)",
+                min_value=-20,
+                max_value=30,
+                value=0,
+                step=1,
+            )
+            run_scenario = st.form_submit_button("Run scenario")
+
+        if run_scenario:
+            adjustments = {
+                "cogs_ratio": cogs_override,
+                "annual_capacity": float(cfg.annual_capacity) * (1 + capacity_shift / 100.0),
+                "wacc": float(cfg.wacc) * (1 + wacc_shift / 100.0),
+            }
+            scenario = what_if_analyzer.create_scenario("Custom What-If", adjustments)
+            scenario_df = pd.DataFrame([
+                {
+                    "Scenario": scenario["scenario_name"],
+                    "Enterprise Value": scenario["enterprise_value"],
+                    "EV Change": scenario["ev_change"],
+                    "EV Change %": scenario["ev_change_pct"],
+                    "Final-Year Revenue": scenario.get("revenue_2030", scenario.get("revenue", 0.0)),
+                    "Final-Year Profit": scenario.get("profit_2030", 0.0),
+                }
+            ])
+            _render_table(scenario_df, hide_index=True)
+
+        st.subheader("Goal seek routines to meet profitability targets")
+        goal_cols = st.columns(2)
+        target_metric_label = goal_cols[0].selectbox(
+            "Target metric",
+            ["enterprise_value", "net_profit"],
+            format_func=lambda key: "Enterprise Value" if key == "enterprise_value" else "Net Profit",
+        )
+        target_value = goal_cols[1].number_input(
+            "Target value", value=float(base_ev) if base_ev else 500_000_000.0, step=50_000_000.0
+        )
+        parameter_label = st.selectbox(
+            "Parameter to solve",
+            ["cogs_ratio", "wacc", "annual_capacity"],
+            format_func=lambda key: {
+                "cogs_ratio": "COGS Ratio",
+                "wacc": "WACC",
+                "annual_capacity": "Annual Capacity",
+            }[key],
+        )
+        if st.button("Run goal seek"):
+            result = goal_seeker.find_breakeven_parameter(parameter_label, target_metric_label, target_value)
+            _render_table(pd.DataFrame([result]), hide_index=True)
+
+        st.subheader("Tornado charts & spider diagrams for driver visualization")
+        if not sensitivity_df.empty:
+            tornado_data = []
+            for _, row in sensitivity_df.iterrows():
+                tornado_data.append(
+                    {
+                        "Parameter": row["parameter"],
+                        "Downside": row["low_ev"] - base_ev,
+                        "Upside": row["high_ev"] - base_ev,
+                    }
+                )
+            tornado_df = pd.DataFrame(tornado_data)
+            if not tornado_df.empty:
+                fig = go.Figure()
+                fig.add_trace(
+                    go.Bar(
+                        y=tornado_df["Parameter"],
+                        x=tornado_df["Upside"],
+                        name="Upside",
+                        orientation="h",
+                        marker_color="#2ca02c",
+                    )
+                )
+                fig.add_trace(
+                    go.Bar(
+                        y=tornado_df["Parameter"],
+                        x=tornado_df["Downside"],
+                        name="Downside",
+                        orientation="h",
+                        marker_color="#d62728",
+                    )
+                )
+                fig.update_layout(barmode="overlay", xaxis_title="Delta vs. Base EV", yaxis_title="Parameter")
+                st.plotly_chart(fig, use_container_width=True)
+
+        if stress_rows:
+            categories = [
+                "Enterprise Value",
+                "Net Profit",
+                "Closing Cash",
+                "Recovery Score",
+            ]
+            spider_fig = go.Figure()
+            for row in stress_rows:
+                values = [
+                    max(0.0, row["Enterprise Value"] / max(base_ev, 1.0) * 100.0),
+                    max(0.0, row["Net Profit"] / 1e6),
+                    max(0.0, row["Closing Cash"] / 1e6),
+                    row["Recovery Score"],
+                ]
+                spider_fig.add_trace(
+                    go.Scatterpolar(r=values, theta=categories, fill="toself", name=row["Scenario"])
+                )
+            spider_fig.update_layout(showlegend=True)
+            st.plotly_chart(spider_fig, use_container_width=True)
+
+    with tabs[1]:
+        st.subheader("Trend and seasonality decomposition")
+        revenue_series = {year: model.get("revenue", {}).get(year, 0.0) for year in years}
+        decomposition = trend_analyzer.decompose_series(revenue_series)
+        trend_df = pd.DataFrame(
+            {
+                "Year": decomposition["years"],
+                "Original": decomposition["original"],
+                "Trend": decomposition["trend"],
+                "Seasonality": decomposition["seasonality"],
+            }
+        )
+        _render_table(trend_df, hide_index=True)
+        inflections = trend_analyzer.identify_inflection_points(revenue_series)
+        if inflections:
+            st.write(f"Inflection years: {', '.join(str(year) for year in inflections)}")
+
+        st.subheader("Customer and product segmentation analysis")
+        _render_table(segment_df, hide_index=True)
+
+        st.subheader("Regression modeling for financial relationships")
+        revenue_values = [revenue_series[year] for year in years]
+        net_profit_series = [model.get("net_profit", {}).get(year, 0.0) for year in years]
+        regression = RegressionModeler.simple_linear_regression(revenue_values, net_profit_series)
+        regression_df = pd.DataFrame(
+            [
+                {
+                    "Intercept": regression["intercept"],
+                    "Slope": regression["slope"],
+                    "R^2": regression["r_squared"],
+                }
+            ]
+        )
+        _render_table(regression_df, hide_index=True)
+        reg_fig = go.Figure()
+        reg_fig.add_trace(go.Scatter(x=revenue_values, y=net_profit_series, mode="markers", name="Actual"))
+        reg_fig.add_trace(
+            go.Scatter(
+                x=revenue_values,
+                y=regression["predictions"],
+                mode="lines",
+                name="Regression",
+                line=dict(color="#1f77b4"),
+            )
+        )
+        reg_fig.update_layout(xaxis_title="Revenue", yaxis_title="Net Profit")
+        st.plotly_chart(reg_fig, use_container_width=True)
+
+        st.subheader("Time series analysis (SES, moving average, seasonality)")
+        ses = ts_analyzer.simple_exponential_smoothing(revenue_series, alpha=0.3, forecast_periods=3)
+        ma = ts_analyzer.moving_average(revenue_series, window=3)
+        seasonality = ts_analyzer.detect_seasonality(revenue_series)
+        forecast_df = pd.DataFrame(
+            {
+                "Year": years + ses["future_years"],
+                "Forecast": ses["historical_forecast"] + ses["future_forecast"],
+            }
+        )
+        _render_table(forecast_df, hide_index=True)
+        st.write(
+            f"Seasonality detected: {'Yes' if seasonality['seasonal'] else 'No'} (autocorrelation {seasonality['strength']:.2f})"
+        )
+
+        st.subheader("Classification models for segment churn risk")
+        if not segment_df.empty:
+            segment_df = segment_df.copy()
+            logits = -1.25 + 0.02 * (100 - segment_df["margin_pct"]) + 0.00000002 * segment_df["cost"]
+            probabilities = 1 / (1 + np.exp(-logits))
+            segment_df["Churn Probability"] = probabilities
+            segment_df["Risk Tier"] = segment_df["Churn Probability"].apply(
+                lambda p: "High" if p > 0.65 else ("Medium" if p > 0.35 else "Low")
+            )
+            classification_df = segment_df[["segment", "margin_pct", "cumulative_revenue_pct", "Churn Probability", "Risk Tier"]]
+            classification_df.rename(
+                columns={
+                    "segment": "Segment",
+                    "margin_pct": "Margin %",
+                    "cumulative_revenue_pct": "Cumulative Revenue %",
+                },
+                inplace=True,
+            )
+            _render_table(classification_df, hide_index=True)
+        else:
+            st.write("Add product data to generate classification insights.")
+
+    with tabs[2]:
+        st.subheader("Value at Risk (VaR) / Conditional VaR")
+        if len(profit_distribution) > 0:
+            var_result = risk_analyzer.calculate_var(list(profit_distribution), 0.95)
+            cvar_result = risk_analyzer.calculate_cvar(list(profit_distribution), 0.95)
+            risk_df = pd.DataFrame([{
+                "VaR (95%)": var_result["var"],
+                "CVaR (95%)": cvar_result["cvar"],
+                "Average Loss Beyond VaR": cvar_result["average_loss_beyond_var"],
+            }])
+            _render_table(risk_df, hide_index=True)
+        else:
+            st.write("Monte Carlo simulation is required to compute VaR metrics.")
+
+        st.subheader("Stress testing for extreme market shocks")
+        if len(profit_distribution) > 0:
+            stress_summary = risk_analyzer.stress_test_returns(list(profit_distribution), 0.25)
+            _render_table(pd.DataFrame([stress_summary]), hide_index=True)
+
+        st.subheader("Copula-inspired correlation view across risk factors")
+        metrics_matrix = []
+        metric_labels = ["Revenue", "COGS", "OPEX", "Net Profit"]
+        for year in years:
+            metrics_matrix.append([
+                model.get("revenue", {}).get(year, 0.0),
+                model.get("cogs", {}).get(year, 0.0),
+                model.get("opex", {}).get(year, 0.0),
+                model.get("net_profit", {}).get(year, 0.0),
+            ])
+        if metrics_matrix:
+            correlations = np.corrcoef(np.array(metrics_matrix).T)
+            corr_df = pd.DataFrame(correlations, columns=metric_labels, index=metric_labels)
+            _render_table(corr_df.reset_index().rename(columns={"index": "Metric"}), hide_index=True)
+
+        st.subheader("Linear and nonlinear optimization to manage resources")
+        if not segment_df.empty:
+            budget = float(segment_df["cost"].sum()) * 0.5
+            costs = segment_df["cost"].to_numpy()
+            returns = segment_df["gross_profit"].to_numpy()
+            if costs.sum() <= 0 or returns.sum() <= 0:
+                st.write("Segment cost and profit data are required for the allocation model.")
+            else:
+                bounds = [(0, 1) for _ in costs]
+                try:
+                    linprog_result = optimize.linprog(
+                        c=-returns,
+                        A_ub=[costs],
+                        b_ub=[budget],
+                        bounds=bounds,
+                        method="highs",
+                    )
+                    allocation = linprog_result.x if linprog_result.success else np.zeros_like(costs)
+                except ValueError:
+                    allocation = np.zeros_like(costs)
+                allocation_df = segment_df[["segment"]].copy()
+                allocation_df["Allocation"] = allocation
+                allocation_df["Allocated Cost"] = allocation * costs
+                allocation_df["Expected Gross Profit"] = allocation * returns
+                _render_table(allocation_df, hide_index=True)
+        else:
+            st.write("Segment data is required for resource optimization.")
+
+        st.subheader("Portfolio optimization to balance risk and return")
+        if returns_matrix.size:
+            portfolio_result = PortfolioOptimizer.optimize_portfolio(returns_matrix)
+            weights_df = pd.DataFrame(
+                {
+                    "Product": list(product_returns.keys()),
+                    "Optimal Weight": portfolio_result["optimal_weights"],
+                }
+            )
+            portfolio_summary = pd.DataFrame(
+                [
+                    {
+                        "Expected Return": portfolio_result["expected_return"],
+                        "Volatility": portfolio_result["volatility"],
+                        "Sharpe Ratio": portfolio_result["sharpe_ratio"],
+                    }
+                ]
+            )
+            _render_table(weights_df, hide_index=True)
+            _render_table(portfolio_summary, hide_index=True)
+        else:
+            st.write("Additional projection years are required to evaluate portfolio mixes.")
+
+    with tabs[3]:
+        st.subheader("Macroeconomic linking for inflation, GDP, and FX")
+        gdp_assumption = {
+            year: 0.02 + 0.002 * (idx % 3) for idx, year in enumerate(years)
+        }
+        macro_revenue = macro_linker.apply_gdp_linkage(revenue_values[0], gdp_assumption)
+        macro_df = pd.DataFrame(
+            {
+                "Year": list(macro_revenue.keys()),
+                "GDP-Linked Revenue": list(macro_revenue.values()),
+                "Inflation Adjusted": [
+                    macro_linker.apply_inflation_adjustment(value, 0.025, idx)
+                    for idx, value in enumerate(macro_revenue.values())
+                ],
+            }
+        )
+        _render_table(macro_df, hide_index=True)
+
+        st.subheader("ESG & sustainability metrics")
+        esg_impact = esg_analyzer.carbon_pricing_impact(1200, 40, 0.06, len(years))
+        esg_df = pd.DataFrame(
+            {
+                "Year": [final_year + offset for offset in esg_impact.keys()],
+                "Emissions": [entry["emissions"] for entry in esg_impact.values()],
+                "Annual Cost": [entry["annual_cost"] for entry in esg_impact.values()],
+                "Cumulative Cost": [entry["cumulative_cost"] for entry in esg_impact.values()],
+            }
+        )
+        _render_table(esg_df, hide_index=True)
+
+        st.subheader("Market intelligence integration and demand signals")
+        growth_rates = []
+        for idx in range(1, len(years)):
+            prev = revenue_values[idx - 1]
+            curr = revenue_values[idx]
+            growth = ((curr - prev) / prev) if prev else 0.0
+            growth_rates.append(growth)
+        sentiment_series = [50 + rate * 500 for rate in growth_rates]
+        market_df = pd.DataFrame(
+            {
+                "Year": years[1:],
+                "Revenue Growth %": [rate * 100 for rate in growth_rates],
+                "Sentiment Index": sentiment_series,
+                "Industry Forecast %": [2.0 + idx * 0.2 for idx in range(len(growth_rates))],
+            }
+        )
+        _render_table(market_df, hide_index=True)
+
+        st.subheader("Probabilistic valuation and scenario distributions")
+        if len(ev_distribution) > 0:
+            prob_summary = ProbabilisticValuation.distribution_summary(list(ev_distribution))
+            prob_df = pd.DataFrame([prob_summary]).drop(columns=["percentiles"], errors="ignore")
+            _render_table(prob_df, hide_index=True)
+
+        st.subheader("Real options analysis for managerial flexibility")
+        expansion = real_options.expansion_option_value(base_ev, base_ev * 0.1, base_ev * 1.25)
+        abandonment = real_options.abandonment_option_value(base_ev, base_ev * 0.3, base_ev * 0.6)
+        _render_table(pd.DataFrame([expansion]), hide_index=True)
+        _render_table(pd.DataFrame([abandonment]), hide_index=True)
+
+        st.subheader("Comparative valuation with peer clustering")
+        peer_data = pd.DataFrame(
+            [
+                {"Company": "Volt Rider", "Revenue": revenue_values[-1], "EBITDA Margin": net_profit_series[-1] / revenue_values[-1] if revenue_values[-1] else 0, "EV / Revenue": base_ev / revenue_values[-1] if revenue_values[-1] else 0},
+                {"Company": "Peer A", "Revenue": revenue_values[-1] * 0.9, "EBITDA Margin": 0.14, "EV / Revenue": 2.1},
+                {"Company": "Peer B", "Revenue": revenue_values[-1] * 1.2, "EBITDA Margin": 0.18, "EV / Revenue": 2.6},
+                {"Company": "Peer C", "Revenue": revenue_values[-1] * 0.7, "EBITDA Margin": 0.11, "EV / Revenue": 1.8},
+            ]
+        )
+        peer_data["Cluster"] = pd.qcut(peer_data["EV / Revenue"], 3, labels=["Value", "Balanced", "Growth"])
+        _render_table(peer_data, hide_index=True)
+
+        st.subheader("Machine learning–based valuation estimates")
+        training_features = np.array([
+            [peer_data.iloc[i]["Revenue"], peer_data.iloc[i]["EBITDA Margin"], peer_data.iloc[i]["EV / Revenue"]]
+            for i in range(1, len(peer_data))
+        ])
+        training_targets = np.array([
+            peer_data.iloc[i]["Revenue"] * peer_data.iloc[i]["EV / Revenue"] for i in range(1, len(peer_data))
+        ])
+        ml_result = RegressionModeler.multiple_regression(training_features, training_targets)
+        if ml_result.get("success", True):
+            coefficients = ml_result.get("coefficients", [])
+            intercept = ml_result.get("intercept", 0.0)
+            feature_vector = np.array([
+                revenue_values[-1],
+                net_profit_series[-1] / revenue_values[-1] if revenue_values[-1] else 0.0,
+                peer_data.iloc[0]["EV / Revenue"],
+            ])
+            predicted_value = intercept + np.dot(coefficients, feature_vector)
+            ml_df = pd.DataFrame(
+                [
+                    {
+                        "Intercept": intercept,
+                        "Revenue Coef": coefficients[0] if len(coefficients) > 0 else 0.0,
+                        "Margin Coef": coefficients[1] if len(coefficients) > 1 else 0.0,
+                        "Multiple Coef": coefficients[2] if len(coefficients) > 2 else 0.0,
+                        "Predicted Enterprise Value": predicted_value,
+                    }
+                ]
+            )
+            _render_table(ml_df, hide_index=True)
+        else:
+            st.write("Insufficient peer data to train valuation model.")
+
+
 def _render_dashboard(model: Dict[str, Any]) -> None:
     years = _projection_years(model)
     if not years:
@@ -2473,6 +3039,7 @@ def _render_ai_settings(payload: Dict[str, Any], container: Optional[DeltaGenera
 def _render_navigation() -> str:
     pages = [
         "Dashboard",
+        "Advanced Analytics",
         "Financial Model",
         "Reports",
         "Platform Settings",
@@ -2506,6 +3073,8 @@ def main() -> None:
 
     if active_page == "Dashboard":
         _render_dashboard(model)
+    elif active_page == "Advanced Analytics":
+        _render_advanced_analytics(model)
     elif active_page == "Financial Model":
         _render_financial_model(model)
     elif active_page == "Reports":

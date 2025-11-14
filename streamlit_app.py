@@ -3266,12 +3266,13 @@ def _render_platform_settings() -> None:
             )
             utilization_inputs: Dict[int, float] = {}
             for year in production_years:
-                utilization_inputs[year] = horizon_form.slider(
+                utilization_inputs[year] = horizon_form.number_input(
                     f"Utilization {year}",
                     min_value=0.0,
                     max_value=1.0,
                     value=float(cfg.capacity_utilization.get(year, 0.0)),
-                    step=0.05,
+                    step=0.01,
+                    help="Adjust utilization using the +/- controls for the selected year.",
                 )
             save_horizon = horizon_form.form_submit_button("Save Production Horizon")
 

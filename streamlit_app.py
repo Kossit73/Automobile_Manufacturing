@@ -2188,11 +2188,17 @@ def _render_debt_schedule_editor(cfg: CompanyConfig) -> None:
                     step=1,
                     key=f"instrument_io_{idx}",
                 )
+                start_year_min = cfg.start_year
+                start_year_max = cfg.start_year + cfg.projection_years - 1
+                start_year_default = int(instrument.start_year)
+                if start_year_default < start_year_min or start_year_default > start_year_max:
+                    start_year_default = start_year_min
+
                 start_year = st.number_input(
                     "Start Year",
-                    min_value=cfg.start_year,
-                    max_value=cfg.start_year + cfg.projection_years - 1,
-                    value=int(instrument.start_year),
+                    min_value=start_year_min,
+                    max_value=start_year_max,
+                    value=start_year_default,
                     step=1,
                     key=f"instrument_start_{idx}",
                 )

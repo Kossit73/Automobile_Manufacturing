@@ -1115,7 +1115,11 @@ def _revenue_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None
     return df
 
 
-def _cost_structure_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+def _cost_component_summary(
+    cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None
+) -> Dict[int, Dict[str, Any]]:
+    """Return a per-year breakdown of major cost components."""
+
     model = model or {}
     years = _config_years(cfg)
 
@@ -1124,9 +1128,53 @@ def _cost_structure_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]]
     fixed_cogs: Dict[int, float] = model.get("fixed_cogs", {})
     opex: Dict[int, float] = model.get("opex", {})
     labor_metrics: Dict[int, Dict[str, float]] = model.get("labor_metrics", {})
+    variable_breakdown: Dict[int, Dict[str, float]] = model.get("variable_cogs_breakdown", {})
+
     marketing_budget: Dict[int, float] = {}
     if isinstance(getattr(cfg, "marketing_budget", None), dict):
         marketing_budget = {int(year): float(value) for year, value in cfg.marketing_budget.items()}
+
+    summary: Dict[int, Dict[str, Any]] = {}
+    for year in years:
+        revenue_value = float(revenue_map.get(year, 0.0))
+        variable_cost = float(variable_cogs.get(year, 0.0))
+        fixed_cost = float(fixed_cogs.get(year, 0.0))
+
+        if labor_metrics and year in labor_metrics:
+            labor_cost = float(labor_metrics[year].get("total_labor_cost", 0.0))
+        else:
+            years_since_start = max(0, year - cfg.start_year)
+            baseline_salary = cfg.avg_salary * cfg.headcount * 12
+            labor_cost = baseline_salary * ((1 + cfg.annual_salary_growth) ** years_since_start)
+
+        opex_total = float(opex.get(year, labor_cost))
+        marketing_planned = float(marketing_budget.get(year, 0.0))
+        marketing_cost = marketing_planned if marketing_planned > 0 else max(0.0, opex_total - labor_cost)
+        other_opex = max(0.0, opex_total - labor_cost - marketing_cost)
+
+        labor_cost = max(0.0, labor_cost)
+        marketing_cost = max(0.0, marketing_cost)
+        other_opex = max(0.0, other_opex)
+
+        total_cost = variable_cost + fixed_cost + marketing_cost + labor_cost + other_opex
+
+        summary[year] = {
+            "revenue": revenue_value,
+            "variable_total": variable_cost,
+            "fixed_total": fixed_cost,
+            "marketing": marketing_cost,
+            "labor": labor_cost,
+            "other": other_opex,
+            "total": total_cost,
+            "variable_breakdown": variable_breakdown.get(year, {}),
+        }
+
+    return summary
+
+
+def _cost_structure_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    summary = _cost_component_summary(cfg, model)
+    years = _config_years(cfg)
 
     columns = [
         "Year",
@@ -1152,26 +1200,26 @@ def _cost_structure_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]]
 
     rows: List[Dict[str, Any]] = []
     for year in years:
-        revenue_value = float(revenue_map.get(year, 0.0))
-        variable_cost = float(variable_cogs.get(year, 0.0))
-        fixed_cost = float(fixed_cogs.get(year, 0.0))
+        details = summary.get(
+            year,
+            {
+                "revenue": 0.0,
+                "variable_total": 0.0,
+                "fixed_total": 0.0,
+                "marketing": 0.0,
+                "labor": 0.0,
+                "other": 0.0,
+                "total": 0.0,
+            },
+        )
 
-        if labor_metrics and year in labor_metrics:
-            labor_cost = float(labor_metrics[year].get("total_labor_cost", 0.0))
-        else:
-            years_since_start = max(0, year - cfg.start_year)
-            baseline_salary = cfg.avg_salary * cfg.headcount * 12
-            labor_cost = baseline_salary * ((1 + cfg.annual_salary_growth) ** years_since_start)
-
-        opex_total = float(opex.get(year, labor_cost))
-        marketing_planned = float(marketing_budget.get(year, 0.0))
-        marketing_cost = marketing_planned if marketing_planned > 0 else max(0.0, opex_total - labor_cost)
-        other_opex = max(0.0, opex_total - labor_cost - marketing_cost)
-
-        labor_cost = max(0.0, labor_cost)
-        marketing_cost = max(0.0, marketing_cost)
-
-        total_cost = variable_cost + fixed_cost + marketing_cost + labor_cost + other_opex
+        revenue_value = float(details["revenue"])
+        variable_cost = float(details["variable_total"])
+        fixed_cost = float(details["fixed_total"])
+        marketing_cost = float(details["marketing"])
+        labor_cost = float(details["labor"])
+        other_opex = float(details["other"])
+        total_cost = float(details["total"])
 
         rows.append(
             {
@@ -1193,6 +1241,80 @@ def _cost_structure_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]]
         )
 
     return pd.DataFrame(rows, columns=columns)
+
+
+def _variable_production_cost_schedule(
+    cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None
+) -> pd.DataFrame:
+    summary = _cost_component_summary(cfg, model)
+    years = _config_years(cfg)
+    products = list(cfg.product_portfolio.keys())
+
+    columns = ["Year"]
+    for product in products:
+        columns.append(f"{_product_label(product)} Variable Cost")
+    columns.append("Total Variable Production Cost")
+
+    rows: List[Dict[str, Any]] = []
+    variable_breakdown: Dict[int, Dict[str, float]] = {}
+    if model:
+        variable_breakdown = model.get("variable_cogs_breakdown", {}) or {}
+
+    for year in years:
+        details = summary.get(year, {})
+        row: Dict[str, Any] = {"Year": year}
+        per_product = variable_breakdown.get(year, {})
+        for product in products:
+            value = float(per_product.get(product, 0.0))
+            row[f"{_product_label(product)} Variable Cost"] = value
+        row["Total Variable Production Cost"] = float(details.get("variable_total", 0.0))
+        rows.append(row)
+
+    df = pd.DataFrame(rows, columns=columns)
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    for column in columns[1:]:
+        df[column] = _currency_series(df[column])
+    return df
+
+
+def _fixed_manufacturing_cost_schedule(
+    cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None
+) -> pd.DataFrame:
+    summary = _cost_component_summary(cfg, model)
+    years = _config_years(cfg)
+
+    rows: List[Dict[str, Any]] = []
+    for year in years:
+        fixed_value = float(summary.get(year, {}).get("fixed_total", 0.0))
+        rows.append({"Year": year, "Fixed Manufacturing Cost": fixed_value})
+
+    df = pd.DataFrame(rows, columns=["Year", "Fixed Manufacturing Cost"])
+    if df.empty:
+        return pd.DataFrame(columns=["Year", "Fixed Manufacturing Cost"])
+
+    df["Fixed Manufacturing Cost"] = _currency_series(df["Fixed Manufacturing Cost"])
+    return df
+
+
+def _other_operating_cost_schedule(
+    cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None
+) -> pd.DataFrame:
+    summary = _cost_component_summary(cfg, model)
+    years = _config_years(cfg)
+
+    rows: List[Dict[str, Any]] = []
+    for year in years:
+        other_value = float(summary.get(year, {}).get("other", 0.0))
+        rows.append({"Year": year, "Other Operating Cost": other_value})
+
+    df = pd.DataFrame(rows, columns=["Year", "Other Operating Cost"])
+    if df.empty:
+        return pd.DataFrame(columns=["Year", "Other Operating Cost"])
+
+    df["Other Operating Cost"] = _currency_series(df["Other Operating Cost"])
+    return df
 
 
 def _operating_expense_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
@@ -2195,6 +2317,395 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
             status_placeholder.error(str(exc))
         else:
             status_placeholder.success("Cost structure updated.")
+
+
+def _render_variable_cost_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    summary = _cost_component_summary(cfg, model)
+    products = list(cfg.product_portfolio.keys())
+    variable_breakdown: Dict[int, Dict[str, float]] = model.get("variable_cogs_breakdown", {}) if model else {}
+
+    st.markdown("##### Edit Variable Production Cost")
+    action = _schedule_toolbar("variable_cost", years)
+    if action:
+        target_year = int(action["year"])
+        if action["action"] == "remove":
+            if getattr(cfg, "variable_cost_overrides", None):
+                cfg.variable_cost_overrides.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Variable cost row removed for {target_year}.")
+            return
+        if action["action"] == "add":
+            new_year = _next_available_year(years, target_year + 1)
+            _ensure_year_in_horizon(cfg, new_year)
+            defaults = summary.get(target_year, {})
+            cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
+            cfg.variable_cost_overrides[new_year] = float(defaults.get("variable_total", 0.0))
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Variable cost row added for {new_year}.")
+            return
+
+    rows: List[Dict[str, Any]] = []
+    for year in years:
+        details = summary.get(year, {})
+        per_product = variable_breakdown.get(year, {}) if variable_breakdown else {}
+        row: Dict[str, Any] = {
+            "Year": year,
+            "Total Variable Production Cost": float(details.get("variable_total", 0.0)),
+        }
+        for product in products:
+            label = f"{_product_label(product)} Variable Cost"
+            row[label] = float(per_product.get(product, 0.0))
+        rows.append(row)
+
+    base_df = pd.DataFrame(rows)
+    if base_df.empty:
+        st.info("Add production cost rows to begin editing values.")
+        return
+
+    def _save_variable_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        total_value = max(
+            0.0, float(values.get("Total Variable Production Cost", row["Total Variable Production Cost"]))
+        )
+        cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
+        cfg.variable_cost_overrides[year] = total_value
+        cfg.__post_init__()
+        _run_model()
+        return f"Variable production cost updated for {year}."
+
+    field_definitions: List[Dict[str, Any]] = [
+        {"column": "Year", "label": "Year", "type": "int", "editable": False},
+        {
+            "column": "Total Variable Production Cost",
+            "label": "Total Variable Production Cost",
+            "type": "currency",
+            "min": 0.0,
+            "step": 1000.0,
+        },
+    ]
+    for product in products:
+        field_definitions.append(
+            {
+                "column": f"{_product_label(product)} Variable Cost",
+                "label": f"{_product_label(product)} Variable Cost",
+                "type": "currency",
+                "editable": False,
+            }
+        )
+
+    _render_inline_row_editor(
+        "variable_cost_inline",
+        base_df,
+        field_definitions,
+        on_save=_save_variable_row,
+        row_id_column="Year",
+        empty_message="Add production cost rows to begin editing values.",
+    )
+
+    editable_df = base_df[["Year", "Total Variable Production Cost"]].copy()
+    edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
+        "variable_cost",
+        editable_df,
+        guidance="Adjust total variable production cost assumptions by year.",
+        non_negative_columns=["Total Variable Production Cost"],
+    )
+
+    def _apply_variable_increment(selected_years: Sequence[int], increment_pct: float) -> Optional[str]:
+        if not selected_years:
+            raise ValueError("Select at least one year to increment.")
+        cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
+        for year in selected_years:
+            defaults = summary.get(year, {})
+            base_value = float(defaults.get("variable_total", 0.0))
+            cfg.variable_cost_overrides[year] = max(0.0, _apply_increment(base_value, increment_pct))
+        cfg.__post_init__()
+        _run_model()
+        return "Variable production cost increments applied."
+
+    _schedule_increment_helper(
+        "variable_cost",
+        years,
+        _apply_variable_increment,
+        help_text="Apply a uniform percentage change to variable production cost across selected years.",
+    )
+
+    if st.button("Apply Variable Cost Updates", key="variable_cost_apply"):
+        try:
+            sanitized = edited_df.dropna(subset=["Year"])
+            sanitized = sanitized.sort_values("Year")
+            if sanitized.empty:
+                raise ValueError("Add at least one year before applying variable cost updates.")
+
+            overrides: Dict[int, float] = {}
+            for _, row in sanitized.iterrows():
+                year_value = int(row["Year"])
+                total_value = float(row.get("Total Variable Production Cost", 0.0))
+                if total_value < 0:
+                    raise ValueError("Variable production cost cannot be negative.")
+                overrides[year_value] = total_value
+
+            cfg.variable_cost_overrides = overrides
+            cfg.projection_years = max(overrides.keys()) - cfg.start_year + 1
+            cfg.__post_init__()
+            _run_model()
+        except ValueError as exc:
+            status_placeholder.error(str(exc))
+        else:
+            status_placeholder.success("Variable production cost schedule updated.")
+
+
+def _render_fixed_cost_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    summary = _cost_component_summary(cfg, model)
+
+    st.markdown("##### Edit Fixed Manufacturing Cost")
+    action = _schedule_toolbar("fixed_cost", years)
+    if action:
+        target_year = int(action["year"])
+        if action["action"] == "remove":
+            if getattr(cfg, "fixed_cost_overrides", None):
+                cfg.fixed_cost_overrides.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Fixed cost row removed for {target_year}.")
+            return
+        if action["action"] == "add":
+            new_year = _next_available_year(years, target_year + 1)
+            _ensure_year_in_horizon(cfg, new_year)
+            defaults = summary.get(target_year, {})
+            cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
+            cfg.fixed_cost_overrides[new_year] = float(defaults.get("fixed_total", 0.0))
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Fixed cost row added for {new_year}.")
+            return
+
+    rows: List[Dict[str, Any]] = []
+    for year in years:
+        rows.append(
+            {
+                "Year": year,
+                "Fixed Manufacturing Cost": float(summary.get(year, {}).get("fixed_total", 0.0)),
+            }
+        )
+
+    base_df = pd.DataFrame(rows)
+    if base_df.empty:
+        st.info("Add fixed cost rows to begin editing values.")
+        return
+
+    def _save_fixed_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        fixed_value = max(0.0, float(values.get("Fixed Manufacturing Cost", row["Fixed Manufacturing Cost"])))
+        cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
+        cfg.fixed_cost_overrides[year] = fixed_value
+        cfg.__post_init__()
+        _run_model()
+        return f"Fixed manufacturing cost updated for {year}."
+
+    _render_inline_row_editor(
+        "fixed_cost_inline",
+        base_df,
+        [
+            {"column": "Year", "label": "Year", "type": "int", "editable": False},
+            {
+                "column": "Fixed Manufacturing Cost",
+                "label": "Fixed Manufacturing Cost",
+                "type": "currency",
+                "min": 0.0,
+                "step": 1000.0,
+            },
+        ],
+        on_save=_save_fixed_row,
+        row_id_column="Year",
+        empty_message="Add fixed cost rows to begin editing values.",
+    )
+
+    edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
+        "fixed_cost",
+        base_df.copy(),
+        guidance="Update fixed manufacturing cost assumptions across the forecast horizon.",
+        non_negative_columns=["Fixed Manufacturing Cost"],
+    )
+
+    def _apply_fixed_increment(selected_years: Sequence[int], increment_pct: float) -> Optional[str]:
+        if not selected_years:
+            raise ValueError("Select at least one year to increment.")
+        cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
+        for year in selected_years:
+            defaults = summary.get(year, {})
+            base_value = float(defaults.get("fixed_total", 0.0))
+            cfg.fixed_cost_overrides[year] = max(0.0, _apply_increment(base_value, increment_pct))
+        cfg.__post_init__()
+        _run_model()
+        return "Fixed manufacturing cost increments applied."
+
+    _schedule_increment_helper(
+        "fixed_cost",
+        years,
+        _apply_fixed_increment,
+        help_text="Apply a uniform percentage change to fixed manufacturing cost across selected years.",
+    )
+
+    if st.button("Apply Fixed Cost Updates", key="fixed_cost_apply"):
+        try:
+            sanitized = edited_df.dropna(subset=["Year"])
+            sanitized = sanitized.sort_values("Year")
+            if sanitized.empty:
+                raise ValueError("Add at least one year before applying fixed cost updates.")
+
+            overrides: Dict[int, float] = {}
+            for _, row in sanitized.iterrows():
+                year_value = int(row["Year"])
+                fixed_value = float(row.get("Fixed Manufacturing Cost", 0.0))
+                if fixed_value < 0:
+                    raise ValueError("Fixed manufacturing cost cannot be negative.")
+                overrides[year_value] = fixed_value
+
+            cfg.fixed_cost_overrides = overrides
+            cfg.projection_years = max(overrides.keys()) - cfg.start_year + 1
+            cfg.__post_init__()
+            _run_model()
+        except ValueError as exc:
+            status_placeholder.error(str(exc))
+        else:
+            status_placeholder.success("Fixed manufacturing cost schedule updated.")
+
+
+def _render_other_operating_cost_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    summary = _cost_component_summary(cfg, model)
+
+    st.markdown("##### Edit Other Operating Cost")
+    action = _schedule_toolbar("other_operating_cost", years)
+    if action:
+        target_year = int(action["year"])
+        if action["action"] == "remove":
+            if getattr(cfg, "other_opex_overrides", None):
+                cfg.other_opex_overrides.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Other operating cost row removed for {target_year}.")
+            return
+        if action["action"] == "add":
+            new_year = _next_available_year(years, target_year + 1)
+            _ensure_year_in_horizon(cfg, new_year)
+            defaults = summary.get(target_year, {})
+            cfg.other_opex_overrides = cfg.other_opex_overrides or {}
+            cfg.other_opex_overrides[new_year] = float(defaults.get("other", 0.0))
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Other operating cost row added for {new_year}.")
+            return
+
+    rows: List[Dict[str, Any]] = []
+    for year in years:
+        rows.append(
+            {
+                "Year": year,
+                "Other Operating Cost": float(summary.get(year, {}).get("other", 0.0)),
+            }
+        )
+
+    base_df = pd.DataFrame(rows)
+    if base_df.empty:
+        st.info("Add other operating cost rows to begin editing values.")
+        return
+
+    def _save_other_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        other_value = max(0.0, float(values.get("Other Operating Cost", row["Other Operating Cost"])))
+        cfg.other_opex_overrides = cfg.other_opex_overrides or {}
+        cfg.other_opex_overrides[year] = other_value
+        cfg.__post_init__()
+        _run_model()
+        return f"Other operating cost updated for {year}."
+
+    _render_inline_row_editor(
+        "other_operating_cost_inline",
+        base_df,
+        [
+            {"column": "Year", "label": "Year", "type": "int", "editable": False},
+            {
+                "column": "Other Operating Cost",
+                "label": "Other Operating Cost",
+                "type": "currency",
+                "min": 0.0,
+                "step": 1000.0,
+            },
+        ],
+        on_save=_save_other_row,
+        row_id_column="Year",
+        empty_message="Add other operating cost rows to begin editing values.",
+    )
+
+    edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
+        "other_operating_cost",
+        base_df.copy(),
+        guidance="Update other operating cost assumptions across the forecast horizon.",
+        non_negative_columns=["Other Operating Cost"],
+    )
+
+    def _apply_other_increment(selected_years: Sequence[int], increment_pct: float) -> Optional[str]:
+        if not selected_years:
+            raise ValueError("Select at least one year to increment.")
+        cfg.other_opex_overrides = cfg.other_opex_overrides or {}
+        for year in selected_years:
+            defaults = summary.get(year, {})
+            base_value = float(defaults.get("other", 0.0))
+            cfg.other_opex_overrides[year] = max(0.0, _apply_increment(base_value, increment_pct))
+        cfg.__post_init__()
+        _run_model()
+        return "Other operating cost increments applied."
+
+    _schedule_increment_helper(
+        "other_operating_cost",
+        years,
+        _apply_other_increment,
+        help_text="Apply a uniform percentage change to other operating cost across selected years.",
+    )
+
+    if st.button("Apply Other Operating Cost Updates", key="other_operating_cost_apply"):
+        try:
+            sanitized = edited_df.dropna(subset=["Year"])
+            sanitized = sanitized.sort_values("Year")
+            if sanitized.empty:
+                raise ValueError("Add at least one year before applying other operating cost updates.")
+
+            overrides: Dict[int, float] = {}
+            for _, row in sanitized.iterrows():
+                year_value = int(row["Year"])
+                other_value = float(row.get("Other Operating Cost", 0.0))
+                if other_value < 0:
+                    raise ValueError("Other operating cost cannot be negative.")
+                overrides[year_value] = other_value
+
+            cfg.other_opex_overrides = overrides
+            cfg.projection_years = max(overrides.keys()) - cfg.start_year + 1
+            cfg.__post_init__()
+            _run_model()
+        except ValueError as exc:
+            status_placeholder.error(str(exc))
+        else:
+            status_placeholder.success("Other operating cost schedule updated.")
 
 
 def _render_operating_expense_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
@@ -3852,6 +4363,27 @@ def _render_platform_settings() -> None:
             st.write("Run the financial model to populate cost structure projections across the horizon.")
         _render_table(cost_df, hide_index=True)
         _render_cost_structure_editor(cfg, model)
+
+        st.markdown("#### Variable Production Cost Schedule")
+        variable_cost_df = _variable_production_cost_schedule(cfg, model)
+        if variable_cost_df.empty:
+            st.write("Run the financial model to populate variable production cost projections across the horizon.")
+        _render_table(variable_cost_df, hide_index=True)
+        _render_variable_cost_editor(cfg, model)
+
+        st.markdown("#### Fixed Manufacturing Cost Schedule")
+        fixed_cost_df = _fixed_manufacturing_cost_schedule(cfg, model)
+        if fixed_cost_df.empty:
+            st.write("Run the financial model to populate fixed manufacturing cost projections across the horizon.")
+        _render_table(fixed_cost_df, hide_index=True)
+        _render_fixed_cost_editor(cfg, model)
+
+        st.markdown("#### Other Operating Cost Schedule")
+        other_cost_df = _other_operating_cost_schedule(cfg, model)
+        if other_cost_df.empty:
+            st.write("Run the financial model to populate other operating cost projections across the horizon.")
+        _render_table(other_cost_df, hide_index=True)
+        _render_other_operating_cost_editor(cfg, model)
 
         st.markdown("#### Operating Expense Schedule")
         opex_df = _operating_expense_schedule(cfg, model)

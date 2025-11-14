@@ -764,6 +764,86 @@ def _revenue_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None
     return df
 
 
+def _cost_structure_schedule(cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    model = model or {}
+    years = _config_years(cfg)
+
+    revenue_map: Dict[int, float] = model.get("revenue", {})
+    variable_cogs: Dict[int, float] = model.get("variable_cogs", {})
+    fixed_cogs: Dict[int, float] = model.get("fixed_cogs", {})
+    opex: Dict[int, float] = model.get("opex", {})
+    labor_metrics: Dict[int, Dict[str, float]] = model.get("labor_metrics", {})
+    marketing_budget: Dict[int, float] = {}
+    if isinstance(getattr(cfg, "marketing_budget", None), dict):
+        marketing_budget = {int(year): float(value) for year, value in cfg.marketing_budget.items()}
+
+    columns = [
+        "Year",
+        "Revenue",
+        "Variable Production Cost",
+        "Variable % of Revenue",
+        "Fixed Manufacturing Cost",
+        "Fixed % of Revenue",
+        "Marketing Spend",
+        "Marketing % of Revenue",
+        "Labor Cost",
+        "Labor % of Revenue",
+        "Other Operating Cost",
+        "Other % of Revenue",
+        "Total Cost",
+        "Total % of Revenue",
+    ]
+
+    def _percent(value: float, revenue: float) -> str:
+        if revenue <= 0:
+            return "—"
+        return f"{(value / revenue) * 100:.1f}%"
+
+    rows: List[Dict[str, Any]] = []
+    for year in years:
+        revenue_value = float(revenue_map.get(year, 0.0))
+        variable_cost = float(variable_cogs.get(year, 0.0))
+        fixed_cost = float(fixed_cogs.get(year, 0.0))
+
+        if labor_metrics and year in labor_metrics:
+            labor_cost = float(labor_metrics[year].get("total_labor_cost", 0.0))
+        else:
+            years_since_start = max(0, year - cfg.start_year)
+            baseline_salary = cfg.avg_salary * cfg.headcount * 12
+            labor_cost = baseline_salary * ((1 + cfg.annual_salary_growth) ** years_since_start)
+
+        opex_total = float(opex.get(year, labor_cost))
+        marketing_planned = float(marketing_budget.get(year, 0.0))
+        marketing_cost = marketing_planned if marketing_planned > 0 else max(0.0, opex_total - labor_cost)
+        other_opex = max(0.0, opex_total - labor_cost - marketing_cost)
+
+        labor_cost = max(0.0, labor_cost)
+        marketing_cost = max(0.0, marketing_cost)
+
+        total_cost = variable_cost + fixed_cost + marketing_cost + labor_cost + other_opex
+
+        rows.append(
+            {
+                "Year": year,
+                "Revenue": f"${revenue_value:,.0f}",
+                "Variable Production Cost": f"${variable_cost:,.0f}",
+                "Variable % of Revenue": _percent(variable_cost, revenue_value),
+                "Fixed Manufacturing Cost": f"${fixed_cost:,.0f}",
+                "Fixed % of Revenue": _percent(fixed_cost, revenue_value),
+                "Marketing Spend": f"${marketing_cost:,.0f}",
+                "Marketing % of Revenue": _percent(marketing_cost, revenue_value),
+                "Labor Cost": f"${labor_cost:,.0f}",
+                "Labor % of Revenue": _percent(labor_cost, revenue_value),
+                "Other Operating Cost": f"${other_opex:,.0f}",
+                "Other % of Revenue": _percent(other_opex, revenue_value),
+                "Total Cost": f"${total_cost:,.0f}",
+                "Total % of Revenue": _percent(total_cost, revenue_value),
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns)
+
+
 def _debt_schedule(model: Dict[str, Any]) -> pd.DataFrame:
     years = _projection_years(model)
     rows = []
@@ -1330,6 +1410,12 @@ def _render_platform_settings() -> None:
         if revenue_df.empty:
             st.write("Run the financial model to populate revenue projections across the horizon.")
         _render_table(revenue_df, hide_index=True)
+
+        st.markdown("#### Cost Structure Schedule")
+        cost_df = _cost_structure_schedule(cfg, model)
+        if cost_df.empty:
+            st.write("Run the financial model to populate cost structure projections across the horizon.")
+        _render_table(cost_df, hide_index=True)
 
         st.markdown("#### Debt Amortization Schedule")
         debt_df = _debt_schedule(model)

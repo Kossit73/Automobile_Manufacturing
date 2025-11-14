@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import re
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from scipy import optimize
 
 from streamlit.delta_generator import DeltaGenerator
@@ -185,6 +185,64 @@ def _ensure_year_in_horizon(cfg: CompanyConfig, year: int) -> None:
 
 def _apply_increment(value: float, increment_pct: float) -> float:
     return value * (1 + increment_pct / 100.0)
+
+def _schedule_toolbar(
+    prefix: str,
+    years: Sequence[int],
+    *,
+    label: str = "Schedule Actions",
+    allow_add: bool = True,
+    allow_remove: bool = True,
+    allow_increment: bool = True,
+    increment_label: str = "Yearly Increment (%)",
+) -> Optional[Dict[str, Any]]:
+    if not years:
+        return None
+
+    triggered: Optional[str] = None
+    target_year: Optional[int] = None
+    increment_value: float = 0.0
+
+    with st.expander(label, expanded=False):
+        form_key = f"{prefix}_toolbar_form"
+        with st.form(form_key):
+            target_year = st.selectbox(
+                "Target Year",
+                options=list(years),
+                key=f"{prefix}_toolbar_year",
+            )
+
+            if allow_increment:
+                increment_value = st.number_input(
+                    increment_label,
+                    min_value=-100.0,
+                    max_value=500.0,
+                    value=0.0,
+                    step=1.0,
+                    key=f"{prefix}_toolbar_increment",
+                )
+
+            buttons: List[Tuple[str, str]] = []
+            if allow_add:
+                buttons.append(("add", "Add Row"))
+            if allow_remove:
+                buttons.append(("remove", "Remove Row"))
+            if allow_increment:
+                buttons.append(("increment", "Apply Increment"))
+
+            if buttons:
+                cols = st.columns(len(buttons))
+                for idx, (action_name, button_label) in enumerate(buttons):
+                    if cols[idx].form_submit_button(button_label):
+                        triggered = action_name
+
+    if triggered and target_year is not None:
+        result: Dict[str, Any] = {"action": triggered, "year": int(target_year)}
+        if allow_increment:
+            result["increment_pct"] = float(increment_value)
+        return result
+
+    return None
 
 def _projection_years(model: Dict[str, Any]) -> List[int]:
     years = model.get("years", [])
@@ -1040,6 +1098,36 @@ def _render_production_horizon_editor(cfg: CompanyConfig) -> None:
         return
 
     st.markdown("##### Edit Production Horizon")
+    action = _schedule_toolbar("production_horizon", years)
+    if action:
+        target_year = int(action["year"])
+        increment_pct = float(action.get("increment_pct", 0.0))
+        if action["action"] == "remove":
+            cfg.capacity_utilization.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Production horizon entry removed for {target_year}.")
+        elif action["action"] == "add":
+            new_year = target_year + 1
+            _ensure_year_in_horizon(cfg, new_year)
+            base_util = float(cfg.capacity_utilization.get(target_year, 0.0))
+            cfg.capacity_utilization[new_year] = max(
+                0.0, min(1.5, _apply_increment(base_util, increment_pct))
+            )
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Production horizon row added for {new_year}.")
+        elif action["action"] == "increment":
+            base_util = float(cfg.capacity_utilization.get(target_year, 0.0))
+            cfg.capacity_utilization[target_year] = max(
+                0.0, min(1.5, _apply_increment(base_util, increment_pct))
+            )
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Production horizon increment applied for {target_year}.")
+
     for year in years:
         with st.expander(f"Edit Production Horizon – {year}", expanded=False):
             with st.form(f"production_horizon_form_{year}"):
@@ -1066,53 +1154,15 @@ def _render_production_horizon_editor(cfg: CompanyConfig) -> None:
                     step=1,
                     key=f"prod_days_{year}",
                 )
-                increment_pct = st.number_input(
-                    "Yearly Increment (%)",
-                    min_value=-100.0,
-                    max_value=500.0,
-                    value=0.0,
-                    step=1.0,
-                    key=f"prod_increment_{year}",
-                )
-                action_cols = st.columns(4)
-                save_row = action_cols[0].form_submit_button("Save Row")
-                add_row = action_cols[1].form_submit_button("Add Row")
-                remove_row = action_cols[2].form_submit_button("Remove Row")
-                increment_row = action_cols[3].form_submit_button("Yearly Increment Helper")
+                save_row = st.form_submit_button("Save Row")
 
-            if save_row:
-                cfg.capacity_utilization[year] = float(utilization)
-                cfg.annual_capacity = float(annual_capacity)
-                cfg.working_days = int(working_days)
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Production horizon updated for {year}.")
-
-            if remove_row:
-                cfg.capacity_utilization.pop(year, None)
-                if year == _horizon_end(cfg) and cfg.projection_years > 1:
-                    cfg.projection_years -= 1
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Production horizon entry removed for {year}.")
-
-            if add_row:
-                new_year = year + 1
-                _ensure_year_in_horizon(cfg, new_year)
-                cfg.capacity_utilization[new_year] = max(
-                    0.0, min(1.5, _apply_increment(float(utilization), increment_pct))
-                )
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Production horizon row added for {new_year}.")
-
-            if increment_row:
-                cfg.capacity_utilization[year] = max(
-                    0.0, min(1.5, _apply_increment(float(utilization), increment_pct))
-                )
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Production horizon increment applied for {year}.")
+        if save_row:
+            cfg.capacity_utilization[year] = float(utilization)
+            cfg.annual_capacity = float(annual_capacity)
+            cfg.working_days = int(working_days)
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Production horizon updated for {year}.")
 
 
 def _render_production_capacity_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
@@ -1121,10 +1171,48 @@ def _render_production_capacity_editor(cfg: CompanyConfig, model: Dict[str, Any]
         return
 
     production_volume: Dict[int, float] = model.get("production_volume", {}) if model else {}
-    st.markdown("##### Edit Production Capacity Targets")
+    planned_defaults: Dict[int, float] = {}
     for year in years:
         default_units = cfg.annual_capacity * float(cfg.capacity_utilization.get(year, 0.0))
-        planned_units = float(production_volume.get(year, default_units))
+        planned_defaults[year] = float(production_volume.get(year, default_units))
+
+    st.markdown("##### Edit Production Capacity Targets")
+    action = _schedule_toolbar("production_capacity", years)
+    if action:
+        target_year = int(action["year"])
+        increment_pct = float(action.get("increment_pct", 0.0))
+        if action["action"] == "remove":
+            cfg.capacity_utilization.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Capacity target removed for {target_year}.")
+        elif action["action"] == "add":
+            new_year = target_year + 1
+            _ensure_year_in_horizon(cfg, new_year)
+            base_planned = planned_defaults.get(target_year, 0.0)
+            new_planned = max(0.0, _apply_increment(base_planned, increment_pct))
+            if cfg.annual_capacity > 0:
+                cfg.capacity_utilization[new_year] = max(
+                    0.0, min(1.5, new_planned / float(cfg.annual_capacity))
+                )
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Capacity row added for {new_year}.")
+        elif action["action"] == "increment":
+            base_planned = planned_defaults.get(target_year, 0.0)
+            if cfg.annual_capacity > 0:
+                updated = max(0.0, _apply_increment(base_planned, increment_pct))
+                cfg.capacity_utilization[target_year] = max(
+                    0.0, min(1.5, updated / float(cfg.annual_capacity))
+                )
+                cfg.__post_init__()
+                _run_model()
+                st.success(f"Capacity target increment applied for {target_year}.")
+
+    for year in years:
+        planned_units = planned_defaults.get(year, 0.0)
         with st.expander(f"Edit Capacity Target – {year}", expanded=False):
             with st.form(f"capacity_form_{year}"):
                 planned = st.number_input(
@@ -1134,57 +1222,15 @@ def _render_production_capacity_editor(cfg: CompanyConfig, model: Dict[str, Any]
                     step=100.0,
                     key=f"capacity_units_{year}",
                 )
-                increment_pct = st.number_input(
-                    "Yearly Increment (%)",
-                    min_value=-100.0,
-                    max_value=500.0,
-                    value=0.0,
-                    step=1.0,
-                    key=f"capacity_increment_{year}",
-                )
-                action_cols = st.columns(4)
-                save_row = action_cols[0].form_submit_button("Save Row")
-                add_row = action_cols[1].form_submit_button("Add Row")
-                remove_row = action_cols[2].form_submit_button("Remove Row")
-                increment_row = action_cols[3].form_submit_button("Yearly Increment Helper")
+                save_row = st.form_submit_button("Save Row")
 
-            if save_row:
-                if cfg.annual_capacity > 0:
-                    utilization = max(0.0, min(1.5, planned / float(cfg.annual_capacity)))
-                    cfg.capacity_utilization[year] = utilization
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Capacity target updated for {year}.")
-
-            if remove_row:
-                cfg.capacity_utilization.pop(year, None)
-                if year == _horizon_end(cfg) and cfg.projection_years > 1:
-                    cfg.projection_years -= 1
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Capacity target removed for {year}.")
-
-            if add_row:
-                new_year = year + 1
-                _ensure_year_in_horizon(cfg, new_year)
-                new_planned = max(0.0, _apply_increment(float(planned), increment_pct))
-                if cfg.annual_capacity > 0:
-                    cfg.capacity_utilization[new_year] = max(
-                        0.0, min(1.5, new_planned / float(cfg.annual_capacity))
-                    )
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Capacity row added for {new_year}.")
-
-            if increment_row:
-                if cfg.annual_capacity > 0:
-                    new_planned = max(0.0, _apply_increment(float(planned), increment_pct))
-                    cfg.capacity_utilization[year] = max(
-                        0.0, min(1.5, new_planned / float(cfg.annual_capacity))
-                    )
-                    cfg.__post_init__()
-                    _run_model()
-                    st.success(f"Capacity increment applied for {year}.")
+        if save_row:
+            if cfg.annual_capacity > 0:
+                utilization = max(0.0, min(1.5, planned / float(cfg.annual_capacity)))
+                cfg.capacity_utilization[year] = utilization
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Capacity target updated for {year}.")
 
 
 def _render_pricing_schedule_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
@@ -1198,26 +1244,68 @@ def _render_pricing_schedule_editor(cfg: CompanyConfig, model: Dict[str, Any]) -
     if not products:
         return
 
+    price_defaults: Dict[int, Dict[str, float]] = {}
+    for year in years:
+        overrides = {}
+        if getattr(cfg, "product_price_overrides", None):
+            overrides = cfg.product_price_overrides.get(year, {})
+        prices_for_year = product_prices.get(year, {}) if product_prices else {}
+        years_since_start = max(0, year - cfg.start_year)
+        defaults: Dict[str, float] = {}
+        for product in products:
+            if overrides and product in overrides:
+                defaults[product] = float(overrides[product])
+            else:
+                current_price = prices_for_year.get(product)
+                if current_price is None:
+                    base_price = cfg.product_portfolio.get(product, {}).get("price", 0.0)
+                    growth = cfg.product_portfolio.get(product, {}).get("price_growth", 0.0)
+                    current_price = base_price * ((1 + growth) ** years_since_start)
+                defaults[product] = float(current_price)
+        price_defaults[year] = defaults
+
     st.markdown("##### Edit Pricing Schedule")
+    action = _schedule_toolbar("pricing_schedule", years)
+    if action:
+        target_year = int(action["year"])
+        increment_pct = float(action.get("increment_pct", 0.0))
+        if action["action"] == "remove":
+            if getattr(cfg, "product_price_overrides", None):
+                cfg.product_price_overrides.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Pricing row removed for {target_year}.")
+        elif action["action"] == "add":
+            new_year = target_year + 1
+            _ensure_year_in_horizon(cfg, new_year)
+            base_prices = price_defaults.get(target_year, {})
+            cfg.product_price_overrides = cfg.product_price_overrides or {}
+            cfg.product_price_overrides[new_year] = {
+                product: max(0.0, _apply_increment(value, increment_pct))
+                for product, value in base_prices.items()
+            }
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Pricing row added for {new_year}.")
+        elif action["action"] == "increment":
+            base_prices = price_defaults.get(target_year, {})
+            if base_prices:
+                cfg.product_price_overrides = cfg.product_price_overrides or {}
+                cfg.product_price_overrides[target_year] = {
+                    product: max(0.0, _apply_increment(value, increment_pct))
+                    for product, value in base_prices.items()
+                }
+                cfg.__post_init__()
+                _run_model()
+                st.success(f"Pricing increment applied for {target_year}.")
     for year in years:
         with st.expander(f"Edit Pricing – {year}", expanded=False):
             with st.form(f"pricing_form_{year}"):
                 inputs: Dict[str, float] = {}
-                prices_for_year = product_prices.get(year, {}) if product_prices else {}
-                override_prices = {}
-                if getattr(cfg, "product_price_overrides", None):
-                    override_prices = cfg.product_price_overrides.get(year, {})
-                years_since_start = max(0, year - cfg.start_year)
-
                 for product in products:
-                    if override_prices and product in override_prices:
-                        current_price = override_prices[product]
-                    else:
-                        current_price = prices_for_year.get(product)
-                        if current_price is None:
-                            base_price = cfg.product_portfolio.get(product, {}).get("price", 0.0)
-                            growth = cfg.product_portfolio.get(product, {}).get("price_growth", 0.0)
-                            current_price = base_price * ((1 + growth) ** years_since_start)
+                    current_price = price_defaults.get(year, {}).get(product, 0.0)
                     inputs[product] = st.number_input(
                         f"{_product_label(product)} Price",
                         min_value=0.0,
@@ -1225,59 +1313,16 @@ def _render_pricing_schedule_editor(cfg: CompanyConfig, model: Dict[str, Any]) -
                         step=100.0,
                         key=f"pricing_{product}_{year}",
                     )
-                increment_pct = st.number_input(
-                    "Yearly Increment (%)",
-                    min_value=-100.0,
-                    max_value=500.0,
-                    value=0.0,
-                    step=1.0,
-                    key=f"pricing_increment_{year}",
-                )
-                action_cols = st.columns(4)
-                save_row = action_cols[0].form_submit_button("Save Row")
-                add_row = action_cols[1].form_submit_button("Add Row")
-                remove_row = action_cols[2].form_submit_button("Remove Row")
-                increment_row = action_cols[3].form_submit_button("Yearly Increment Helper")
+                save_row = st.form_submit_button("Save Row")
 
-            if save_row:
-                cfg.product_price_overrides = cfg.product_price_overrides or {}
-                cfg.product_price_overrides[year] = {
-                    product: float(value) for product, value in inputs.items()
-                }
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Pricing updated for {year}.")
-
-            if remove_row:
-                if getattr(cfg, "product_price_overrides", None):
-                    cfg.product_price_overrides.pop(year, None)
-                if year == _horizon_end(cfg) and cfg.projection_years > 1:
-                    cfg.projection_years -= 1
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Pricing row removed for {year}.")
-
-            if add_row:
-                new_year = year + 1
-                _ensure_year_in_horizon(cfg, new_year)
-                cfg.product_price_overrides = cfg.product_price_overrides or {}
-                cfg.product_price_overrides[new_year] = {
-                    product: max(0.0, _apply_increment(float(value), increment_pct))
-                    for product, value in inputs.items()
-                }
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Pricing row added for {new_year}.")
-
-            if increment_row:
-                cfg.product_price_overrides = cfg.product_price_overrides or {}
-                cfg.product_price_overrides[year] = {
-                    product: max(0.0, _apply_increment(float(value), increment_pct))
-                    for product, value in inputs.items()
-                }
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Pricing increment applied for {year}.")
+        if save_row:
+            cfg.product_price_overrides = cfg.product_price_overrides or {}
+            cfg.product_price_overrides[year] = {
+                product: float(value) for product, value in inputs.items()
+            }
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Pricing updated for {year}.")
 
 
 def _render_revenue_schedule_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
@@ -1291,14 +1336,63 @@ def _render_revenue_schedule_editor(cfg: CompanyConfig, model: Dict[str, Any]) -
     if not products:
         return
 
+    unit_defaults: Dict[int, Dict[str, float]] = {}
+    for year in years:
+        overrides = {}
+        if getattr(cfg, "product_unit_overrides", None):
+            overrides = cfg.product_unit_overrides.get(year, {})
+        units_for_year = product_units.get(year, {}) if product_units else {}
+        defaults: Dict[str, float] = {}
+        for product in products:
+            if overrides and product in overrides:
+                defaults[product] = float(overrides[product])
+            else:
+                defaults[product] = float(units_for_year.get(product, 0.0))
+        unit_defaults[year] = defaults
+
     st.markdown("##### Edit Revenue Schedule")
+    action = _schedule_toolbar("revenue_schedule", years)
+    if action:
+        target_year = int(action["year"])
+        increment_pct = float(action.get("increment_pct", 0.0))
+        if action["action"] == "remove":
+            if getattr(cfg, "product_unit_overrides", None):
+                cfg.product_unit_overrides.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Revenue row removed for {target_year}.")
+        elif action["action"] == "add":
+            new_year = target_year + 1
+            _ensure_year_in_horizon(cfg, new_year)
+            base_units = unit_defaults.get(target_year, {})
+            cfg.product_unit_overrides = cfg.product_unit_overrides or {}
+            cfg.product_unit_overrides[new_year] = {
+                product: max(0.0, _apply_increment(value, increment_pct))
+                for product, value in base_units.items()
+            }
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Revenue row added for {new_year}.")
+        elif action["action"] == "increment":
+            base_units = unit_defaults.get(target_year, {})
+            if base_units:
+                cfg.product_unit_overrides = cfg.product_unit_overrides or {}
+                cfg.product_unit_overrides[target_year] = {
+                    product: max(0.0, _apply_increment(value, increment_pct))
+                    for product, value in base_units.items()
+                }
+                cfg.__post_init__()
+                _run_model()
+                st.success(f"Revenue increment applied for {target_year}.")
     for year in years:
         with st.expander(f"Edit Revenue Mix – {year}", expanded=False):
             with st.form(f"revenue_form_{year}"):
                 overrides: Dict[str, float] = {}
-                units_for_year = product_units.get(year, {}) if product_units else {}
+                defaults = unit_defaults.get(year, {})
                 for product in products:
-                    current_units = units_for_year.get(product, 0.0)
+                    current_units = defaults.get(product, 0.0)
                     overrides[product] = st.number_input(
                         f"{_product_label(product)} Units",
                         min_value=0.0,
@@ -1306,59 +1400,16 @@ def _render_revenue_schedule_editor(cfg: CompanyConfig, model: Dict[str, Any]) -
                         step=100.0,
                         key=f"revenue_units_{product}_{year}",
                     )
-                increment_pct = st.number_input(
-                    "Yearly Increment (%)",
-                    min_value=-100.0,
-                    max_value=500.0,
-                    value=0.0,
-                    step=1.0,
-                    key=f"revenue_increment_{year}",
-                )
-                action_cols = st.columns(4)
-                save_row = action_cols[0].form_submit_button("Save Row")
-                add_row = action_cols[1].form_submit_button("Add Row")
-                remove_row = action_cols[2].form_submit_button("Remove Row")
-                increment_row = action_cols[3].form_submit_button("Yearly Increment Helper")
+                save_row = st.form_submit_button("Save Row")
 
-            if save_row:
-                cfg.product_unit_overrides = cfg.product_unit_overrides or {}
-                cfg.product_unit_overrides[year] = {
-                    product: float(value) for product, value in overrides.items()
-                }
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Revenue mix updated for {year}.")
-
-            if remove_row:
-                if getattr(cfg, "product_unit_overrides", None):
-                    cfg.product_unit_overrides.pop(year, None)
-                if year == _horizon_end(cfg) and cfg.projection_years > 1:
-                    cfg.projection_years -= 1
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Revenue row removed for {year}.")
-
-            if add_row:
-                new_year = year + 1
-                _ensure_year_in_horizon(cfg, new_year)
-                cfg.product_unit_overrides = cfg.product_unit_overrides or {}
-                cfg.product_unit_overrides[new_year] = {
-                    product: max(0.0, _apply_increment(float(value), increment_pct))
-                    for product, value in overrides.items()
-                }
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Revenue row added for {new_year}.")
-
-            if increment_row:
-                cfg.product_unit_overrides = cfg.product_unit_overrides or {}
-                cfg.product_unit_overrides[year] = {
-                    product: max(0.0, _apply_increment(float(value), increment_pct))
-                    for product, value in overrides.items()
-                }
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Revenue increment applied for {year}.")
+        if save_row:
+            cfg.product_unit_overrides = cfg.product_unit_overrides or {}
+            cfg.product_unit_overrides[year] = {
+                product: float(value) for product, value in overrides.items()
+            }
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Revenue mix updated for {year}.")
 
 
 def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
@@ -1369,107 +1420,107 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
     variable_cogs: Dict[int, float] = model.get("variable_cogs", {}) if model else {}
     fixed_cogs: Dict[int, float] = model.get("fixed_cogs", {}) if model else {}
 
+    cost_defaults: Dict[int, Dict[str, float]] = {}
+    for year in years:
+        variable_default = float(variable_cogs.get(year, 0.0))
+        fixed_default = float(fixed_cogs.get(year, 0.0))
+        marketing_default = float(cfg.marketing_budget.get(year, 0.0))
+        cost_defaults[year] = {
+            "variable": variable_default,
+            "fixed": fixed_default,
+            "marketing": marketing_default,
+        }
+
     st.markdown("##### Edit Cost Structure")
+    action = _schedule_toolbar("cost_structure", years)
+    if action:
+        target_year = int(action["year"])
+        increment_pct = float(action.get("increment_pct", 0.0))
+        if action["action"] == "remove":
+            if getattr(cfg, "variable_cost_overrides", None):
+                cfg.variable_cost_overrides.pop(target_year, None)
+            if getattr(cfg, "fixed_cost_overrides", None):
+                cfg.fixed_cost_overrides.pop(target_year, None)
+            if getattr(cfg, "marketing_budget", None):
+                cfg.marketing_budget.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Cost structure row removed for {target_year}.")
+        elif action["action"] == "add":
+            new_year = target_year + 1
+            _ensure_year_in_horizon(cfg, new_year)
+            defaults = cost_defaults.get(target_year, {"variable": 0.0, "fixed": 0.0, "marketing": 0.0})
+            cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
+            cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
+            cfg.marketing_budget = cfg.marketing_budget or {}
+            cfg.variable_cost_overrides[new_year] = max(
+                0.0, _apply_increment(defaults.get("variable", 0.0), increment_pct)
+            )
+            cfg.fixed_cost_overrides[new_year] = max(
+                0.0, _apply_increment(defaults.get("fixed", 0.0), increment_pct)
+            )
+            cfg.marketing_budget[new_year] = max(
+                0.0, _apply_increment(defaults.get("marketing", 0.0), increment_pct)
+            )
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Cost structure row added for {new_year}.")
+        elif action["action"] == "increment":
+            defaults = cost_defaults.get(target_year, {"variable": 0.0, "fixed": 0.0, "marketing": 0.0})
+            cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
+            cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
+            cfg.marketing_budget = cfg.marketing_budget or {}
+            cfg.variable_cost_overrides[target_year] = max(
+                0.0, _apply_increment(defaults.get("variable", 0.0), increment_pct)
+            )
+            cfg.fixed_cost_overrides[target_year] = max(
+                0.0, _apply_increment(defaults.get("fixed", 0.0), increment_pct)
+            )
+            cfg.marketing_budget[target_year] = max(
+                0.0, _apply_increment(defaults.get("marketing", 0.0), increment_pct)
+            )
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Cost structure increment applied for {target_year}.")
     for year in years:
         with st.expander(f"Edit Cost Structure – {year}", expanded=False):
             with st.form(f"cost_form_{year}"):
-                variable_default = float(variable_cogs.get(year, 0.0))
-                fixed_default = float(fixed_cogs.get(year, 0.0))
-                marketing_default = float(cfg.marketing_budget.get(year, 0.0))
+                defaults = cost_defaults.get(year, {"variable": 0.0, "fixed": 0.0, "marketing": 0.0})
                 variable_value = st.number_input(
                     "Variable Production Cost",
                     min_value=0.0,
-                    value=variable_default,
+                    value=float(defaults.get("variable", 0.0)),
                     step=1000.0,
                     key=f"cost_variable_{year}",
                 )
                 fixed_value = st.number_input(
                     "Fixed Manufacturing Cost",
                     min_value=0.0,
-                    value=fixed_default,
+                    value=float(defaults.get("fixed", 0.0)),
                     step=1000.0,
                     key=f"cost_fixed_{year}",
                 )
                 marketing_value = st.number_input(
                     "Marketing Spend",
                     min_value=0.0,
-                    value=marketing_default,
+                    value=float(defaults.get("marketing", 0.0)),
                     step=1000.0,
                     key=f"cost_marketing_{year}",
                 )
-                increment_pct = st.number_input(
-                    "Yearly Increment (%)",
-                    min_value=-100.0,
-                    max_value=500.0,
-                    value=0.0,
-                    step=1.0,
-                    key=f"cost_increment_{year}",
-                )
-                action_cols = st.columns(4)
-                save_row = action_cols[0].form_submit_button("Save Row")
-                add_row = action_cols[1].form_submit_button("Add Row")
-                remove_row = action_cols[2].form_submit_button("Remove Row")
-                increment_row = action_cols[3].form_submit_button("Yearly Increment Helper")
+                save_row = st.form_submit_button("Save Row")
 
-            if save_row:
-                cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
-                cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
-                cfg.marketing_budget = cfg.marketing_budget or {}
-                cfg.variable_cost_overrides[year] = float(variable_value)
-                cfg.fixed_cost_overrides[year] = float(fixed_value)
-                cfg.marketing_budget[year] = float(marketing_value)
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Cost structure updated for {year}.")
-
-            if remove_row:
-                if getattr(cfg, "variable_cost_overrides", None):
-                    cfg.variable_cost_overrides.pop(year, None)
-                if getattr(cfg, "fixed_cost_overrides", None):
-                    cfg.fixed_cost_overrides.pop(year, None)
-                if getattr(cfg, "marketing_budget", None):
-                    cfg.marketing_budget.pop(year, None)
-                if year == _horizon_end(cfg) and cfg.projection_years > 1:
-                    cfg.projection_years -= 1
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Cost structure row removed for {year}.")
-
-            if add_row:
-                new_year = year + 1
-                _ensure_year_in_horizon(cfg, new_year)
-                cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
-                cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
-                cfg.marketing_budget = cfg.marketing_budget or {}
-                cfg.variable_cost_overrides[new_year] = max(
-                    0.0, _apply_increment(float(variable_value), increment_pct)
-                )
-                cfg.fixed_cost_overrides[new_year] = max(
-                    0.0, _apply_increment(float(fixed_value), increment_pct)
-                )
-                cfg.marketing_budget[new_year] = max(
-                    0.0, _apply_increment(float(marketing_value), increment_pct)
-                )
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Cost structure row added for {new_year}.")
-
-            if increment_row:
-                cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
-                cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
-                cfg.marketing_budget = cfg.marketing_budget or {}
-                cfg.variable_cost_overrides[year] = max(
-                    0.0, _apply_increment(float(variable_value), increment_pct)
-                )
-                cfg.fixed_cost_overrides[year] = max(
-                    0.0, _apply_increment(float(fixed_value), increment_pct)
-                )
-                cfg.marketing_budget[year] = max(
-                    0.0, _apply_increment(float(marketing_value), increment_pct)
-                )
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Cost structure increment applied for {year}.")
+        if save_row:
+            cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
+            cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
+            cfg.marketing_budget = cfg.marketing_budget or {}
+            cfg.variable_cost_overrides[year] = float(variable_value)
+            cfg.fixed_cost_overrides[year] = float(fixed_value)
+            cfg.marketing_budget[year] = float(marketing_value)
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Cost structure updated for {year}.")
 
 
 def _render_operating_expense_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
@@ -1477,89 +1528,85 @@ def _render_operating_expense_editor(cfg: CompanyConfig, model: Dict[str, Any]) 
     if not years:
         return
 
+    opex_defaults: Dict[int, Dict[str, float]] = {}
+    for year in years:
+        marketing_default = float(cfg.marketing_budget.get(year, 0.0))
+        other_default = 0.0
+        if cfg.other_opex_overrides:
+            other_default = float(cfg.other_opex_overrides.get(year, 0.0))
+        opex_defaults[year] = {"marketing": marketing_default, "other": other_default}
+
     st.markdown("##### Edit Operating Expenses")
+    action = _schedule_toolbar("operating_expense", years)
+    if action:
+        target_year = int(action["year"])
+        increment_pct = float(action.get("increment_pct", 0.0))
+        if action["action"] == "remove":
+            if getattr(cfg, "marketing_budget", None):
+                cfg.marketing_budget.pop(target_year, None)
+            if getattr(cfg, "other_opex_overrides", None):
+                cfg.other_opex_overrides.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Operating expense row removed for {target_year}.")
+        elif action["action"] == "add":
+            new_year = target_year + 1
+            _ensure_year_in_horizon(cfg, new_year)
+            defaults = opex_defaults.get(target_year, {"marketing": 0.0, "other": 0.0})
+            cfg.marketing_budget = cfg.marketing_budget or {}
+            cfg.other_opex_overrides = cfg.other_opex_overrides or {}
+            cfg.marketing_budget[new_year] = max(
+                0.0, _apply_increment(defaults.get("marketing", 0.0), increment_pct)
+            )
+            cfg.other_opex_overrides[new_year] = max(
+                0.0, _apply_increment(defaults.get("other", 0.0), increment_pct)
+            )
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Operating expense row added for {new_year}.")
+        elif action["action"] == "increment":
+            defaults = opex_defaults.get(target_year, {"marketing": 0.0, "other": 0.0})
+            cfg.marketing_budget = cfg.marketing_budget or {}
+            cfg.other_opex_overrides = cfg.other_opex_overrides or {}
+            cfg.marketing_budget[target_year] = max(
+                0.0, _apply_increment(defaults.get("marketing", 0.0), increment_pct)
+            )
+            cfg.other_opex_overrides[target_year] = max(
+                0.0, _apply_increment(defaults.get("other", 0.0), increment_pct)
+            )
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Operating expense increment applied for {target_year}.")
     for year in years:
         with st.expander(f"Edit Operating Expenses – {year}", expanded=False):
             with st.form(f"opex_form_{year}"):
-                marketing_default = float(cfg.marketing_budget.get(year, 0.0))
-                other_default = 0.0
-                if cfg.other_opex_overrides:
-                    other_default = float(cfg.other_opex_overrides.get(year, 0.0))
+                defaults = opex_defaults.get(year, {"marketing": 0.0, "other": 0.0})
                 marketing_value = st.number_input(
                     "Marketing Spend",
                     min_value=0.0,
-                    value=marketing_default,
+                    value=float(defaults.get("marketing", 0.0)),
                     step=1000.0,
                     key=f"opex_marketing_{year}",
                 )
                 other_value = st.number_input(
                     "Other Operating Expense",
                     min_value=0.0,
-                    value=other_default,
+                    value=float(defaults.get("other", 0.0)),
                     step=1000.0,
                     key=f"opex_other_{year}",
                 )
-                increment_pct = st.number_input(
-                    "Yearly Increment (%)",
-                    min_value=-100.0,
-                    max_value=500.0,
-                    value=0.0,
-                    step=1.0,
-                    key=f"opex_increment_{year}",
-                )
-                action_cols = st.columns(4)
-                save_row = action_cols[0].form_submit_button("Save Row")
-                add_row = action_cols[1].form_submit_button("Add Row")
-                remove_row = action_cols[2].form_submit_button("Remove Row")
-                increment_row = action_cols[3].form_submit_button("Yearly Increment Helper")
+                save_row = st.form_submit_button("Save Row")
 
-            if save_row:
-                cfg.marketing_budget = cfg.marketing_budget or {}
-                cfg.other_opex_overrides = cfg.other_opex_overrides or {}
-                cfg.marketing_budget[year] = float(marketing_value)
-                cfg.other_opex_overrides[year] = float(other_value)
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Operating expenses updated for {year}.")
-
-            if remove_row:
-                if getattr(cfg, "marketing_budget", None):
-                    cfg.marketing_budget.pop(year, None)
-                if getattr(cfg, "other_opex_overrides", None):
-                    cfg.other_opex_overrides.pop(year, None)
-                if year == _horizon_end(cfg) and cfg.projection_years > 1:
-                    cfg.projection_years -= 1
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Operating expense row removed for {year}.")
-
-            if add_row:
-                new_year = year + 1
-                _ensure_year_in_horizon(cfg, new_year)
-                cfg.marketing_budget = cfg.marketing_budget or {}
-                cfg.other_opex_overrides = cfg.other_opex_overrides or {}
-                cfg.marketing_budget[new_year] = max(
-                    0.0, _apply_increment(float(marketing_value), increment_pct)
-                )
-                cfg.other_opex_overrides[new_year] = max(
-                    0.0, _apply_increment(float(other_value), increment_pct)
-                )
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Operating expense row added for {new_year}.")
-
-            if increment_row:
-                cfg.marketing_budget = cfg.marketing_budget or {}
-                cfg.other_opex_overrides = cfg.other_opex_overrides or {}
-                cfg.marketing_budget[year] = max(
-                    0.0, _apply_increment(float(marketing_value), increment_pct)
-                )
-                cfg.other_opex_overrides[year] = max(
-                    0.0, _apply_increment(float(other_value), increment_pct)
-                )
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Operating expense increment applied for {year}.")
+        if save_row:
+            cfg.marketing_budget = cfg.marketing_budget or {}
+            cfg.other_opex_overrides = cfg.other_opex_overrides or {}
+            cfg.marketing_budget[year] = float(marketing_value)
+            cfg.other_opex_overrides[year] = float(other_value)
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Operating expenses updated for {year}.")
 
 
 def _render_working_capital_editor(cfg: CompanyConfig) -> None:
@@ -1567,106 +1614,114 @@ def _render_working_capital_editor(cfg: CompanyConfig) -> None:
     if not years:
         return
 
+    base_wc_values = {
+        "receivable_days": float(cfg.receivable_days),
+        "inventory_days": float(cfg.inventory_days),
+        "payable_days": float(cfg.payable_days),
+        "accrued_expense_ratio": float(cfg.accrued_expense_ratio),
+    }
+
+    wc_defaults: Dict[int, Dict[str, float]] = {}
+    for year in years:
+        base_values = dict(base_wc_values)
+        if cfg.working_capital_overrides:
+            overrides = cfg.working_capital_overrides.get(year, {})
+            base_values.update({
+                key: float(value)
+                for key, value in overrides.items()
+                if key in base_values
+            })
+        wc_defaults[year] = base_values
+
     st.markdown("##### Edit Working Capital Drivers")
+    action = _schedule_toolbar("working_capital", years)
+    if action:
+        target_year = int(action["year"])
+        increment_pct = float(action.get("increment_pct", 0.0))
+        if action["action"] == "remove":
+            if getattr(cfg, "working_capital_overrides", None):
+                cfg.working_capital_overrides.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Working capital row removed for {target_year}.")
+        elif action["action"] == "add":
+            new_year = target_year + 1
+            _ensure_year_in_horizon(cfg, new_year)
+            defaults = wc_defaults.get(target_year, base_wc_values)
+            cfg.working_capital_overrides = cfg.working_capital_overrides or {}
+            cfg.working_capital_overrides[new_year] = {
+                "receivable_days": max(0.0, _apply_increment(defaults.get("receivable_days", 0.0), increment_pct)),
+                "inventory_days": max(0.0, _apply_increment(defaults.get("inventory_days", 0.0), increment_pct)),
+                "payable_days": max(0.0, _apply_increment(defaults.get("payable_days", 0.0), increment_pct)),
+                "accrued_expense_ratio": max(
+                    0.0, _apply_increment(defaults.get("accrued_expense_ratio", 0.0), increment_pct)
+                ),
+            }
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Working capital row added for {new_year}.")
+        elif action["action"] == "increment":
+            defaults = wc_defaults.get(target_year, base_wc_values)
+            cfg.working_capital_overrides = cfg.working_capital_overrides or {}
+            cfg.working_capital_overrides[target_year] = {
+                "receivable_days": max(0.0, _apply_increment(defaults.get("receivable_days", 0.0), increment_pct)),
+                "inventory_days": max(0.0, _apply_increment(defaults.get("inventory_days", 0.0), increment_pct)),
+                "payable_days": max(0.0, _apply_increment(defaults.get("payable_days", 0.0), increment_pct)),
+                "accrued_expense_ratio": max(
+                    0.0, _apply_increment(defaults.get("accrued_expense_ratio", 0.0), increment_pct)
+                ),
+            }
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Working capital increment applied for {target_year}.")
     for year in years:
         with st.expander(f"Edit Working Capital – {year}", expanded=False):
             with st.form(f"working_capital_form_{year}"):
-                year_overrides = {}
-                if cfg.working_capital_overrides:
-                    year_overrides = cfg.working_capital_overrides.get(year, {})
+                defaults = wc_defaults.get(year, {})
 
                 receivable_days = st.number_input(
                     "Receivable Days",
                     min_value=0.0,
-                    value=float(year_overrides.get("receivable_days", cfg.receivable_days)),
+                    value=float(defaults.get("receivable_days", cfg.receivable_days)),
                     step=1.0,
                     key=f"wc_receivable_{year}",
                 )
                 inventory_days = st.number_input(
                     "Inventory Days",
                     min_value=0.0,
-                    value=float(year_overrides.get("inventory_days", cfg.inventory_days)),
+                    value=float(defaults.get("inventory_days", cfg.inventory_days)),
                     step=1.0,
                     key=f"wc_inventory_{year}",
                 )
                 payable_days = st.number_input(
                     "Payable Days",
                     min_value=0.0,
-                    value=float(year_overrides.get("payable_days", cfg.payable_days)),
+                    value=float(defaults.get("payable_days", cfg.payable_days)),
                     step=1.0,
                     key=f"wc_payable_{year}",
                 )
                 accrued_ratio = st.number_input(
                     "Accrued Expense Ratio",
                     min_value=0.0,
-                    value=float(year_overrides.get("accrued_expense_ratio", cfg.accrued_expense_ratio)),
+                    value=float(defaults.get("accrued_expense_ratio", cfg.accrued_expense_ratio)),
                     step=0.01,
                     key=f"wc_accrued_{year}",
                 )
-                increment_pct = st.number_input(
-                    "Yearly Increment (%)",
-                    min_value=-100.0,
-                    max_value=500.0,
-                    value=0.0,
-                    step=1.0,
-                    key=f"wc_increment_{year}",
-                )
-                action_cols = st.columns(4)
-                save_row = action_cols[0].form_submit_button("Save Row")
-                add_row = action_cols[1].form_submit_button("Add Row")
-                remove_row = action_cols[2].form_submit_button("Remove Row")
-                increment_row = action_cols[3].form_submit_button("Yearly Increment Helper")
+                save_row = st.form_submit_button("Save Row")
 
-            if save_row:
-                cfg.working_capital_overrides = cfg.working_capital_overrides or {}
-                cfg.working_capital_overrides[year] = {
-                    "receivable_days": float(receivable_days),
-                    "inventory_days": float(inventory_days),
-                    "payable_days": float(payable_days),
-                    "accrued_expense_ratio": float(accrued_ratio),
-                }
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Working capital drivers updated for {year}.")
-
-            if remove_row:
-                if getattr(cfg, "working_capital_overrides", None):
-                    cfg.working_capital_overrides.pop(year, None)
-                if year == _horizon_end(cfg) and cfg.projection_years > 1:
-                    cfg.projection_years -= 1
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Working capital row removed for {year}.")
-
-            if add_row:
-                new_year = year + 1
-                _ensure_year_in_horizon(cfg, new_year)
-                cfg.working_capital_overrides = cfg.working_capital_overrides or {}
-                cfg.working_capital_overrides[new_year] = {
-                    "receivable_days": max(0.0, _apply_increment(float(receivable_days), increment_pct)),
-                    "inventory_days": max(0.0, _apply_increment(float(inventory_days), increment_pct)),
-                    "payable_days": max(0.0, _apply_increment(float(payable_days), increment_pct)),
-                    "accrued_expense_ratio": max(
-                        0.0, _apply_increment(float(accrued_ratio), increment_pct)
-                    ),
-                }
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Working capital row added for {new_year}.")
-
-            if increment_row:
-                cfg.working_capital_overrides = cfg.working_capital_overrides or {}
-                cfg.working_capital_overrides[year] = {
-                    "receivable_days": max(0.0, _apply_increment(float(receivable_days), increment_pct)),
-                    "inventory_days": max(0.0, _apply_increment(float(inventory_days), increment_pct)),
-                    "payable_days": max(0.0, _apply_increment(float(payable_days), increment_pct)),
-                    "accrued_expense_ratio": max(
-                        0.0, _apply_increment(float(accrued_ratio), increment_pct)
-                    ),
-                }
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Working capital increment applied for {year}.")
+        if save_row:
+            cfg.working_capital_overrides = cfg.working_capital_overrides or {}
+            cfg.working_capital_overrides[year] = {
+                "receivable_days": float(receivable_days),
+                "inventory_days": float(inventory_days),
+                "payable_days": float(payable_days),
+                "accrued_expense_ratio": float(accrued_ratio),
+            }
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Working capital drivers updated for {year}.")
 
 
 def _render_debt_schedule_editor(cfg: CompanyConfig) -> None:
@@ -1676,7 +1731,52 @@ def _render_debt_schedule_editor(cfg: CompanyConfig) -> None:
     if not years or not instruments:
         return
 
+    draw_defaults: Dict[int, Dict[int, float]] = {}
+    for year in years:
+        draw_defaults[year] = {
+            idx: float(instrument.draw_schedule.get(year, 0.0))
+            for idx, instrument in enumerate(instruments)
+        }
+
     st.markdown("##### Edit Debt Schedule")
+    action = _schedule_toolbar("debt_schedule", years)
+    if action:
+        target_year = int(action["year"])
+        increment_pct = float(action.get("increment_pct", 0.0))
+        if action["action"] == "remove":
+            for instrument in instruments:
+                instrument.draw_schedule.pop(target_year, None)
+                instrument.__post_init__()
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.debt_instruments = instruments
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Debt draws removed for {target_year}.")
+        elif action["action"] == "add":
+            new_year = target_year + 1
+            _ensure_year_in_horizon(cfg, new_year)
+            for idx, instrument in enumerate(instruments):
+                base_draw = draw_defaults.get(target_year, {}).get(idx, 0.0)
+                instrument.draw_schedule[new_year] = max(
+                    0.0, _apply_increment(base_draw, increment_pct)
+                )
+                instrument.__post_init__()
+            cfg.debt_instruments = instruments
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Debt schedule row added for {new_year}.")
+        elif action["action"] == "increment":
+            for idx, instrument in enumerate(instruments):
+                base_draw = draw_defaults.get(target_year, {}).get(idx, 0.0)
+                instrument.draw_schedule[target_year] = max(
+                    0.0, _apply_increment(base_draw, increment_pct)
+                )
+                instrument.__post_init__()
+            cfg.debt_instruments = instruments
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Debt increment applied for {target_year}.")
     for year in years:
         with st.expander(f"Edit Debt Activity – {year}", expanded=False):
             with st.form(f"debt_form_{year}"):
@@ -1741,21 +1841,9 @@ def _render_debt_schedule_editor(cfg: CompanyConfig) -> None:
                         step=1000.0,
                         key=f"debt_draw_{idx}_{year}",
                     )
-                increment_pct = st.number_input(
-                    "Yearly Increment (%)",
-                    min_value=-100.0,
-                    max_value=500.0,
-                    value=0.0,
-                    step=1.0,
-                    key=f"debt_increment_{year}",
-                )
-                action_cols = st.columns(4)
-                save_row = action_cols[0].form_submit_button("Save Row")
-                add_row = action_cols[1].form_submit_button("Add Row")
-                remove_row = action_cols[2].form_submit_button("Remove Row")
-                increment_row = action_cols[3].form_submit_button("Yearly Increment Helper")
+                save_row = st.form_submit_button("Save Row")
 
-            if save_row or add_row or remove_row or increment_row:
+            if save_row:
                 for idx, instrument in enumerate(instruments):
                     instrument.name = name_inputs[idx]
                     instrument.principal = float(principal_inputs[idx])
@@ -1763,50 +1851,12 @@ def _render_debt_schedule_editor(cfg: CompanyConfig) -> None:
                     instrument.term = int(term_inputs[idx])
                     instrument.interest_only_years = int(io_inputs[idx])
                     instrument.start_year = int(start_year_inputs[idx])
-
-            if save_row:
-                for idx, instrument in enumerate(instruments):
                     instrument.draw_schedule[year] = float(draw_inputs[idx])
                     instrument.__post_init__()
                 cfg.debt_instruments = instruments
                 cfg.__post_init__()
                 _run_model()
                 st.success(f"Debt schedule updated for {year}.")
-
-            if remove_row:
-                for instrument in instruments:
-                    instrument.draw_schedule.pop(year, None)
-                    instrument.__post_init__()
-                if year == _horizon_end(cfg) and cfg.projection_years > 1:
-                    cfg.projection_years -= 1
-                cfg.debt_instruments = instruments
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Debt draws removed for {year}.")
-
-            if add_row:
-                new_year = year + 1
-                _ensure_year_in_horizon(cfg, new_year)
-                for idx, instrument in enumerate(instruments):
-                    instrument.draw_schedule[new_year] = max(
-                        0.0, _apply_increment(float(draw_inputs[idx]), increment_pct)
-                    )
-                    instrument.__post_init__()
-                cfg.debt_instruments = instruments
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Debt schedule row added for {new_year}.")
-
-            if increment_row:
-                for idx, instrument in enumerate(instruments):
-                    instrument.draw_schedule[year] = max(
-                        0.0, _apply_increment(float(draw_inputs[idx]), increment_pct)
-                    )
-                    instrument.__post_init__()
-                cfg.debt_instruments = instruments
-                cfg.__post_init__()
-                _run_model()
-                st.success(f"Debt increment applied for {year}.")
 
 def _forecast_schedule(model: Dict[str, Any]) -> pd.DataFrame:
     years = _projection_years(model)

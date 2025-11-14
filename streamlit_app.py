@@ -129,7 +129,14 @@ def _ai_settings_to_payload(settings: Dict[str, Any], payload: Dict[str, Any]) -
 
 
 def _rerun() -> None:
-    st.experimental_rerun()
+    """Trigger a Streamlit rerun when running inside the app."""
+
+    # ``st.experimental_rerun`` raises a control-flow exception that should only
+    # be triggered when the script executes within Streamlit. During unit tests
+    # or direct module execution we skip the rerun to avoid bubbling the
+    # exception to the caller.
+    if getattr(st, "_is_running_with_streamlit", False):
+        st.experimental_rerun()
 
 
 def _ensure_state() -> None:

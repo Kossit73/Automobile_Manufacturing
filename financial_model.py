@@ -9,6 +9,95 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional, Sequence, Iterable
 
 
+@dataclass
+class ProductionResults:
+    """Container for production and revenue forecasts."""
+
+    production_volume: Dict[int, float]
+    product_units: Dict[int, Dict[str, float]]
+    product_prices: Dict[int, Dict[str, float]]
+    revenue: Dict[int, float]
+    product_revenue: Dict[int, Dict[str, float]]
+
+
+@dataclass
+class CogsResults:
+    """Breakdown of cost of goods sold components."""
+
+    total: Dict[int, float]
+    variable: Dict[int, float]
+    fixed: Dict[int, float]
+    variable_breakdown: Dict[int, Dict[str, float]]
+
+
+@dataclass
+class OperatingExpenseResults:
+    """Operating expense roll-up including labor metrics when available."""
+
+    total: Dict[int, float]
+    marketing: Dict[int, float]
+    labor_costs: Dict[int, float]
+    other_costs: Dict[int, float]
+    labor_metrics: Dict[int, Dict[str, float]]
+
+
+@dataclass
+class IncomeStatementResults:
+    """EBITDA/EBIT/tax/net profit outputs with depreciation."""
+
+    ebitda: Dict[int, float]
+    ebit: Dict[int, float]
+    tax: Dict[int, float]
+    net_profit: Dict[int, float]
+    depreciation: Dict[int, float]
+
+
+@dataclass
+class WorkingCapitalResults:
+    """Working-capital balances and year-over-year changes."""
+
+    net_working_capital: Dict[int, float]
+    change_in_working_capital: Dict[int, float]
+    accounts_receivable: Dict[int, float]
+    inventory: Dict[int, float]
+    accounts_payable: Dict[int, float]
+    accrued_expenses: Dict[int, float]
+
+
+@dataclass
+class DebtScheduleResults:
+    """Aggregated debt draws, payments, and instrument-level details."""
+
+    interest_payment: Dict[int, float]
+    principal_payment: Dict[int, float]
+    ending_balance: Dict[int, float]
+    draws: Dict[int, float]
+    instrument_details: Dict[str, Dict[str, Dict[int, float]]]
+
+
+@dataclass
+class CashFlowResults:
+    """Operating, investing, financing cash flows and cumulative balance."""
+
+    cfo: Dict[int, float]
+    cfi: Dict[int, float]
+    cff: Dict[int, float]
+    cash_balance: Dict[int, float]
+
+
+@dataclass
+class BalanceSheetResults:
+    """Balance-sheet components calculated from the model outputs."""
+
+    fixed_assets: Dict[int, float]
+    current_assets: Dict[int, float]
+    current_liabilities: Dict[int, float]
+    long_term_debt: Dict[int, float]
+    total_equity: Dict[int, float]
+    total_assets: Dict[int, float]
+    total_liab_equity: Dict[int, float]
+
+
 def _sanitize_numeric_mapping(raw: Optional[Dict], allow_negative: bool = False) -> Dict[int, float]:
     """Convert arbitrary mappings into ``{year: value}`` dictionaries."""
 
@@ -926,658 +1015,737 @@ def _fixed_production_cost(cfg: CompanyConfig, year: int) -> float:
     return base_cost * scale
 
 
-def calculate_working_capital_positions(
-    years: Sequence[int],
-    revenue: Dict[int, float],
-    cogs: Dict[int, float],
-    opex: Dict[int, float],
-    cfg: CompanyConfig,
-) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float], Dict[int, float], Dict[int, float], Dict[int, float]]:
-    """Return working-capital component balances and their year-over-year changes."""
+class WorkingCapitalEngine:
+    """Calculate working-capital balances and movements."""
 
-    receivables: Dict[int, float] = {}
-    inventory: Dict[int, float] = {}
-    payables: Dict[int, float] = {}
-    accrued_expenses: Dict[int, float] = {}
-    net_working_capital: Dict[int, float] = {}
-    changes: Dict[int, float] = {}
+    def __init__(self, cfg: CompanyConfig, revenue: Dict[int, float], cogs: Dict[int, float], opex: Dict[int, float]):
+        self.cfg = cfg
+        self.revenue = revenue
+        self.cogs = cogs
+        self.opex = opex
+        self.years = _projection_years(cfg)
 
-    sales_day_factor = 1.0 / 365.0
+    def build(self) -> WorkingCapitalResults:
+        receivables: Dict[int, float] = {}
+        inventory: Dict[int, float] = {}
+        payables: Dict[int, float] = {}
+        accrued_expenses: Dict[int, float] = {}
+        net_working_capital: Dict[int, float] = {}
+        changes: Dict[int, float] = {}
 
-    previous_nwc = 0.0
-    for year in years:
-        rev = revenue.get(year, 0.0)
-        cost = cogs.get(year, 0.0)
-        operating = opex.get(year, 0.0)
+        sales_day_factor = 1.0 / 365.0
+        previous_nwc = 0.0
 
-        overrides = {}
-        if getattr(cfg, "working_capital_overrides", None):
-            overrides = cfg.working_capital_overrides.get(year, {})
+        for year in self.years:
+            rev = self.revenue.get(year, 0.0)
+            cost = self.cogs.get(year, 0.0)
+            operating = self.opex.get(year, 0.0)
 
-        receivable_days = float(overrides.get("receivable_days", cfg.receivable_days))
-        inventory_days = float(overrides.get("inventory_days", cfg.inventory_days))
-        payable_days = float(overrides.get("payable_days", cfg.payable_days))
-        accrued_ratio = float(overrides.get("accrued_expense_ratio", cfg.accrued_expense_ratio))
+            overrides = {}
+            if getattr(self.cfg, "working_capital_overrides", None):
+                overrides = self.cfg.working_capital_overrides.get(year, {})
 
-        receivable_days = max(0.0, receivable_days)
-        inventory_days = max(0.0, inventory_days)
-        payable_days = max(0.0, payable_days)
-        accrued_ratio = max(0.0, accrued_ratio)
+            receivable_days = float(overrides.get("receivable_days", self.cfg.receivable_days))
+            inventory_days = float(overrides.get("inventory_days", self.cfg.inventory_days))
+            payable_days = float(overrides.get("payable_days", self.cfg.payable_days))
+            accrued_ratio = float(overrides.get("accrued_expense_ratio", self.cfg.accrued_expense_ratio))
 
-        receivables_balance = rev * receivable_days * sales_day_factor
-        inventory_balance = cost * inventory_days * sales_day_factor
-        payables_balance = cost * payable_days * sales_day_factor
-        accrued_balance = operating * accrued_ratio
+            receivable_days = max(0.0, receivable_days)
+            inventory_days = max(0.0, inventory_days)
+            payable_days = max(0.0, payable_days)
+            accrued_ratio = max(0.0, accrued_ratio)
 
-        receivables[year] = receivables_balance
-        inventory[year] = inventory_balance
-        payables[year] = payables_balance
-        accrued_expenses[year] = accrued_balance
+            receivables_balance = rev * receivable_days * sales_day_factor
+            inventory_balance = cost * inventory_days * sales_day_factor
+            payables_balance = cost * payable_days * sales_day_factor
+            accrued_balance = operating * accrued_ratio
 
-        net_wc = receivables_balance + inventory_balance - payables_balance - accrued_balance
-        net_working_capital[year] = net_wc
-        changes[year] = net_wc - previous_nwc
-        previous_nwc = net_wc
+            receivables[year] = receivables_balance
+            inventory[year] = inventory_balance
+            payables[year] = payables_balance
+            accrued_expenses[year] = accrued_balance
 
-    return (
-        net_working_capital,
-        changes,
-        receivables,
-        inventory,
-        payables,
-        accrued_expenses,
-    )
+            net_wc = receivables_balance + inventory_balance - payables_balance - accrued_balance
+            net_working_capital[year] = net_wc
+            changes[year] = net_wc - previous_nwc
+            previous_nwc = net_wc
+
+        return WorkingCapitalResults(
+            net_working_capital=net_working_capital,
+            change_in_working_capital=changes,
+            accounts_receivable=receivables,
+            inventory=inventory,
+            accounts_payable=payables,
+            accrued_expenses=accrued_expenses,
+        )
 
 # =====================================================
 # 2. PRODUCTION & SALES FORECAST
 # =====================================================
-def calculate_production_forecast(cfg: CompanyConfig):
-    """Calculate production volume, per-product pricing, and revenue forecasts."""
+class ProductionEngine:
+    """Build production, pricing, and revenue schedules."""
 
-    years = _projection_years(cfg)
+    def __init__(self, cfg: CompanyConfig):
+        self.cfg = cfg
+        self.years = _projection_years(cfg)
 
-    production_volume = {
-        y: cfg.annual_capacity * _carry_forward(cfg.capacity_utilization, y, 1.0)
-        for y in years
-    }
+    def build(self) -> ProductionResults:
+        cfg = self.cfg
+        years = self.years
 
-    product_units: Dict[int, Dict[str, float]] = {}
-    product_prices: Dict[int, Dict[str, float]] = {}
-    product_revenue: Dict[int, Dict[str, float]] = {}
-    revenue: Dict[int, float] = {}
+        production_volume = {
+            y: cfg.annual_capacity * _carry_forward(cfg.capacity_utilization, y, 1.0)
+            for y in years
+        }
 
-    for y in years:
-        units_for_year: Dict[str, float] = {}
-        prices_for_year: Dict[str, float] = {}
-        revenue_for_year: Dict[str, float] = {}
-        total_revenue = 0.0
-        years_since_start = max(0, y - cfg.start_year)
+        product_units: Dict[int, Dict[str, float]] = {}
+        product_prices: Dict[int, Dict[str, float]] = {}
+        product_revenue: Dict[int, Dict[str, float]] = {}
+        revenue: Dict[int, float] = {}
 
-        price_overrides = {}
-        if getattr(cfg, "product_price_overrides", None):
-            price_overrides = cfg.product_price_overrides.get(y, {})
+        for y in years:
+            units_for_year: Dict[str, float] = {}
+            prices_for_year: Dict[str, float] = {}
+            revenue_for_year: Dict[str, float] = {}
+            total_revenue = 0.0
+            years_since_start = max(0, y - cfg.start_year)
 
-        for product, drivers in cfg.product_portfolio.items():
-            units = production_volume[y] * drivers["mix"]
-            price = drivers["price"] * ((1 + drivers.get("price_growth", 0.0)) ** years_since_start)
+            price_overrides = {}
+            if getattr(cfg, "product_price_overrides", None):
+                price_overrides = cfg.product_price_overrides.get(y, {})
 
-            if price_overrides and product in price_overrides:
-                override_price = price_overrides[product]
-                if override_price >= 0:
-                    price = override_price
+            for product, drivers in cfg.product_portfolio.items():
+                units = production_volume[y] * drivers["mix"]
+                price = drivers["price"] * ((1 + drivers.get("price_growth", 0.0)) ** years_since_start)
 
-            units_for_year[product] = units
-            prices_for_year[product] = price
-            revenue_value = units * price
-            revenue_for_year[product] = revenue_value
-            total_revenue += revenue_value
+                if price_overrides and product in price_overrides:
+                    override_price = price_overrides[product]
+                    if override_price >= 0:
+                        price = override_price
 
-        override_units = {}
-        if getattr(cfg, "product_unit_overrides", None):
-            override_units = cfg.product_unit_overrides.get(y, {})
+                units_for_year[product] = units
+                prices_for_year[product] = price
+                revenue_value = units * price
+                revenue_for_year[product] = revenue_value
+                total_revenue += revenue_value
 
-        if override_units:
-            override_total = 0.0
-            for product, override_value in override_units.items():
-                try:
-                    override_amount = max(0.0, float(override_value))
-                except (TypeError, ValueError):
-                    continue
-                units_for_year[product] = override_amount
-                override_total += override_amount
+            override_units = {}
+            if getattr(cfg, "product_unit_overrides", None):
+                override_units = cfg.product_unit_overrides.get(y, {})
 
-            if override_total > 0:
-                production_volume[y] = sum(units_for_year.values())
-                total_revenue = 0.0
-                for product in cfg.product_portfolio.keys():
-                    if product not in prices_for_year:
+            if override_units:
+                override_total = 0.0
+                for product, override_value in override_units.items():
+                    try:
+                        override_amount = max(0.0, float(override_value))
+                    except (TypeError, ValueError):
                         continue
-                    price = prices_for_year[product]
-                    revenue_value = units_for_year.get(product, 0.0) * price
-                    revenue_for_year[product] = revenue_value
-                    total_revenue += revenue_value
-            else:
-                cfg.product_unit_overrides.pop(y, None)
+                    units_for_year[product] = override_amount
+                    override_total += override_amount
 
-        product_units[y] = units_for_year
-        product_prices[y] = prices_for_year
-        product_revenue[y] = revenue_for_year
-        revenue[y] = total_revenue
+                if override_total > 0:
+                    production_volume[y] = sum(units_for_year.values())
+                    total_revenue = 0.0
+                    for product in cfg.product_portfolio.keys():
+                        if product not in prices_for_year:
+                            continue
+                        price = prices_for_year[product]
+                        revenue_value = units_for_year.get(product, 0.0) * price
+                        revenue_for_year[product] = revenue_value
+                        total_revenue += revenue_value
+                else:
+                    cfg.product_unit_overrides.pop(y, None)
 
-    return production_volume, product_units, product_prices, revenue, product_revenue
+            product_units[y] = units_for_year
+            product_prices[y] = prices_for_year
+            product_revenue[y] = revenue_for_year
+            revenue[y] = total_revenue
+
+        return ProductionResults(
+            production_volume=production_volume,
+            product_units=product_units,
+            product_prices=product_prices,
+            revenue=revenue,
+            product_revenue=product_revenue,
+        )
 
 # =====================================================
 # 3. COST OF GOODS SOLD
 # =====================================================
-def calculate_cogs(
-    years: Sequence[int],
-    product_units: Dict[int, Dict[str, float]],
-    cfg: CompanyConfig,
-) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float], Dict[int, Dict[str, float]]]:
-    """Calculate COGS with variable and fixed components."""
+class CostEngine:
+    """Compute cost of goods sold including variable and fixed components."""
 
-    total_cogs: Dict[int, float] = {}
-    variable_cogs: Dict[int, float] = {}
-    fixed_cogs: Dict[int, float] = {}
-    variable_breakdown: Dict[int, Dict[str, float]] = {}
+    def __init__(self, cfg: CompanyConfig, production: ProductionResults):
+        self.cfg = cfg
+        self.production = production
+        self.years = _projection_years(cfg)
 
-    for y in years:
-        per_product: Dict[str, float] = {}
-        variable_total = 0.0
-        years_since_start = max(0, y - cfg.start_year)
-        utilization = _carry_forward(cfg.capacity_utilization, y, 1.0)
+    def build(self) -> CogsResults:
+        cfg = self.cfg
+        product_units = self.production.product_units
+        years = self.years
 
-        for product, units in product_units[y].items():
-            drivers = cfg.product_portfolio[product]
-            base_cost = drivers["base_cost_per_unit"]
-            cost_inflation = drivers.get("cost_inflation", cfg.variable_cost_inflation)
-            scale_sensitivity = drivers.get("scale_sensitivity", 0.0)
+        total_cogs: Dict[int, float] = {}
+        variable_cogs: Dict[int, float] = {}
+        fixed_cogs: Dict[int, float] = {}
+        variable_breakdown: Dict[int, Dict[str, float]] = {}
 
-            inflation_factor = (1 + cost_inflation) ** years_since_start
-            scale_factor = 1.0 - scale_sensitivity * (utilization - 1.0)
-            scale_factor = max(0.5, min(1.5, scale_factor))
+        for y in years:
+            per_product: Dict[str, float] = {}
+            variable_total = 0.0
+            years_since_start = max(0, y - cfg.start_year)
+            utilization = _carry_forward(cfg.capacity_utilization, y, 1.0)
 
-            cost_per_unit = base_cost * inflation_factor * scale_factor
+            for product, units in product_units[y].items():
+                drivers = cfg.product_portfolio[product]
+                base_cost = drivers["base_cost_per_unit"]
+                cost_inflation = drivers.get("cost_inflation", cfg.variable_cost_inflation)
+                scale_sensitivity = drivers.get("scale_sensitivity", 0.0)
 
-            if getattr(cfg, "product_cost_overrides", None):
-                override_cost = cfg.product_cost_overrides.get(y, {}).get(product)
-                if override_cost is not None:
-                    try:
-                        cost_per_unit = max(0.0, float(override_cost))
-                    except (TypeError, ValueError):
-                        cost_per_unit = base_cost * inflation_factor * scale_factor
+                inflation_factor = (1 + cost_inflation) ** years_since_start
+                scale_factor = 1.0 - scale_sensitivity * (utilization - 1.0)
+                scale_factor = max(0.5, min(1.5, scale_factor))
 
-            variable_cost = cost_per_unit * units
-            per_product[product] = variable_cost
-            variable_total += variable_cost
+                cost_per_unit = base_cost * inflation_factor * scale_factor
 
-        fixed_cost = _fixed_production_cost(cfg, y)
+                if getattr(cfg, "product_cost_overrides", None):
+                    override_cost = cfg.product_cost_overrides.get(y, {}).get(product)
+                    if override_cost is not None:
+                        try:
+                            cost_per_unit = max(0.0, float(override_cost))
+                        except (TypeError, ValueError):
+                            cost_per_unit = base_cost * inflation_factor * scale_factor
 
-        override_variable = None
-        if getattr(cfg, "variable_cost_overrides", None):
-            override_variable = cfg.variable_cost_overrides.get(y)
+                variable_cost = cost_per_unit * units
+                per_product[product] = variable_cost
+                variable_total += variable_cost
 
-        if override_variable is not None:
-            override_variable = max(0.0, float(override_variable))
-            if variable_total > 0 and per_product:
-                scale = override_variable / variable_total
-                per_product = {product: value * scale for product, value in per_product.items()}
-            elif per_product:
-                even_share = override_variable / len(per_product)
-                per_product = {product: even_share for product in per_product.keys()}
-            variable_total = override_variable
+            fixed_cost = _fixed_production_cost(cfg, y)
 
-        override_fixed = None
-        if getattr(cfg, "fixed_cost_overrides", None):
-            override_fixed = cfg.fixed_cost_overrides.get(y)
+            override_variable = None
+            if getattr(cfg, "variable_cost_overrides", None):
+                override_variable = cfg.variable_cost_overrides.get(y)
 
-        if override_fixed is not None:
-            fixed_cost = max(0.0, float(override_fixed))
+            if override_variable is not None:
+                override_variable = max(0.0, float(override_variable))
+                if variable_total > 0 and per_product:
+                    scale = override_variable / variable_total
+                    per_product = {product: value * scale for product, value in per_product.items()}
+                elif per_product:
+                    even_share = override_variable / len(per_product)
+                    per_product = {product: even_share for product in per_product.keys()}
+                variable_total = override_variable
 
-        total_cogs[y] = variable_total + fixed_cost
-        variable_cogs[y] = variable_total
-        fixed_cogs[y] = fixed_cost
-        variable_breakdown[y] = per_product
+            override_fixed = None
+            if getattr(cfg, "fixed_cost_overrides", None):
+                override_fixed = cfg.fixed_cost_overrides.get(y)
 
-    return total_cogs, variable_cogs, fixed_cogs, variable_breakdown
+            if override_fixed is not None:
+                fixed_cost = max(0.0, float(override_fixed))
+
+            total_cogs[y] = variable_total + fixed_cost
+            variable_cogs[y] = variable_total
+            fixed_cogs[y] = fixed_cost
+            variable_breakdown[y] = per_product
+
+        return CogsResults(
+            total=total_cogs,
+            variable=variable_cogs,
+            fixed=fixed_cogs,
+            variable_breakdown=variable_breakdown,
+        )
 
 # =====================================================
 # 4. OPERATING EXPENSES
 # =====================================================
-def calculate_opex(years: Sequence[int], cfg: CompanyConfig) -> Dict[int, float]:
-    """Calculate operating expenses including marketing and payroll"""
-    opex = {}
-    for y in years:
-        annual_payroll = (cfg.avg_salary * cfg.headcount * 12) * (1 + cfg.annual_salary_growth) ** (y - cfg.start_year)
-        marketing = _carry_forward(cfg.marketing_budget, y, 72_000)
-        other_override = None
-        if getattr(cfg, "other_opex_overrides", None):
-            other_override = cfg.other_opex_overrides.get(y)
+class OperatingExpenseEngine:
+    """Handle operating expense aggregation including labor metrics."""
 
-        total = marketing + annual_payroll
-        if other_override is not None:
-            total = marketing + annual_payroll + max(0.0, float(other_override))
+    def __init__(self, cfg: CompanyConfig):
+        self.cfg = cfg
+        self.years = _projection_years(cfg)
 
-        opex[y] = total
-    return opex
+    def _labor_cost_for_year(self, year: int) -> float:
+        cfg = self.cfg
+        if cfg.labor_manager is None:
+            annual_payroll = (
+                cfg.avg_salary
+                * cfg.headcount
+                * 12
+                * ((1 + cfg.annual_salary_growth) ** (year - cfg.start_year))
+            )
+            return annual_payroll
 
-def calculate_opex_with_labor_manager(years: Sequence[int], cfg: CompanyConfig) -> Dict[int, float]:
-    """Calculate operating expenses using labor manager if available"""
-    if cfg.labor_manager is None:
-        return calculate_opex(years, cfg)
+        direct = cfg.labor_manager.get_labor_cost_by_type(year, cfg.annual_salary_growth).get("Direct", 0.0)
+        indirect = cfg.labor_manager.get_labor_cost_by_type(year, cfg.annual_salary_growth).get("Indirect", 0.0)
+        return direct + indirect
 
-    opex = {}
-    for y in years:
-        # Get labor costs from manager
-        direct_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Direct', 0)
-        indirect_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Indirect', 0)
-        labor_cost = direct_cost + indirect_cost
-        marketing = _carry_forward(cfg.marketing_budget, y, 72_000)
-        other_override = None
-        if getattr(cfg, "other_opex_overrides", None):
-            other_override = cfg.other_opex_overrides.get(y)
+    def _marketing_for_year(self, year: int) -> float:
+        return _carry_forward(self.cfg.marketing_budget, year, 72_000)
 
-        total = marketing + labor_cost
-        if other_override is not None:
-            total = marketing + labor_cost + max(0.0, float(other_override))
+    def _other_cost_for_year(self, year: int) -> float:
+        if not getattr(self.cfg, "other_opex_overrides", None):
+            return 0.0
+        override = self.cfg.other_opex_overrides.get(year)
+        if override is None:
+            return 0.0
+        try:
+            return max(0.0, float(override))
+        except (TypeError, ValueError):
+            return 0.0
 
-        opex[y] = total
-    return opex
+    def _labor_metrics_for_year(self, year: int) -> Optional[Dict[str, float]]:
+        cfg = self.cfg
+        if cfg.labor_manager is None:
+            return None
 
-def get_labor_metrics(cfg: CompanyConfig, years: Sequence[int]) -> Dict[int, Dict[str, float]]:
-    """Extract labor metrics from labor manager for reporting"""
-    if cfg.labor_manager is None:
-        return {}
-    
-    metrics = {}
-    for y in years:
-        headcount_by_type = cfg.labor_manager.get_headcount_by_type(y)
-        cost_by_type = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth)
-        
-        metrics[y] = {
-            'direct_headcount': headcount_by_type['Direct'],
-            'indirect_headcount': headcount_by_type['Indirect'],
-            'total_headcount': headcount_by_type['Direct'] + headcount_by_type['Indirect'],
-            'direct_labor_cost': cost_by_type['Direct'],
-            'indirect_labor_cost': cost_by_type['Indirect'],
-            'total_labor_cost': cost_by_type['Direct'] + cost_by_type['Indirect']
+        headcount_by_type = cfg.labor_manager.get_headcount_by_type(year)
+        cost_by_type = cfg.labor_manager.get_labor_cost_by_type(year, cfg.annual_salary_growth)
+
+        return {
+            "direct_headcount": headcount_by_type.get("Direct", 0.0),
+            "indirect_headcount": headcount_by_type.get("Indirect", 0.0),
+            "total_headcount": headcount_by_type.get("Direct", 0.0)
+            + headcount_by_type.get("Indirect", 0.0),
+            "direct_labor_cost": cost_by_type.get("Direct", 0.0),
+            "indirect_labor_cost": cost_by_type.get("Indirect", 0.0),
+            "total_labor_cost": cost_by_type.get("Direct", 0.0)
+            + cost_by_type.get("Indirect", 0.0),
         }
-    return metrics
+
+    def build(self) -> OperatingExpenseResults:
+        total: Dict[int, float] = {}
+        marketing: Dict[int, float] = {}
+        labor_costs: Dict[int, float] = {}
+        other_costs: Dict[int, float] = {}
+        labor_metrics: Dict[int, Dict[str, float]] = {}
+
+        for year in self.years:
+            marketing_cost = self._marketing_for_year(year)
+            labor_cost = self._labor_cost_for_year(year)
+            other_cost = self._other_cost_for_year(year)
+
+            total[year] = marketing_cost + labor_cost + other_cost
+            marketing[year] = marketing_cost
+            labor_costs[year] = labor_cost
+            other_costs[year] = other_cost
+
+            metrics = self._labor_metrics_for_year(year)
+            if metrics is not None:
+                labor_metrics[year] = metrics
+
+        return OperatingExpenseResults(
+            total=total,
+            marketing=marketing,
+            labor_costs=labor_costs,
+            other_costs=other_costs,
+            labor_metrics=labor_metrics,
+        )
 
 # =====================================================
 # 5. INCOME STATEMENT CALCULATION
 # =====================================================
-def calculate_income_statement(
-    years: Sequence[int],
-    cfg: CompanyConfig,
-    production_volume,
-    revenue,
-    cogs,
-    opex,
-):
-    """Calculate complete income statement"""
-    # Determine depreciation schedule (per-year) from capex manager if available
-    years_list = list(years)
-    if cfg.capex_manager is not None:
-        depreciation_schedule = cfg.capex_manager.depreciation_schedule(cfg.start_year, len(years_list))
-    else:
-        # Legacy behavior: straight-line total capex over useful life
-        total_capex = cfg.land_acquisition + cfg.factory_construction + cfg.machinery_automation
-        annual_dep = total_capex / cfg.useful_life
-        depreciation_schedule = {y: annual_dep for y in years_list}
+class IncomeStatementEngine:
+    """Generate EBITDA, EBIT, tax, and net profit schedules."""
 
-    depreciation_lookup = {y: depreciation_schedule.get(y, 0.0) for y in years}
+    def __init__(self, cfg: CompanyConfig, revenue: Dict[int, float], cogs: Dict[int, float], opex: Dict[int, float]):
+        self.cfg = cfg
+        self.revenue = revenue
+        self.cogs = cogs
+        self.opex = opex
+        self.years = _projection_years(cfg)
 
-    ebitda = {y: revenue[y] - cogs[y] - opex[y] for y in years}
-    ebit = {y: ebitda[y] - depreciation_lookup[y] for y in years}
-    tax = {y: max(0, ebit[y] * cfg.tax_rate) for y in years}
-    net_profit = {y: ebit[y] - tax[y] for y in years}
+    def _depreciation_schedule(self) -> Dict[int, float]:
+        cfg = self.cfg
+        years = self.years
+        if cfg.capex_manager is not None:
+            schedule = cfg.capex_manager.depreciation_schedule(cfg.start_year, len(years))
+        else:
+            total_capex = cfg.land_acquisition + cfg.factory_construction + cfg.machinery_automation
+            annual_dep = total_capex / cfg.useful_life
+            schedule = {y: annual_dep for y in years}
+        return {y: schedule.get(y, 0.0) for y in years}
 
-    return ebitda, ebit, tax, net_profit, depreciation_lookup
+    def build(self) -> IncomeStatementResults:
+        depreciation = self._depreciation_schedule()
+        ebitda = {y: self.revenue[y] - self.cogs[y] - self.opex[y] for y in self.years}
+        ebit = {y: ebitda[y] - depreciation[y] for y in self.years}
+        tax = {y: max(0.0, ebit[y] * self.cfg.tax_rate) for y in self.years}
+        net_profit = {y: ebit[y] - tax[y] for y in self.years}
+
+        return IncomeStatementResults(
+            ebitda=ebitda,
+            ebit=ebit,
+            tax=tax,
+            net_profit=net_profit,
+            depreciation=depreciation,
+        )
 
 # =====================================================
 # 6. DCF VALUATION
 # =====================================================
-def calculate_dcf(
-    years: Sequence[int], ebit, cfg: CompanyConfig, depreciation
-) -> Tuple[Dict[int, float], Dict[int, float], float]:
-    """Calculate Free Cash Flow and DCF valuation"""
-    # depreciation may be a dict (per-year) or a scalar
-    if isinstance(depreciation, dict):
-        fcf = {y: ebit[y] * (1 - cfg.tax_rate) + depreciation.get(y, 0.0) for y in years}
-    else:
-        fcf = {y: ebit[y] * (1 - cfg.tax_rate) + depreciation for y in years}
-    discounted_fcf = {y: fcf[y] / ((1 + cfg.wacc) ** (y - cfg.start_year + 1)) for y in years}
+class ValuationEngine:
+    """Perform discounted cash flow valuation."""
 
-    final_year = max(years)
+    def __init__(self, cfg: CompanyConfig, ebit: Dict[int, float], depreciation: Dict[int, float]):
+        self.cfg = cfg
+        self.ebit = ebit
+        self.depreciation = depreciation
+        self.years = _projection_years(cfg)
 
-    # Avoid division by zero and negative terminal values
-    if cfg.wacc <= cfg.terminal_growth or fcf[final_year] <= 0:
-        terminal_value = 0
-    else:
-        terminal_value = fcf[final_year] * (1 + cfg.terminal_growth) / (cfg.wacc - cfg.terminal_growth)
+    def build(self) -> Tuple[Dict[int, float], Dict[int, float], float]:
+        cfg = self.cfg
+        fcf: Dict[int, float] = {}
+        discounted: Dict[int, float] = {}
 
-    discounted_terminal = terminal_value / ((1 + cfg.wacc) ** (final_year - cfg.start_year + 1))
-    enterprise_value = sum(discounted_fcf.values()) + discounted_terminal
-    
-    return fcf, discounted_fcf, enterprise_value
+        for year in self.years:
+            dep_value = self.depreciation.get(year, 0.0)
+            cash_flow = self.ebit[year] * (1 - cfg.tax_rate) + dep_value
+            fcf[year] = cash_flow
+            discounted[year] = cash_flow / ((1 + cfg.wacc) ** (year - cfg.start_year + 1))
 
-# =====================================================
-# 7. CASH FLOW STATEMENT CALCULATION
-# =====================================================
-def build_debt_schedule(
-    years: Sequence[int], cfg: CompanyConfig
-) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float], Dict[int, float], Dict[str, Dict[str, Dict[int, float]]]]:
-    """Construct interest, principal, draw, and balance schedules across instruments."""
+        final_year = max(self.years)
+        terminal_value = 0.0
+        if cfg.wacc > cfg.terminal_growth and fcf[final_year] > 0:
+            terminal_value = fcf[final_year] * (1 + cfg.terminal_growth) / (cfg.wacc - cfg.terminal_growth)
 
-    years_list = list(years)
-    interest_payment: Dict[int, float] = {y: 0.0 for y in years_list}
-    principal_payment: Dict[int, float] = {y: 0.0 for y in years_list}
-    ending_balance: Dict[int, float] = {y: 0.0 for y in years_list}
-    debt_draws: Dict[int, float] = {y: 0.0 for y in years_list}
-    instrument_details: Dict[str, Dict[str, Dict[int, float]]] = {}
+        discounted_terminal = terminal_value / ((1 + cfg.wacc) ** (final_year - cfg.start_year + 1))
+        enterprise_value = sum(discounted.values()) + discounted_terminal
 
-    instruments = getattr(cfg, "debt_instruments", None) or []
-
-    for instrument in instruments:
-        balance = 0.0
-        detail = {
-            "draws": {y: 0.0 for y in years_list},
-            "interest": {y: 0.0 for y in years_list},
-            "principal": {y: 0.0 for y in years_list},
-            "ending_balance": {y: 0.0 for y in years_list},
-        }
-
-        final_year = instrument.final_year
-        amortization_start = instrument.start_year + instrument.interest_only_years
-        amortization_years = instrument.amortization_years
-
-        for y in years_list:
-            draw = instrument.draw_for_year(y)
-            if draw:
-                balance += draw
-
-            active = instrument.term > 0 and y >= instrument.start_year and y <= final_year
-            interest = 0.0
-            principal = 0.0
-
-            if active and balance > 0:
-                interest = balance * instrument.interest_rate
-
-                if amortization_years <= 0:
-                    if y >= final_year:
-                        principal = balance
-                elif y >= amortization_start:
-                    remaining_periods = max(1, (final_year - y) + 1)
-                    principal = balance / remaining_periods
-
-                principal = min(principal, balance)
-                balance = max(0.0, balance - principal)
-
-            detail["draws"][y] = draw
-            detail["interest"][y] = interest
-            detail["principal"][y] = principal
-            detail["ending_balance"][y] = balance
-
-            interest_payment[y] += interest
-            principal_payment[y] += principal
-            ending_balance[y] += balance
-            debt_draws[y] += draw
-
-        instrument_details[instrument.name] = detail
-
-    return interest_payment, principal_payment, ending_balance, debt_draws, instrument_details
+        return fcf, discounted, enterprise_value
 
 # =====================================================
 # 7. CASH FLOW STATEMENT CALCULATION
 # =====================================================
-def calculate_cash_flow(
-    years: Sequence[int], cfg: CompanyConfig, net_profit, depreciation, cfo, cfi, cff
-):
-    """Calculate cumulative cash balance"""
-    cash_balance = {}
-    year_list = list(years)
-    for i, y in enumerate(year_list):
-        if i == 0:
-            cash_balance[y] = cfo[y] + cfi[y] + cff[y]
+class DebtEngine:
+    """Construct amortization schedules for configured debt instruments."""
+
+    def __init__(self, cfg: CompanyConfig):
+        self.cfg = cfg
+        self.years = _projection_years(cfg)
+
+    def build(self) -> DebtScheduleResults:
+        years_list = list(self.years)
+        interest_payment: Dict[int, float] = {y: 0.0 for y in years_list}
+        principal_payment: Dict[int, float] = {y: 0.0 for y in years_list}
+        ending_balance: Dict[int, float] = {y: 0.0 for y in years_list}
+        debt_draws: Dict[int, float] = {y: 0.0 for y in years_list}
+        instrument_details: Dict[str, Dict[str, Dict[int, float]]] = {}
+
+        instruments = getattr(self.cfg, "debt_instruments", None) or []
+
+        for instrument in instruments:
+            balance = 0.0
+            detail = {
+                "draws": {y: 0.0 for y in years_list},
+                "interest": {y: 0.0 for y in years_list},
+                "principal": {y: 0.0 for y in years_list},
+                "ending_balance": {y: 0.0 for y in years_list},
+            }
+
+            final_year = instrument.final_year
+            amortization_start = instrument.start_year + instrument.interest_only_years
+            amortization_years = instrument.amortization_years
+
+            for year in years_list:
+                draw = instrument.draw_for_year(year)
+                if draw:
+                    balance += draw
+
+                active = instrument.term > 0 and instrument.start_year <= year <= final_year
+                interest = 0.0
+                principal = 0.0
+
+                if active and balance > 0:
+                    interest = balance * instrument.interest_rate
+
+                    if amortization_years <= 0:
+                        if year >= final_year:
+                            principal = balance
+                    elif year >= amortization_start:
+                        remaining_periods = max(1, (final_year - year) + 1)
+                        principal = balance / remaining_periods
+
+                    principal = min(principal, balance)
+                    balance = max(0.0, balance - principal)
+
+                detail["draws"][year] = draw
+                detail["interest"][year] = interest
+                detail["principal"][year] = principal
+                detail["ending_balance"][year] = balance
+
+                interest_payment[year] += interest
+                principal_payment[year] += principal
+                ending_balance[year] += balance
+                debt_draws[year] += draw
+
+            instrument_details[instrument.name] = detail
+
+        return DebtScheduleResults(
+            interest_payment=interest_payment,
+            principal_payment=principal_payment,
+            ending_balance=ending_balance,
+            draws=debt_draws,
+            instrument_details=instrument_details,
+        )
+
+# =====================================================
+# 7. CASH FLOW STATEMENT CALCULATION
+# =====================================================
+class CashFlowEngine:
+    """Assemble operating, investing, and financing cash flows."""
+
+    def __init__(
+        self,
+        cfg: CompanyConfig,
+        income: IncomeStatementResults,
+        working_capital: WorkingCapitalResults,
+        debt: DebtScheduleResults,
+    ):
+        self.cfg = cfg
+        self.income = income
+        self.working_capital = working_capital
+        self.debt = debt
+        self.years = _projection_years(cfg)
+
+    def _investment_cash_flow(self) -> Tuple[Dict[int, float], float]:
+        cfg = self.cfg
+        years = self.years
+        if cfg.capex_manager is not None:
+            yearly_capex = cfg.capex_manager.yearly_capex_schedule(cfg.start_year, len(years))
+            total_capex = cfg.capex_manager.total_capex()
+            cfi = {year: -yearly_capex.get(year, 0.0) for year in years}
         else:
-            prev_year = year_list[i - 1]
-            cash_balance[y] = cash_balance[prev_year] + cfo[y] + cfi[y] + cff[y]
-    return cash_balance
+            total_capex = cfg.land_acquisition + cfg.factory_construction + cfg.machinery_automation
+            cfi = {year: -total_capex if year == cfg.start_year else 0.0 for year in years}
+        return cfi, total_capex
+
+    def _equity_schedule(self) -> Dict[int, float]:
+        equity_schedule = dict(getattr(self.cfg, "equity_contribution_schedule", {}) or {})
+        if not equity_schedule and self.cfg.equity_investment:
+            equity_schedule[self.cfg.start_year] = float(self.cfg.equity_investment)
+        return equity_schedule
+
+    def _cfo(self) -> Dict[int, float]:
+        changes = self.working_capital.change_in_working_capital
+        depreciation = self.income.depreciation
+        net_profit = self.income.net_profit
+        cfo: Dict[int, float] = {}
+        for year in self.years:
+            dep = depreciation.get(year, 0.0)
+            cfo[year] = net_profit[year] + dep - changes.get(year, 0.0)
+        return cfo
+
+    def build(self) -> Tuple[CashFlowResults, float]:
+        cfo = self._cfo()
+        cfi, total_capex = self._investment_cash_flow()
+        equity_schedule = self._equity_schedule()
+
+        cff: Dict[int, float] = {}
+        for year in self.years:
+            equity = float(equity_schedule.get(year, 0.0))
+            inflows = equity + self.debt.draws.get(year, 0.0)
+            outflows = self.debt.principal_payment.get(year, 0.0) + self.debt.interest_payment.get(year, 0.0)
+            cff[year] = inflows - outflows
+
+        cash_balance: Dict[int, float] = {}
+        for index, year in enumerate(self.years):
+            if index == 0:
+                cash_balance[year] = cfo[year] + cfi[year] + cff[year]
+            else:
+                previous = self.years[index - 1]
+                cash_balance[year] = cash_balance[previous] + cfo[year] + cfi[year] + cff[year]
+
+        results = CashFlowResults(cfo=cfo, cfi=cfi, cff=cff, cash_balance=cash_balance)
+        return results, total_capex
 
 # =====================================================
 # 8. BALANCE SHEET CALCULATION
 # =====================================================
-def calculate_balance_sheet(
-    years: Sequence[int],
-    cfg: CompanyConfig,
-    net_profit,
-    cash_balance,
-    depreciation,
-    outstanding_debt,
-    accounts_receivable,
-    inventory,
-    accounts_payable,
-    accrued_expenses,
-):
-    """Calculate balance sheet items"""
-    years_list = list(years)
-    # Determine total capex and compute fixed assets net of accumulated depreciation
-    if cfg.capex_manager is not None:
-        total_capex = cfg.capex_manager.total_capex()
-        # depreciation expected to be a dict mapping year->amount
-        if isinstance(depreciation, dict):
-            # accumulated depreciation up to year
-            fixed_assets = {}
-            for y in years_list:
-                acc_dep = 0.0
-                for t in years_list:
-                    if t <= y:
-                        acc_dep += depreciation.get(t, 0.0)
-                fixed_assets[y] = max(0, total_capex - acc_dep)
-        else:
-            # fallback: treat as scalar annual depreciation
-            fixed_assets = {}
-            for y in years_list:
-                years_since_start = y - cfg.start_year
-                accumulated_dep = depreciation * (years_since_start + 1)
-                fixed_assets[y] = max(0, total_capex - accumulated_dep)
-    else:
+class BalanceSheetEngine:
+    """Build balance-sheet balances from model outputs."""
+
+    def __init__(
+        self,
+        cfg: CompanyConfig,
+        income: IncomeStatementResults,
+        cash_flow: CashFlowResults,
+        debt: DebtScheduleResults,
+        working_capital: WorkingCapitalResults,
+    ):
+        self.cfg = cfg
+        self.income = income
+        self.cash_flow = cash_flow
+        self.debt = debt
+        self.working_capital = working_capital
+        self.years = _projection_years(cfg)
+
+    def _fixed_assets(self) -> Dict[int, float]:
+        cfg = self.cfg
+        depreciation = self.income.depreciation
+        years = self.years
+        if cfg.capex_manager is not None:
+            total_capex = cfg.capex_manager.total_capex()
+            fixed_assets: Dict[int, float] = {}
+            for year in years:
+                accumulated = 0.0
+                for t in years:
+                    if t <= year:
+                        accumulated += depreciation.get(t, 0.0)
+                fixed_assets[year] = max(0.0, total_capex - accumulated)
+            return fixed_assets
+
         total_capex = cfg.land_acquisition + cfg.factory_construction + cfg.machinery_automation
-        fixed_assets = {}
-        for y in years_list:
-            years_since_start = y - cfg.start_year
-            if isinstance(depreciation, dict):
-                accumulated_dep = sum(depreciation.get(t, 0.0) for t in years_list if t <= y)
+        fixed_assets: Dict[int, float] = {}
+        for year in years:
+            years_since_start = year - cfg.start_year
+            accumulated = sum(depreciation.get(t, 0.0) for t in years if t <= year)
+            fixed_assets[year] = max(0.0, total_capex - accumulated)
+        return fixed_assets
+
+    def build(self) -> BalanceSheetResults:
+        years = self.years
+        fixed_assets = self._fixed_assets()
+        current_assets = {
+            year: self.cash_flow.cash_balance[year]
+            + self.working_capital.accounts_receivable.get(year, 0.0)
+            + self.working_capital.inventory.get(year, 0.0)
+            for year in years
+        }
+        current_liabilities = {
+            year: self.working_capital.accounts_payable.get(year, 0.0)
+            + self.working_capital.accrued_expenses.get(year, 0.0)
+            for year in years
+        }
+        long_term_debt = {year: max(0.0, self.debt.ending_balance[year]) for year in years}
+
+        retained_earnings: Dict[int, float] = {}
+        for index, year in enumerate(years):
+            if index == 0:
+                retained_earnings[year] = self.income.net_profit[year]
             else:
-                accumulated_dep = depreciation * (years_since_start + 1)
-            fixed_assets[y] = max(0, total_capex - accumulated_dep)
+                previous = years[index - 1]
+                retained_earnings[year] = retained_earnings[previous] + self.income.net_profit[year]
 
-    current_assets = {
-        y: cash_balance[y] + accounts_receivable.get(y, 0.0) + inventory.get(y, 0.0)
-        for y in years_list
-    }
-    current_liabilities = {
-        y: accounts_payable.get(y, 0.0) + accrued_expenses.get(y, 0.0)
-        for y in years_list
-    }
-    long_term_debt = {y: max(0.0, outstanding_debt[y]) for y in years_list}
-
-    retained_earnings = {}
-    for i, y in enumerate(years_list):
-        if i == 0:
-            retained_earnings[y] = net_profit[y]
+        cumulative_equity: Dict[int, float] = {}
+        equity_contributions = getattr(self.cfg, "cumulative_equity_contributions", {})
+        if equity_contributions:
+            for year in years:
+                cumulative_equity[year] = float(equity_contributions.get(year, 0.0))
         else:
-            prev_year = years_list[i - 1]
-            retained_earnings[y] = retained_earnings[prev_year] + net_profit[y]
+            running = 0.0
+            for year in years:
+                if year == self.cfg.start_year:
+                    running += float(self.cfg.equity_investment)
+                cumulative_equity[year] = running
 
-    cumulative_equity = {}
-    equity_contributions = getattr(cfg, "cumulative_equity_contributions", {})
-    if equity_contributions:
-        for y in years_list:
-            cumulative_equity[y] = float(equity_contributions.get(y, 0.0))
-    else:
-        running = 0.0
-        for y in years_list:
-            if y == cfg.start_year:
-                running += float(cfg.equity_investment)
-            cumulative_equity[y] = running
+        total_equity = {year: cumulative_equity.get(year, 0.0) + retained_earnings[year] for year in years}
+        total_assets = {year: current_assets[year] + fixed_assets[year] for year in years}
+        total_liab_equity = {
+            year: current_liabilities[year] + long_term_debt[year] + total_equity[year]
+            for year in years
+        }
 
-    total_equity = {y: cumulative_equity.get(y, 0.0) + retained_earnings[y] for y in years_list}
-    total_assets = {y: current_assets[y] + fixed_assets[y] for y in years_list}
-    total_liab_equity = {y: current_liabilities[y] + long_term_debt[y] + total_equity[y] for y in years_list}
-
-    return (
-        fixed_assets,
-        current_assets,
-        current_liabilities,
-        long_term_debt,
-        total_equity,
-        total_assets,
-        total_liab_equity,
-    )
+        return BalanceSheetResults(
+            fixed_assets=fixed_assets,
+            current_assets=current_assets,
+            current_liabilities=current_liabilities,
+            long_term_debt=long_term_debt,
+            total_equity=total_equity,
+            total_assets=total_assets,
+            total_liab_equity=total_liab_equity,
+        )
 
 # =====================================================
 # MAIN CALCULATION ENGINE
 # =====================================================
+class FinancialModel:
+    """Object-oriented wrapper around the financial model computations."""
+
+    def __init__(self, cfg: Optional[CompanyConfig] = None):
+        self.cfg = cfg or config
+        self.years = tuple(_projection_years(self.cfg))
+
+    def run(self) -> dict:
+        cfg = self.cfg
+
+        production = ProductionEngine(cfg).build()
+        cogs = CostEngine(cfg, production).build()
+        opex = OperatingExpenseEngine(cfg).build()
+        income = IncomeStatementEngine(cfg, production.revenue, cogs.total, opex.total).build()
+        fcf, discounted_fcf, enterprise_value = ValuationEngine(cfg, income.ebit, income.depreciation).build()
+        working_capital = WorkingCapitalEngine(cfg, production.revenue, cogs.total, opex.total).build()
+        debt = DebtEngine(cfg).build()
+        cash_flow, total_capex = CashFlowEngine(cfg, income, working_capital, debt).build()
+        balance_sheet = BalanceSheetEngine(cfg, income, cash_flow, debt, working_capital).build()
+
+        balance_check = {
+            year: abs(balance_sheet.total_assets[year] - balance_sheet.total_liab_equity[year]) < 1e-2
+            for year in self.years
+        }
+
+        return {
+            'years': self.years,
+            'revenue': production.revenue,
+            'cogs': cogs.total,
+            'variable_cogs': cogs.variable,
+            'fixed_cogs': cogs.fixed,
+            'variable_cogs_breakdown': cogs.variable_breakdown,
+            'opex': opex.total,
+            'ebitda': income.ebitda,
+            'ebit': income.ebit,
+            'tax': income.tax,
+            'net_profit': income.net_profit,
+            'fcf': fcf,
+            'discounted_fcf': discounted_fcf,
+            'enterprise_value': enterprise_value,
+            'production_volume': production.production_volume,
+            'product_units': production.product_units,
+            'product_prices': production.product_prices,
+            'product_revenue': production.product_revenue,
+            'depreciation': income.depreciation,
+            'cfo': cash_flow.cfo,
+            'cfi': cash_flow.cfi,
+            'cff': cash_flow.cff,
+            'cash_balance': cash_flow.cash_balance,
+            'interest_payment': debt.interest_payment,
+            'loan_repayment': debt.principal_payment,
+            'outstanding_debt': debt.ending_balance,
+            'debt_draws': debt.draws,
+            'debt_schedule_detail': debt.instrument_details,
+            'accounts_receivable': working_capital.accounts_receivable,
+            'inventory': working_capital.inventory,
+            'accounts_payable': working_capital.accounts_payable,
+            'accrued_expenses': working_capital.accrued_expenses,
+            'net_working_capital': working_capital.net_working_capital,
+            'change_in_working_capital': working_capital.change_in_working_capital,
+            'fixed_assets': balance_sheet.fixed_assets,
+            'current_assets': balance_sheet.current_assets,
+            'current_liabilities': balance_sheet.current_liabilities,
+            'long_term_debt': balance_sheet.long_term_debt,
+            'total_equity': balance_sheet.total_equity,
+            'total_assets': balance_sheet.total_assets,
+            'total_liab_equity': balance_sheet.total_liab_equity,
+            'balance_check': balance_check,
+            'labor_metrics': opex.labor_metrics,
+            'initial_capex': total_capex,
+            'capex_items': [item.to_dict() for item in cfg.capex_manager.list_items()] if cfg.capex_manager is not None else [],
+            'ownership_structure': dict(cfg.ownership_structure),
+            'capital_structure_schedule': dict(cfg.capital_structure_schedule),
+            'owner_equity_contributions': dict(cfg.owner_equity_contributions),
+            'investor_equity_contributions': dict(cfg.investor_equity_contributions),
+            'equity_contributions': dict(cfg.equity_contribution_schedule),
+            'cumulative_equity_contributions': dict(cfg.cumulative_equity_contributions),
+            'debt_contribution_schedule': dict(cfg.debt_draw_overrides),
+            'config': cfg
+        }
+
+
 def run_financial_model(cfg: CompanyConfig = None) -> dict:
+    """Backwards-compatible helper to run the object-oriented model."""
 
-    if cfg is None:
-        cfg = config
-    
-    years = _projection_years(cfg)
-
-    # Calculate components
-    (
-        production_volume,
-        product_units,
-        product_prices,
-        revenue,
-        product_revenue,
-    ) = calculate_production_forecast(cfg)
-    cogs, variable_cogs, fixed_cogs, variable_breakdown = calculate_cogs(years, product_units, cfg)
-    opex = calculate_opex_with_labor_manager(years, cfg)
-    labor_metrics = get_labor_metrics(cfg, years)
-    ebitda, ebit, tax, net_profit, depreciation = calculate_income_statement(years, cfg, production_volume, revenue, cogs, opex)
-    fcf, discounted_fcf, enterprise_value = calculate_dcf(years, ebit, cfg, depreciation)
-
-    (
-        net_working_capital,
-        change_in_working_capital,
-        accounts_receivable,
-        inventory,
-        accounts_payable,
-        accrued_expenses,
-    ) = calculate_working_capital_positions(years, revenue, cogs, opex, cfg)
-
-    (
-        interest_payment,
-        loan_repayment,
-        outstanding_debt,
-        debt_draws,
-        debt_details,
-    ) = build_debt_schedule(years, cfg)
-
-    # Determine CAPEX cash flows and total capex
-    if cfg.capex_manager is not None:
-        yearly_capex = cfg.capex_manager.yearly_capex_schedule(cfg.start_year, len(years))
-        total_capex = cfg.capex_manager.total_capex()
-        cfi = {y: -yearly_capex.get(y, 0.0) for y in years}
-    else:
-        total_capex = cfg.land_acquisition + cfg.factory_construction + cfg.machinery_automation
-        cfi = {y: -total_capex if y == cfg.start_year else 0 for y in years}
-
-    # cfo uses per-year depreciation if provided
-    cfo = {}
-    for y in years:
-        dep_y = depreciation[y] if isinstance(depreciation, dict) else depreciation
-        cfo[y] = net_profit[y] + dep_y - change_in_working_capital.get(y, 0)
-
-    equity_schedule = dict(getattr(cfg, "equity_contribution_schedule", {}) or {})
-    if not equity_schedule and cfg.equity_investment:
-        equity_schedule[cfg.start_year] = float(cfg.equity_investment)
-
-    cff = {}
-    for y in years:
-        equity = float(equity_schedule.get(y, 0.0))
-        inflows = equity + debt_draws.get(y, 0.0)
-        outflows = loan_repayment[y] + interest_payment[y]
-        cff[y] = inflows - outflows
-    cash_balance = calculate_cash_flow(years, cfg, net_profit, depreciation, cfo, cfi, cff)
-
-    # Balance sheet
-    fixed_assets, current_assets, current_liabilities, long_term_debt, total_equity, total_assets, total_liab_equity = \
-        calculate_balance_sheet(
-            years,
-            cfg,
-            net_profit,
-            cash_balance,
-            depreciation,
-            outstanding_debt,
-            accounts_receivable,
-            inventory,
-            accounts_payable,
-            accrued_expenses,
-        )
-    
-    balance_check = {y: abs(total_assets[y] - total_liab_equity[y]) < 1e-2 for y in years}
-    
-    # Return all calculated data
-    return {
-        'years': tuple(years),
-        'revenue': revenue,
-        'cogs': cogs,
-        'variable_cogs': variable_cogs,
-        'fixed_cogs': fixed_cogs,
-        'variable_cogs_breakdown': variable_breakdown,
-        'opex': opex,
-        'ebitda': ebitda,
-        'ebit': ebit,
-        'tax': tax,
-        'net_profit': net_profit,
-        'fcf': fcf,
-        'discounted_fcf': discounted_fcf,
-        'enterprise_value': enterprise_value,
-        'production_volume': production_volume,
-        'product_units': product_units,
-        'product_prices': product_prices,
-        'product_revenue': product_revenue,
-        'depreciation': depreciation,
-        'cfo': cfo,
-        'cfi': cfi,
-        'cff': cff,
-        'cash_balance': cash_balance,
-        'interest_payment': interest_payment,
-        'loan_repayment': loan_repayment,
-        'outstanding_debt': outstanding_debt,
-        'debt_draws': debt_draws,
-        'debt_schedule_detail': debt_details,
-        'accounts_receivable': accounts_receivable,
-        'inventory': inventory,
-        'accounts_payable': accounts_payable,
-        'accrued_expenses': accrued_expenses,
-        'net_working_capital': net_working_capital,
-        'change_in_working_capital': change_in_working_capital,
-        'fixed_assets': fixed_assets,
-        'current_assets': current_assets,
-        'current_liabilities': current_liabilities,
-        'long_term_debt': long_term_debt,
-        'total_equity': total_equity,
-        'total_assets': total_assets,
-        'total_liab_equity': total_liab_equity,
-        'balance_check': balance_check,
-        'labor_metrics': labor_metrics,
-        'initial_capex': total_capex,
-        'capex_items': [item.to_dict() for item in cfg.capex_manager.list_items()] if cfg.capex_manager is not None else [],
-        'ownership_structure': dict(cfg.ownership_structure),
-        'capital_structure_schedule': dict(cfg.capital_structure_schedule),
-        'owner_equity_contributions': dict(cfg.owner_equity_contributions),
-        'investor_equity_contributions': dict(cfg.investor_equity_contributions),
-        'equity_contributions': dict(cfg.equity_contribution_schedule),
-        'cumulative_equity_contributions': dict(cfg.cumulative_equity_contributions),
-        'debt_contribution_schedule': dict(cfg.debt_draw_overrides),
-        'config': cfg
-    }
+    engine = FinancialModel(cfg)
+    return engine.run()
 
 # =====================================================
 # 11. OUTPUT SUMMARIES

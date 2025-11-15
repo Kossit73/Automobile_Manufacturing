@@ -4850,8 +4850,6 @@ def _render_capex_management() -> None:
 
 def _render_financial_model(model: Dict[str, Any]) -> None:
     income_df, cashflow_df, balance_df = generate_financial_statements(model)
-    labor_df = generate_labor_statement(model)
-    debt_df = _debt_schedule(model)
 
     _display_schedule(
         "Income Statement Schedule",
@@ -4867,16 +4865,6 @@ def _render_financial_model(model: Dict[str, Any]) -> None:
         "Balance Sheet Schedule",
         balance_df,
         "Assets, liabilities, and equity projections.",
-    )
-    _display_schedule(
-        "Debt Amortization Schedule",
-        debt_df,
-        "Loan balance, interest, and repayment projection.",
-    )
-    _display_schedule(
-        "Labor Cost Schedule",
-        labor_df,
-        "Labor costs are displayed even when no data is available.",
     )
 
 

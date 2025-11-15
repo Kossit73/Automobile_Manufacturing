@@ -4513,7 +4513,9 @@ def _render_ai_settings(payload: Dict[str, Any], container: Optional[DeltaGenera
 # MAIN ENTRYPOINT
 # ---------------------------------------------------------------------------
 
-def _render_navigation() -> str:
+def _render_navigation() -> Dict[str, DeltaGenerator]:
+    """Render the primary navigation as tabs and return the tab containers."""
+
     pages = [
         "Dashboard",
         "Advanced Analytics",
@@ -4522,16 +4524,9 @@ def _render_navigation() -> str:
         "Platform Settings",
         "AI & Machine Learning",
     ]
-    default_index = pages.index(st.session_state.get("active_page", "Dashboard"))
-    selected = st.radio(
-        "Main Navigation",
-        pages,
-        index=default_index,
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-    st.session_state["active_page"] = selected
-    return selected
+
+    tabs = st.tabs(pages)
+    return {page: tab for page, tab in zip(pages, tabs)}
 
 
 def main() -> None:
@@ -4546,22 +4541,25 @@ def main() -> None:
     st.title("Automobile Manufacturing Financial Platform")
     st.caption("Comprehensive labor, CAPEX, and financial planning environment.")
 
-    active_page = _render_navigation()
+    tabs = _render_navigation()
 
-    if active_page == "Dashboard":
+    with tabs["Dashboard"]:
         _render_dashboard(model)
-    elif active_page == "Advanced Analytics":
+
+    with tabs["Advanced Analytics"]:
         _render_advanced_analytics(model)
-    elif active_page == "Financial Model":
+
+    with tabs["Financial Model"]:
         _render_financial_model(model)
-    elif active_page == "Reports":
+
+    with tabs["Reports"]:
         _render_reports(model)
-    elif active_page == "Platform Settings":
+
+    with tabs["Platform Settings"]:
         _render_platform_settings()
-    elif active_page == "AI & Machine Learning":
+
+    with tabs["AI & Machine Learning"]:
         _render_ai_settings(st.session_state["ai_payload"])
-    else:
-        st.warning("Select a module from the navigation bar to begin.")
 
 
 if __name__ == "__main__":

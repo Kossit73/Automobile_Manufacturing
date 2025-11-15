@@ -376,6 +376,121 @@ def _normalize_capacity_utilization(
     return normalized
 
 
+def _normalize_ownership_schedule(
+    years: Sequence[int], raw_schedule: Optional[Dict[int, Dict[str, float]]]
+) -> Dict[int, Dict[str, float]]:
+    """Normalize ownership inputs into percentage splits that total 100%."""
+
+    sanitized = _sanitize_nested_numeric_mapping(raw_schedule)
+    normalized: Dict[int, Dict[str, float]] = {}
+
+    last_owner = 100.0
+    last_investor = 0.0
+
+    for year in years:
+        data = sanitized.get(year, {})
+        try:
+            owner_value = float(data.get("owner_pct", last_owner))
+        except (TypeError, ValueError):
+            owner_value = last_owner
+        try:
+            investor_value = float(data.get("investor_pct", last_investor))
+        except (TypeError, ValueError):
+            investor_value = last_investor
+
+        owner_value = max(0.0, owner_value)
+        investor_value = max(0.0, investor_value)
+        total = owner_value + investor_value
+
+        if total <= 0:
+            owner_pct = last_owner if last_owner > 0 else 100.0
+            investor_pct = 100.0 - owner_pct
+        else:
+            owner_pct = (owner_value / total) * 100.0
+            investor_pct = 100.0 - owner_pct
+
+        owner_pct = max(0.0, min(100.0, owner_pct))
+        investor_pct = 100.0 - owner_pct
+
+        normalized[year] = {"owner_pct": owner_pct, "investor_pct": investor_pct}
+        last_owner = owner_pct
+        last_investor = investor_pct
+
+    return normalized
+
+
+def _normalize_capital_structure_schedule(
+    years: Sequence[int],
+    raw_schedule: Optional[Dict[int, Dict[str, float]]],
+    default_equity: float,
+    default_debt_draws: Dict[int, float],
+) -> Tuple[
+    Dict[int, Dict[str, float]],
+    Dict[int, float],
+    Dict[int, float],
+    Dict[int, float],
+    Dict[int, float],
+    bool,
+]:
+    """Normalize capital structure overrides for equity and debt contributions."""
+
+    sanitized = _sanitize_nested_numeric_mapping(raw_schedule)
+    has_override = bool(sanitized)
+
+    normalized: Dict[int, Dict[str, float]] = {}
+    owner_equity: Dict[int, float] = {}
+    investor_equity: Dict[int, float] = {}
+    total_equity: Dict[int, float] = {}
+    debt_amounts: Dict[int, float] = {}
+
+    for idx, year in enumerate(years):
+        data = sanitized.get(year, {})
+
+        default_debt = default_debt_draws.get(year, 0.0)
+
+        try:
+            owner_value = float(data.get("owner_equity", 0.0))
+        except (TypeError, ValueError):
+            owner_value = 0.0
+        try:
+            investor_value = float(data.get("investor_equity", 0.0))
+        except (TypeError, ValueError):
+            investor_value = 0.0
+        try:
+            debt_value = float(data.get("debt_amount", default_debt))
+        except (TypeError, ValueError):
+            debt_value = default_debt
+
+        owner_value = max(0.0, owner_value)
+        investor_value = max(0.0, investor_value)
+        debt_value = max(0.0, debt_value)
+
+        if not has_override:
+            if idx == 0 and default_equity > 0:
+                owner_value = default_equity
+            else:
+                owner_value = owner_value
+            investor_value = 0.0
+            debt_value = default_debt
+        else:
+            if idx == 0 and owner_value == 0.0 and investor_value == 0.0 and default_equity > 0:
+                owner_value = default_equity
+
+        total = owner_value + investor_value
+
+        normalized[year] = {
+            "owner_equity": owner_value,
+            "investor_equity": investor_value,
+            "debt_amount": debt_value,
+        }
+        owner_equity[year] = owner_value
+        investor_equity[year] = investor_value
+        total_equity[year] = total
+        debt_amounts[year] = debt_value
+
+    return normalized, owner_equity, investor_equity, total_equity, debt_amounts, has_override
+
+
 @dataclass
 class DebtInstrument:
     """Structured representation of an individual debt instrument."""
@@ -585,7 +700,9 @@ class CompanyConfig:
     loan_interest_rate: float = 0.08
     loan_term: int = 5
     debt_instruments: Optional[Sequence[DebtInstrument]] = None
-    
+    ownership_structure: Optional[Dict[int, Dict[str, float]]] = None
+    capital_structure_schedule: Optional[Dict[int, Dict[str, float]]] = None
+
     # Working Capital & Financial Parameters
     cogs_ratio: float = 0.6
     product_portfolio: Optional[Dict[str, Dict[str, float]]] = None
@@ -608,10 +725,17 @@ class CompanyConfig:
     fixed_cost_overrides: Optional[Dict[int, float]] = None
     other_opex_overrides: Optional[Dict[int, float]] = None
     working_capital_overrides: Optional[Dict[int, Dict[str, float]]] = None
+    owner_equity_contributions: Dict[int, float] = field(default_factory=dict, init=False)
+    investor_equity_contributions: Dict[int, float] = field(default_factory=dict, init=False)
+    equity_contribution_schedule: Dict[int, float] = field(default_factory=dict, init=False)
+    cumulative_equity_contributions: Dict[int, float] = field(default_factory=dict, init=False)
+    debt_draw_overrides: Dict[int, float] = field(default_factory=dict, init=False)
 
     def __post_init__(self):
         if self.projection_years < 1:
             raise ValueError("projection_years must be at least 1")
+
+        years = [self.start_year + i for i in range(self.projection_years)]
 
         self.capacity_utilization = _normalize_capacity_utilization(
             self.start_year, self.projection_years, self.capacity_utilization
@@ -672,6 +796,64 @@ class CompanyConfig:
             self.loan_interest_rate,
             self.loan_term,
         )
+
+        debt_draw_defaults: Dict[int, float] = {}
+        for instrument in self.debt_instruments:
+            for year, amount in instrument.draw_schedule.items():
+                if year in years:
+                    debt_draw_defaults[year] = debt_draw_defaults.get(year, 0.0) + float(amount)
+
+        self.ownership_structure = _normalize_ownership_schedule(years, self.ownership_structure)
+
+        (
+            normalized_capital,
+            owner_contrib,
+            investor_contrib,
+            equity_contrib,
+            debt_amounts,
+            has_capital_override,
+        ) = _normalize_capital_structure_schedule(
+            years,
+            self.capital_structure_schedule,
+            self.equity_investment,
+            debt_draw_defaults,
+        )
+
+        self.capital_structure_schedule = normalized_capital
+        self.owner_equity_contributions = owner_contrib
+        self.investor_equity_contributions = investor_contrib
+        self.equity_contribution_schedule = equity_contrib
+        self.debt_draw_overrides = debt_amounts
+
+        cumulative_equity: Dict[int, float] = {}
+        running_total = 0.0
+        for year in years:
+            running_total += equity_contrib.get(year, 0.0)
+            cumulative_equity[year] = running_total
+        self.cumulative_equity_contributions = cumulative_equity
+
+        total_equity_contribution = sum(equity_contrib.values())
+        if total_equity_contribution > 0:
+            self.equity_investment = total_equity_contribution
+
+        if has_capital_override:
+            draw_schedule = {year: amount for year, amount in debt_amounts.items() if amount > 0}
+            if draw_schedule:
+                principal_total = sum(draw_schedule.values())
+                override_term = self.loan_term if self.loan_term > 0 else max(1, self.projection_years)
+                override_start = min(draw_schedule.keys())
+                self.debt_instruments = [
+                    DebtInstrument(
+                        name="Capital Structure Debt",
+                        principal=principal_total,
+                        interest_rate=self.loan_interest_rate,
+                        term=override_term,
+                        start_year=override_start,
+                        draw_schedule=draw_schedule,
+                    )
+                ]
+            else:
+                self.debt_instruments = []
 
         total_principal = sum(inst.principal for inst in self.debt_instruments)
         if total_principal > 0:
@@ -1229,7 +1411,19 @@ def calculate_balance_sheet(
             prev_year = years_list[i - 1]
             retained_earnings[y] = retained_earnings[prev_year] + net_profit[y]
 
-    total_equity = {y: cfg.equity_investment + retained_earnings[y] for y in years_list}
+    cumulative_equity = {}
+    equity_contributions = getattr(cfg, "cumulative_equity_contributions", {})
+    if equity_contributions:
+        for y in years_list:
+            cumulative_equity[y] = float(equity_contributions.get(y, 0.0))
+    else:
+        running = 0.0
+        for y in years_list:
+            if y == cfg.start_year:
+                running += float(cfg.equity_investment)
+            cumulative_equity[y] = running
+
+    total_equity = {y: cumulative_equity.get(y, 0.0) + retained_earnings[y] for y in years_list}
     total_assets = {y: current_assets[y] + fixed_assets[y] for y in years_list}
     total_liab_equity = {y: current_liabilities[y] + long_term_debt[y] + total_equity[y] for y in years_list}
 
@@ -1299,9 +1493,13 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         dep_y = depreciation[y] if isinstance(depreciation, dict) else depreciation
         cfo[y] = net_profit[y] + dep_y - change_in_working_capital.get(y, 0)
 
+    equity_schedule = dict(getattr(cfg, "equity_contribution_schedule", {}) or {})
+    if not equity_schedule and cfg.equity_investment:
+        equity_schedule[cfg.start_year] = float(cfg.equity_investment)
+
     cff = {}
     for y in years:
-        equity = cfg.equity_investment if y == cfg.start_year else 0.0
+        equity = float(equity_schedule.get(y, 0.0))
         inflows = equity + debt_draws.get(y, 0.0)
         outflows = loan_repayment[y] + interest_payment[y]
         cff[y] = inflows - outflows
@@ -1371,6 +1569,13 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         'labor_metrics': labor_metrics,
         'initial_capex': total_capex,
         'capex_items': [item.to_dict() for item in cfg.capex_manager.list_items()] if cfg.capex_manager is not None else [],
+        'ownership_structure': dict(cfg.ownership_structure),
+        'capital_structure_schedule': dict(cfg.capital_structure_schedule),
+        'owner_equity_contributions': dict(cfg.owner_equity_contributions),
+        'investor_equity_contributions': dict(cfg.investor_equity_contributions),
+        'equity_contributions': dict(cfg.equity_contribution_schedule),
+        'cumulative_equity_contributions': dict(cfg.cumulative_equity_contributions),
+        'debt_contribution_schedule': dict(cfg.debt_draw_overrides),
         'config': cfg
     }
 

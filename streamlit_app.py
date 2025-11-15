@@ -3558,6 +3558,385 @@ def _render_working_capital_editor(cfg: CompanyConfig) -> None:
             status_placeholder.success("Working capital drivers updated.")
 
 
+def _ownership_structure_table(cfg: CompanyConfig) -> pd.DataFrame:
+    years = _config_years(cfg)
+    rows: List[Dict[str, Any]] = []
+    structure = getattr(cfg, "ownership_structure", {}) or {}
+    for year in years:
+        entry = structure.get(year, {})
+        owner_pct = float(entry.get("owner_pct", 100.0))
+        investor_pct = float(entry.get("investor_pct", 0.0))
+        rows.append({"Year": year, "Owner %": owner_pct, "Investor %": investor_pct})
+
+    if not rows:
+        return pd.DataFrame(columns=["Year", "Owner %", "Investor %"])
+
+    return pd.DataFrame(rows, columns=["Year", "Owner %", "Investor %"])
+
+
+def _capital_structure_schedule(cfg: CompanyConfig) -> pd.DataFrame:
+    years = _config_years(cfg)
+    rows: List[Dict[str, Any]] = []
+    structure = getattr(cfg, "capital_structure_schedule", {}) or {}
+    for year in years:
+        entry = structure.get(year, {})
+        owner_equity = float(entry.get("owner_equity", 0.0))
+        investor_equity = float(entry.get("investor_equity", 0.0))
+        debt_amount = float(entry.get("debt_amount", 0.0))
+        total_equity = owner_equity + investor_equity
+        rows.append(
+            {
+                "Year": year,
+                "Owner Equity": owner_equity,
+                "Investor Equity": investor_equity,
+                "Total Equity": total_equity,
+                "Debt Funding": debt_amount,
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=["Year", "Owner Equity", "Investor Equity", "Total Equity", "Debt Funding"])
+
+    return pd.DataFrame(
+        rows,
+        columns=["Year", "Owner Equity", "Investor Equity", "Total Equity", "Debt Funding"],
+    )
+
+
+def _render_ownership_schedule_editor(cfg: CompanyConfig) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    structure = getattr(cfg, "ownership_structure", {}) or {}
+
+    action = _schedule_toolbar("ownership_structure", years)
+    if action:
+        target_year = int(action["year"])
+        if action["action"] == "remove":
+            structure.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.ownership_structure = structure
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Ownership split removed for {target_year}.")
+            return
+        if action["action"] == "add":
+            new_year = _next_available_year(years, target_year + 1)
+            _ensure_year_in_horizon(cfg, new_year)
+            defaults = structure.get(target_year, {"owner_pct": 100.0, "investor_pct": 0.0})
+            structure[new_year] = dict(defaults)
+            cfg.ownership_structure = structure
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Ownership split added for {new_year}.")
+            return
+
+    structure = getattr(cfg, "ownership_structure", {}) or {}
+    rows: List[Dict[str, Any]] = []
+    for year in years:
+        entry = structure.get(year, {"owner_pct": 100.0, "investor_pct": 0.0})
+        rows.append(
+            {
+                "Year": year,
+                "Owner %": float(entry.get("owner_pct", 100.0)),
+                "Investor %": float(entry.get("investor_pct", 0.0)),
+            }
+        )
+
+    base_df = pd.DataFrame(rows, columns=["Year", "Owner %", "Investor %"])
+
+    def _save_ownership_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        owner_pct = float(values.get("Owner %", row["Owner %"]))
+        investor_pct = float(values.get("Investor %", row["Investor %"]))
+        owner_pct = max(0.0, min(100.0, owner_pct))
+        investor_pct = max(0.0, min(100.0, investor_pct))
+        total = owner_pct + investor_pct
+        if total <= 0:
+            raise ValueError("Owner and investor shares cannot both be zero.")
+        owner_share = (owner_pct / total) * 100.0
+        investor_share = 100.0 - owner_share
+        cfg.ownership_structure = cfg.ownership_structure or {}
+        cfg.ownership_structure[year] = {"owner_pct": owner_share, "investor_pct": investor_share}
+        cfg.__post_init__()
+        _run_model()
+        return f"Ownership split updated for {year}."
+
+    _render_inline_row_editor(
+        "ownership_structure_inline",
+        base_df,
+        [
+            {"column": "Year", "label": "Year", "type": "int", "editable": False},
+            {
+                "column": "Owner %",
+                "label": "Owner %",
+                "type": "percent",
+                "precision": 1,
+                "min": 0.0,
+                "max": 100.0,
+                "step": 1.0,
+            },
+            {
+                "column": "Investor %",
+                "label": "Investor %",
+                "type": "percent",
+                "precision": 1,
+                "min": 0.0,
+                "max": 100.0,
+                "step": 1.0,
+            },
+        ],
+        on_save=_save_ownership_row,
+        row_id_column="Year",
+        empty_message="Add ownership rows to begin editing splits.",
+    )
+
+    column_config = {
+        "Owner %": st.column_config.NumberColumn("Owner %", min_value=0.0, max_value=100.0, format="%.1f"),
+        "Investor %": st.column_config.NumberColumn(
+            "Investor %", min_value=0.0, max_value=100.0, format="%.1f"
+        ),
+    }
+
+    edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
+        "ownership_structure",
+        base_df,
+        guidance="Define equity ownership between founders and outside investors for each year.",
+        non_negative_columns=["Owner %", "Investor %"],
+        column_config=column_config,
+    )
+
+    def _apply_ownership_increment(selected_years: Sequence[int], increment_pct: float) -> Optional[str]:
+        if not selected_years:
+            raise ValueError("Select at least one year to increment.")
+        cfg.ownership_structure = cfg.ownership_structure or {}
+        for year in selected_years:
+            entry = cfg.ownership_structure.get(year, {"owner_pct": 100.0, "investor_pct": 0.0})
+            owner_pct = float(entry.get("owner_pct", 100.0))
+            owner_pct = max(0.0, min(100.0, _apply_increment(owner_pct, increment_pct)))
+            investor_pct = max(0.0, 100.0 - owner_pct)
+            cfg.ownership_structure[year] = {"owner_pct": owner_pct, "investor_pct": investor_pct}
+        cfg.__post_init__()
+        _run_model()
+        return "Ownership increments applied."
+
+    _schedule_increment_helper(
+        "ownership_structure",
+        years,
+        _apply_ownership_increment,
+        help_text="Apply percentage adjustments to the owner share; investor share is updated automatically.",
+    )
+
+    if st.button("Apply Ownership Updates", key="ownership_structure_apply"):
+        try:
+            sanitized = edited_df.dropna(subset=["Year"])
+            sanitized = sanitized.sort_values("Year")
+            if sanitized.empty:
+                raise ValueError("Add at least one year before applying ownership updates.")
+
+            overrides: Dict[int, Dict[str, float]] = {}
+            for _, row in sanitized.iterrows():
+                year_value = int(row["Year"])
+                owner_pct = max(0.0, float(row.get("Owner %", 0.0)))
+                investor_pct = max(0.0, float(row.get("Investor %", 0.0)))
+                total = owner_pct + investor_pct
+                if total <= 0:
+                    raise ValueError("Owner and investor percentages cannot both be zero.")
+                owner_share = (owner_pct / total) * 100.0
+                investor_share = 100.0 - owner_share
+                overrides[year_value] = {"owner_pct": owner_share, "investor_pct": investor_share}
+
+            cfg.ownership_structure = overrides
+            cfg.projection_years = max(overrides.keys()) - cfg.start_year + 1
+            cfg.__post_init__()
+            _run_model()
+        except ValueError as exc:
+            status_placeholder.error(str(exc))
+        else:
+            status_placeholder.success("Ownership structure updated.")
+
+
+def _render_capital_structure_editor(cfg: CompanyConfig) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    schedule = getattr(cfg, "capital_structure_schedule", {}) or {}
+
+    action = _schedule_toolbar("capital_structure", years)
+    if action:
+        target_year = int(action["year"])
+        if action["action"] == "remove":
+            schedule.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.capital_structure_schedule = schedule
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Capital structure row removed for {target_year}.")
+            return
+        if action["action"] == "add":
+            new_year = _next_available_year(years, target_year + 1)
+            _ensure_year_in_horizon(cfg, new_year)
+            defaults = schedule.get(
+                target_year,
+                {"owner_equity": 0.0, "investor_equity": 0.0, "debt_amount": 0.0},
+            )
+            schedule[new_year] = dict(defaults)
+            cfg.capital_structure_schedule = schedule
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Capital structure row added for {new_year}.")
+            return
+
+    schedule = getattr(cfg, "capital_structure_schedule", {}) or {}
+    rows: List[Dict[str, Any]] = []
+    for year in years:
+        entry = schedule.get(year, {"owner_equity": 0.0, "investor_equity": 0.0, "debt_amount": 0.0})
+        owner_equity = float(entry.get("owner_equity", 0.0))
+        investor_equity = float(entry.get("investor_equity", 0.0))
+        debt_amount = float(entry.get("debt_amount", 0.0))
+        rows.append(
+            {
+                "Year": year,
+                "Owner Equity": owner_equity,
+                "Investor Equity": investor_equity,
+                "Total Equity": owner_equity + investor_equity,
+                "Debt Funding": debt_amount,
+            }
+        )
+
+    base_df = pd.DataFrame(
+        rows, columns=["Year", "Owner Equity", "Investor Equity", "Total Equity", "Debt Funding"]
+    )
+
+    def _save_capital_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        owner_value = max(0.0, float(values.get("Owner Equity", row["Owner Equity"])))
+        investor_value = max(0.0, float(values.get("Investor Equity", row["Investor Equity"])))
+        debt_value = max(0.0, float(values.get("Debt Funding", row["Debt Funding"])))
+        cfg.capital_structure_schedule = cfg.capital_structure_schedule or {}
+        cfg.capital_structure_schedule[year] = {
+            "owner_equity": owner_value,
+            "investor_equity": investor_value,
+            "debt_amount": debt_value,
+        }
+        cfg.__post_init__()
+        _run_model()
+        return f"Capital structure updated for {year}."
+
+    _render_inline_row_editor(
+        "capital_structure_inline",
+        base_df,
+        [
+            {"column": "Year", "label": "Year", "type": "int", "editable": False},
+            {
+                "column": "Owner Equity",
+                "label": "Owner Equity",
+                "type": "currency",
+                "min": 0.0,
+                "step": 5000.0,
+            },
+            {
+                "column": "Investor Equity",
+                "label": "Investor Equity",
+                "type": "currency",
+                "min": 0.0,
+                "step": 5000.0,
+            },
+            {
+                "column": "Debt Funding",
+                "label": "Debt Funding",
+                "type": "currency",
+                "min": 0.0,
+                "step": 5000.0,
+            },
+            {
+                "column": "Total Equity",
+                "label": "Total Equity",
+                "type": "currency",
+                "editable": False,
+            },
+        ],
+        on_save=_save_capital_row,
+        row_id_column="Year",
+        empty_message="Add capital structure rows to begin editing contributions.",
+    )
+
+    column_config = {
+        "Owner Equity": st.column_config.NumberColumn("Owner Equity", format="$%.0f"),
+        "Investor Equity": st.column_config.NumberColumn("Investor Equity", format="$%.0f"),
+        "Debt Funding": st.column_config.NumberColumn("Debt Funding", format="$%.0f"),
+        "Total Equity": st.column_config.NumberColumn("Total Equity", format="$%.0f", disabled=True),
+    }
+
+    edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
+        "capital_structure",
+        base_df,
+        guidance="Plan annual equity injections and debt funding to align with financing needs.",
+        non_negative_columns=["Owner Equity", "Investor Equity", "Debt Funding"],
+        column_config=column_config,
+    )
+
+    def _apply_capital_increment(selected_years: Sequence[int], increment_pct: float) -> Optional[str]:
+        if not selected_years:
+            raise ValueError("Select at least one year to increment.")
+        cfg.capital_structure_schedule = cfg.capital_structure_schedule or {}
+        for year in selected_years:
+            entry = cfg.capital_structure_schedule.get(
+                year, {"owner_equity": 0.0, "investor_equity": 0.0, "debt_amount": 0.0}
+            )
+            cfg.capital_structure_schedule[year] = {
+                "owner_equity": max(0.0, _apply_increment(float(entry.get("owner_equity", 0.0)), increment_pct)),
+                "investor_equity": max(
+                    0.0, _apply_increment(float(entry.get("investor_equity", 0.0)), increment_pct)
+                ),
+                "debt_amount": max(
+                    0.0, _apply_increment(float(entry.get("debt_amount", 0.0)), increment_pct)
+                ),
+            }
+        cfg.__post_init__()
+        _run_model()
+        return "Capital structure increments applied."
+
+    _schedule_increment_helper(
+        "capital_structure",
+        years,
+        _apply_capital_increment,
+        help_text="Scale owner, investor, and debt funding amounts across the selected years.",
+    )
+
+    if st.button("Apply Capital Structure Updates", key="capital_structure_apply"):
+        try:
+            sanitized = edited_df.dropna(subset=["Year"])
+            sanitized = sanitized.sort_values("Year")
+            if sanitized.empty:
+                raise ValueError("Add at least one year before applying capital structure updates.")
+
+            overrides: Dict[int, Dict[str, float]] = {}
+            for _, row in sanitized.iterrows():
+                year_value = int(row["Year"])
+                owner_value = max(0.0, float(row.get("Owner Equity", 0.0)))
+                investor_value = max(0.0, float(row.get("Investor Equity", 0.0)))
+                debt_value = max(0.0, float(row.get("Debt Funding", 0.0)))
+                overrides[year_value] = {
+                    "owner_equity": owner_value,
+                    "investor_equity": investor_value,
+                    "debt_amount": debt_value,
+                }
+
+            cfg.capital_structure_schedule = overrides
+            cfg.projection_years = max(overrides.keys()) - cfg.start_year + 1
+            cfg.__post_init__()
+            _run_model()
+        except ValueError as exc:
+            status_placeholder.error(str(exc))
+        else:
+            status_placeholder.success("Capital structure updated.")
+
+
 def _render_debt_schedule_editor(cfg: CompanyConfig) -> None:
     years = _config_years(cfg)
     instruments = list(getattr(cfg, "debt_instruments", []) or [])
@@ -5650,6 +6029,20 @@ def _render_platform_settings() -> None:
             st.write("Run the financial model to populate working capital projections across the horizon.")
         _render_table(working_capital_df, hide_index=True)
         _render_working_capital_editor(cfg)
+
+        st.markdown("#### Ownership Structure Schedule")
+        ownership_df = _ownership_structure_table(cfg)
+        if ownership_df.empty:
+            st.write("Define ownership percentages to populate the schedule.")
+        _render_table(ownership_df, hide_index=True)
+        _render_ownership_schedule_editor(cfg)
+
+        st.markdown("#### Capital Structure Schedule")
+        capital_structure_df = _capital_structure_schedule(cfg)
+        if capital_structure_df.empty:
+            st.write("Add equity or debt contributions to populate the capital structure schedule.")
+        _render_table(capital_structure_df, hide_index=True)
+        _render_capital_structure_editor(cfg)
 
         st.markdown("#### Debt Amortization Schedule")
         debt_df = _debt_schedule(model)

@@ -15,6 +15,7 @@ from scipy import optimize
 
 from streamlit.delta_generator import DeltaGenerator
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from financial_model import (
     CompanyConfig,
@@ -3899,41 +3900,390 @@ def _render_dashboard(model: Dict[str, Any]) -> None:
         st.info("Run the model to view dashboard insights.")
         return
 
-    income_df, _, _ = generate_financial_statements(model)
+    income_df, cashflow_df, balance_df = generate_financial_statements(model)
+    first_year, final_year = years[0], years[-1]
 
-    st.markdown("### Key Highlights")
-    cols = st.columns(3)
-    revenue = model.get("revenue", {}).get(years[0], 0.0)
-    net_profit = model.get("net_profit", {}).get(years[-1], 0.0)
-    cash = model.get("cash_balance", {}).get(years[-1], 0.0)
-    cols[0].metric("Year 1 Revenue", f"${revenue:,.0f}")
-    cols[1].metric("Final Year Net Profit", f"${net_profit:,.0f}")
-    cols[2].metric("Closing Cash", f"${cash:,.0f}")
+    revenue_series = model.get("revenue", {})
+    net_profit_series = model.get("net_profit", {})
+    cogs_series = model.get("cogs", {})
+    cfo_series = model.get("cfo", {})
+    cfi_series = model.get("cfi", {})
+    cff_series = model.get("cff", {})
+    cash_series = model.get("cash_balance", {})
+    production_volume = model.get("production_volume", {})
 
-    st.markdown("### Revenue and Net Profit Trend")
-    revenue_values = [model.get("revenue", {}).get(year, 0.0) for year in years]
-    net_profit_values = [model.get("net_profit", {}).get(year, 0.0) for year in years]
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(x=years, y=revenue_values, mode="lines+markers", name="Revenue")
+    st.markdown("### Executive Highlights")
+    highlight_cols = st.columns(4)
+    highlight_cols[0].metric("Year 1 Revenue", f"${revenue_series.get(first_year, 0.0):,.0f}")
+    highlight_cols[1].metric(
+        "Final Year Net Profit", f"${net_profit_series.get(final_year, 0.0):,.0f}"
     )
-    fig.add_trace(
-        go.Scatter(x=years, y=net_profit_values, mode="lines+markers", name="Net Profit")
+    highlight_cols[2].metric(
+        "Final Year Operating Cash Flow",
+        f"${cfo_series.get(final_year, 0.0):,.0f}",
     )
-    fig.update_layout(
+    highlight_cols[3].metric(
+        "Closing Cash Balance", f"${cash_series.get(final_year, 0.0):,.0f}"
+    )
+
+    st.markdown("### Revenue, Margin, and Volume Trends")
+    revenue_values = [revenue_series.get(year, 0.0) for year in years]
+    net_profit_values = [net_profit_series.get(year, 0.0) for year in years]
+    cogs_values = [cogs_series.get(year, 0.0) for year in years]
+    gross_margin_pct = [
+        (revenue_series.get(year, 0.0) - cogs_series.get(year, 0.0))
+        / revenue_series.get(year, 1.0)
+        if revenue_series.get(year, 0.0)
+        else 0.0
+        for year in years
+    ]
+    units_values = [production_volume.get(year, 0.0) for year in years]
+
+    trend_fig = make_subplots(specs=[[{"secondary_y": True}]])
+    trend_fig.add_trace(
+        go.Bar(name="Revenue", x=years, y=revenue_values, marker_color="#2E86AB"),
+        secondary_y=False,
+    )
+    trend_fig.add_trace(
+        go.Bar(name="COGS", x=years, y=cogs_values, marker_color="#C0392B"),
+        secondary_y=False,
+    )
+    trend_fig.add_trace(
+        go.Scatter(
+            name="Net Profit",
+            x=years,
+            y=net_profit_values,
+            mode="lines+markers",
+            line=dict(color="#1ABC9C", width=3),
+        ),
+        secondary_y=True,
+    )
+    trend_fig.add_trace(
+        go.Scatter(
+            name="Gross Margin %",
+            x=years,
+            y=[value * 100 for value in gross_margin_pct],
+            mode="lines",
+            line=dict(color="#F39C12", dash="dot"),
+        ),
+        secondary_y=True,
+    )
+    trend_fig.update_layout(
+        barmode="group",
+        margin=dict(t=20, r=20, b=20, l=20),
+        height=420,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    trend_fig.update_xaxes(title_text="Year")
+    trend_fig.update_yaxes(title_text="USD", secondary_y=False)
+    trend_fig.update_yaxes(title_text="Net Profit / Margin", secondary_y=True)
+    st.plotly_chart(trend_fig, use_container_width=True)
+
+    units_fig = go.Figure(
+        go.Scatter(
+            x=years,
+            y=units_values,
+            mode="lines+markers",
+            line=dict(color="#34495E", width=3),
+            name="Units Produced",
+        )
+    )
+    units_fig.update_layout(
+        margin=dict(t=20, r=20, b=20, l=20),
+        height=260,
+        xaxis_title="Year",
+        yaxis_title="Units",
+    )
+    st.plotly_chart(units_fig, use_container_width=True)
+
+    st.divider()
+    st.markdown("### Cash Flow Overview")
+    cash_cols = st.columns(3)
+    cash_cols[0].metric(
+        "Operating Cash Flow", f"${cfo_series.get(final_year, 0.0):,.0f}", f"vs. ${cfo_series.get(first_year, 0.0):,.0f} in {first_year}"
+    )
+    cash_cols[1].metric(
+        "Investing Cash Flow", f"${cfi_series.get(final_year, 0.0):,.0f}",
+        f"vs. ${cfi_series.get(first_year, 0.0):,.0f} in {first_year}",
+    )
+    cash_cols[2].metric(
+        "Financing Cash Flow", f"${cff_series.get(final_year, 0.0):,.0f}",
+        f"vs. ${cff_series.get(first_year, 0.0):,.0f} in {first_year}",
+    )
+
+    final_index = years.index(final_year)
+    opening_cash = cash_series.get(years[final_index - 1], 0.0) if final_index > 0 else 0.0
+    closing_cash = cash_series.get(final_year, 0.0)
+    waterfall_fig = go.Figure(
+        go.Waterfall(
+            name="Cash Movement",
+            orientation="v",
+            measure=["absolute", "relative", "relative", "relative", "total"],
+            x=[
+                "Opening Cash",
+                "Operating Cash Flow",
+                "Investing Cash Flow",
+                "Financing Cash Flow",
+                "Closing Cash",
+            ],
+            y=[
+                opening_cash,
+                cfo_series.get(final_year, 0.0),
+                cfi_series.get(final_year, 0.0),
+                cff_series.get(final_year, 0.0),
+                closing_cash,
+            ],
+            connector={"line": {"color": "#7F8C8D"}},
+        )
+    )
+    waterfall_fig.update_layout(
+        showlegend=False,
         margin=dict(t=20, r=20, b=20, l=20),
         height=360,
-        xaxis_title="Year",
-        yaxis_title="USD",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(waterfall_fig, use_container_width=True)
 
+    st.divider()
+    st.markdown("### Working Capital Health")
+    ar_values = [model.get("accounts_receivable", {}).get(year, 0.0) for year in years]
+    inventory_values = [model.get("inventory", {}).get(year, 0.0) for year in years]
+    ap_values = [model.get("accounts_payable", {}).get(year, 0.0) for year in years]
+    accrued_values = [model.get("accrued_expenses", {}).get(year, 0.0) for year in years]
+    nwc_values = [model.get("net_working_capital", {}).get(year, 0.0) for year in years]
+    delta_nwc_values = [model.get("change_in_working_capital", {}).get(year, 0.0) for year in years]
+
+    wc_df = pd.DataFrame(
+        {
+            "Year": years,
+            "Accounts Receivable": _currency_series(ar_values),
+            "Inventory": _currency_series(inventory_values),
+            "Accounts Payable": _currency_series(ap_values),
+            "Accrued Expenses": _currency_series(accrued_values),
+            "Net Working Capital": _currency_series(nwc_values),
+            "Δ Working Capital": _currency_series(delta_nwc_values),
+        }
+    )
+    _render_table(wc_df, hide_index=True)
+
+    wc_fig = make_subplots(specs=[[{"secondary_y": True}]])
+    wc_fig.add_trace(
+        go.Bar(
+            name="Δ Working Capital",
+            x=years,
+            y=delta_nwc_values,
+            marker_color="#8E44AD",
+        ),
+        secondary_y=False,
+    )
+    wc_fig.add_trace(
+        go.Scatter(
+            name="Net Working Capital",
+            x=years,
+            y=nwc_values,
+            mode="lines+markers",
+            line=dict(color="#2980B9", width=3),
+        ),
+        secondary_y=True,
+    )
+    wc_fig.update_layout(
+        margin=dict(t=20, r=20, b=20, l=20),
+        height=360,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    wc_fig.update_xaxes(title_text="Year")
+    wc_fig.update_yaxes(title_text="Δ Working Capital", secondary_y=False)
+    wc_fig.update_yaxes(title_text="Net Working Capital", secondary_y=True)
+    st.plotly_chart(wc_fig, use_container_width=True)
+
+    st.divider()
+    st.markdown("### Product Mix and Pricing Insights")
+    product_revenue = model.get("product_revenue", {})
+    product_prices = model.get("product_prices", {})
+    product_names = sorted(
+        {product for year_map in product_revenue.values() for product in year_map.keys()}
+    )
+    mix_col, price_col = st.columns(2)
+
+    with mix_col:
+        if product_revenue and product_names:
+            mix_fig = go.Figure()
+            for product in product_names:
+                mix_fig.add_trace(
+                    go.Bar(
+                        name=_product_label(product),
+                        x=years,
+                        y=[product_revenue.get(year, {}).get(product, 0.0) for year in years],
+                    )
+                )
+            mix_fig.update_layout(
+                barmode="stack",
+                margin=dict(t=20, r=20, b=20, l=20),
+                height=360,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            mix_fig.update_xaxes(title_text="Year")
+            mix_fig.update_yaxes(title_text="Revenue (USD)")
+            st.plotly_chart(mix_fig, use_container_width=True)
+        else:
+            st.info("Run the financial model to populate product mix insights.")
+
+    with price_col:
+        if product_prices and product_names:
+            price_fig = go.Figure()
+            for product in product_names:
+                price_fig.add_trace(
+                    go.Scatter(
+                        name=_product_label(product),
+                        x=years,
+                        y=[product_prices.get(year, {}).get(product, 0.0) for year in years],
+                        mode="lines+markers",
+                    )
+                )
+            price_fig.update_layout(
+                margin=dict(t=20, r=20, b=20, l=20),
+                height=360,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            price_fig.update_xaxes(title_text="Year")
+            price_fig.update_yaxes(title_text="Average Selling Price (USD)")
+            st.plotly_chart(price_fig, use_container_width=True)
+        else:
+            st.info("Run the financial model to populate product pricing insights.")
+
+    st.divider()
+    st.markdown("### Labor and Productivity Snapshot")
+    labor_metrics = model.get("labor_metrics", {})
+    if labor_metrics:
+        labor_years = sorted(labor_metrics.keys())
+        latest_labor = labor_metrics.get(labor_years[-1], {})
+        labor_cards = st.columns(3)
+        labor_cards[0].metric(
+            "Total Headcount",
+            f"{latest_labor.get('total_headcount', 0):,.0f}",
+        )
+        labor_cards[1].metric(
+            "Labor Cost",
+            f"${latest_labor.get('total_labor_cost', 0.0):,.0f}",
+        )
+        per_head = 0.0
+        if latest_labor.get("total_headcount"):
+            per_head = latest_labor.get("total_labor_cost", 0.0) / max(
+                latest_labor.get("total_headcount", 1), 1
+            )
+        labor_cards[2].metric("Cost per Head", f"${per_head:,.0f}")
+
+        labor_df = pd.DataFrame(
+            {
+                "Year": labor_years,
+                "Direct HC": [labor_metrics[y]["direct_headcount"] for y in labor_years],
+                "Indirect HC": [labor_metrics[y]["indirect_headcount"] for y in labor_years],
+                "Total HC": [labor_metrics[y]["total_headcount"] for y in labor_years],
+                "Direct Labor Cost": _currency_series(
+                    [labor_metrics[y]["direct_labor_cost"] for y in labor_years]
+                ),
+                "Indirect Labor Cost": _currency_series(
+                    [labor_metrics[y]["indirect_labor_cost"] for y in labor_years]
+                ),
+                "Total Labor Cost": _currency_series(
+                    [labor_metrics[y]["total_labor_cost"] for y in labor_years]
+                ),
+            }
+        )
+        _render_table(labor_df, hide_index=True)
+    else:
+        st.info("Connect the labor schedule to surface workforce insights on the dashboard.")
+
+    st.divider()
+    st.markdown("### Capital Structure and Debt Service")
+    outstanding_debt = model.get("outstanding_debt", {})
+    loan_repayment = model.get("loan_repayment", {})
+    interest_payment = model.get("interest_payment", {})
+    debt_draws = model.get("debt_draws", {})
+
+    debt_fig = make_subplots(specs=[[{"secondary_y": True}]])
+    debt_fig.add_trace(
+        go.Bar(
+            name="Debt Draws",
+            x=years,
+            y=[debt_draws.get(year, 0.0) for year in years],
+            marker_color="#1F618D",
+        ),
+        secondary_y=False,
+    )
+    debt_fig.add_trace(
+        go.Bar(
+            name="Principal Paid",
+            x=years,
+            y=[loan_repayment.get(year, 0.0) for year in years],
+            marker_color="#CB4335",
+        ),
+        secondary_y=False,
+    )
+    debt_fig.add_trace(
+        go.Scatter(
+            name="Ending Balance",
+            x=years,
+            y=[outstanding_debt.get(year, 0.0) for year in years],
+            mode="lines+markers",
+            line=dict(color="#2C3E50", width=3),
+        ),
+        secondary_y=True,
+    )
+    debt_fig.add_trace(
+        go.Scatter(
+            name="Interest Expense",
+            x=years,
+            y=[interest_payment.get(year, 0.0) for year in years],
+            mode="lines",
+            line=dict(color="#7D3C98", dash="dash"),
+        ),
+        secondary_y=False,
+    )
+    debt_fig.update_layout(
+        barmode="group",
+        margin=dict(t=20, r=20, b=20, l=20),
+        height=420,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    debt_fig.update_xaxes(title_text="Year")
+    debt_fig.update_yaxes(title_text="Cash Flow (USD)", secondary_y=False)
+    debt_fig.update_yaxes(title_text="Outstanding Debt (USD)", secondary_y=True)
+    st.plotly_chart(debt_fig, use_container_width=True)
+
+    st.divider()
     st.markdown("### Income Statement Snapshot")
     snapshot = income_df.copy()
     snapshot["Revenue"] = _currency_series(snapshot["Revenue"])
+    snapshot["COGS"] = _currency_series(snapshot["COGS"])
+    snapshot["Opex"] = _currency_series(snapshot["Opex"])
     snapshot["Net Profit"] = _currency_series(snapshot["Net Profit"])
-    _render_table(snapshot[["Year", "Revenue", "Net Profit"]])
+    _render_table(snapshot[["Year", "Revenue", "COGS", "Opex", "Net Profit"]])
+
+    st.markdown("### Cash Flow Snapshot")
+    cash_snapshot = cashflow_df.copy()
+    cash_snapshot["CFO"] = _currency_series(cash_snapshot["CFO"])
+    cash_snapshot["CFI"] = _currency_series(cash_snapshot["CFI"])
+    cash_snapshot["CFF"] = _currency_series(cash_snapshot["CFF"])
+    cash_snapshot["Net Cash Flow"] = _currency_series(cash_snapshot["Net Cash Flow"])
+    cash_snapshot["Closing Cash"] = _currency_series(cash_snapshot["Closing Cash"])
+    _render_table(cash_snapshot)
+
+    st.markdown("### Balance Sheet Snapshot")
+    balance_snapshot = balance_df.copy()
+    for column in [
+        "Fixed Assets",
+        "Current Assets",
+        "Total Assets",
+        "Current Liabilities",
+        "Long Term Debt",
+        "Total Equity",
+        "Total Liabilities + Equity",
+    ]:
+        balance_snapshot[column] = _currency_series(balance_snapshot[column])
+    balance_snapshot["Balanced?"] = [
+        "Yes" if value else "Check" for value in balance_snapshot["Balanced?"]
+    ]
+    _render_table(balance_snapshot)
 
 
 def _render_labor_management() -> None:

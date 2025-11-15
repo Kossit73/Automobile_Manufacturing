@@ -73,8 +73,8 @@ class AdvancedSensitivityAnalyzer:
             base_value = getattr(self.config, param)
             range_pct = ranges.get(param, 0.25)
             
-            cfg_low = self.config.__class__(**self.config.__dict__)
-            cfg_high = self.config.__class__(**self.config.__dict__)
+            cfg_low = replace(self.config)
+            cfg_high = replace(self.config)
             
             setattr(cfg_low, param, base_value * (1 - range_pct))
             setattr(cfg_high, param, base_value * (1 + range_pct))
@@ -177,7 +177,7 @@ class StressTestEngine:
         
         results = {}
         for scenario_name, shocks in scenarios.items():
-            cfg = self.config.__class__(**self.config.__dict__)
+            cfg = replace(self.config)
             
             # Apply shocks
             for key, value in shocks.items():
@@ -441,7 +441,7 @@ class WhatIfAnalyzer:
         from financial_model import run_financial_model
         
         # Create modified config
-        cfg = self.config.__class__(**self.config.__dict__)
+        cfg = replace(self.config)
         for param, value in adjustments.items():
             if hasattr(cfg, param):
                 setattr(cfg, param, value)
@@ -473,7 +473,7 @@ class WhatIfAnalyzer:
         from financial_model import run_financial_model
         
         steps = [{'step': 'Baseline', 'value': base_ev, 'impact': 0}]
-        current_config = self.config.__class__(**self.config.__dict__)
+        current_config = replace(self.config)
         
         for adj_name, (param, new_value) in adjustments.items():
             if hasattr(current_config, param):
@@ -514,7 +514,7 @@ class GoalSeekOptimizer:
         from financial_model import run_financial_model
         
         def objective(param_value):
-            cfg = self.config.__class__(**self.config.__dict__)
+            cfg = replace(self.config)
             setattr(cfg, parameter, param_value)
             model = run_financial_model(cfg)
             
@@ -532,7 +532,7 @@ class GoalSeekOptimizer:
         
         if result.success:
             optimal_value = result.x
-            cfg = self.config.__class__(**self.config.__dict__)
+            cfg = replace(self.config)
             setattr(cfg, parameter, optimal_value)
             model = run_financial_model(cfg)
             

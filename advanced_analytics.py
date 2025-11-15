@@ -31,7 +31,7 @@ Features:
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Callable, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from scipy import stats, optimize
 from scipy.stats import norm, multivariate_normal
 import warnings
@@ -362,7 +362,7 @@ class MonteCarloSimulator:
         np.random.seed(42)
         
         for _ in range(self.num_simulations):
-            cfg = self.config.__class__(**self.config.__dict__)
+            cfg = replace(self.config)
             
             # Sample parameters from distributions
             for param, (dist_type, param1, param2) in parameter_distributions.items():

@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import re
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from scipy import optimize
 
 from streamlit.delta_generator import DeltaGenerator
@@ -542,6 +542,60 @@ def _product_label(name: str) -> str:
     """Return a human-friendly label for product keys."""
 
     return name.replace("_", " ")
+
+
+def _product_key_from_label(cfg: CompanyConfig, label: str) -> Optional[str]:
+    """Return the canonical product key for a human-friendly label."""
+
+    for key in cfg.product_portfolio.keys():
+        if _product_label(key) == label:
+            return key
+    return None
+
+
+def _carry_forward_value(mapping: Mapping[int, float], year: int, default: float) -> float:
+    """Return the value for ``year`` carrying forward the nearest available observation."""
+
+    if year in mapping:
+        return float(mapping[year])
+
+    earlier = [candidate for candidate in mapping.keys() if candidate <= year]
+    if earlier:
+        return float(mapping[max(earlier)])
+
+    later = [candidate for candidate in mapping.keys() if candidate > year]
+    if later:
+        return float(mapping[min(later)])
+
+    return float(default)
+
+
+def _default_cost_per_unit(cfg: CompanyConfig, product: str, year: int) -> float:
+    """Return the modeled cost per unit for ``product`` in ``year`` without overrides."""
+
+    drivers = cfg.product_portfolio.get(product, {})
+    base_cost = float(drivers.get("base_cost_per_unit", 0.0))
+    cost_inflation = float(drivers.get("cost_inflation", cfg.variable_cost_inflation))
+    scale_sensitivity = float(drivers.get("scale_sensitivity", 0.0))
+    years_since_start = max(0, year - cfg.start_year)
+    inflation_factor = (1 + cost_inflation) ** years_since_start
+    utilization = _carry_forward_value(cfg.capacity_utilization, year, 1.0)
+    scale_factor = 1.0 - scale_sensitivity * (utilization - 1.0)
+    scale_factor = max(0.5, min(1.5, scale_factor))
+    return base_cost * inflation_factor * scale_factor
+
+
+def _default_fixed_cost(cfg: CompanyConfig, year: int) -> Tuple[float, float, float, float, float]:
+    """Return inputs used to compute fixed manufacturing cost for ``year``."""
+
+    years_since_start = max(0, year - cfg.start_year)
+    base_cost = float(cfg.base_fixed_production_cost) * ((1 + cfg.fixed_cost_inflation) ** years_since_start)
+    utilization = _carry_forward_value(cfg.capacity_utilization, year, 1.0)
+    sensitivity = float(cfg.fixed_cost_utilization_sensitivity)
+    scale_factor = 1.0 - sensitivity * (utilization - 1.0)
+    scale_factor = max(0.5, min(1.5, scale_factor))
+    computed_cost = base_cost * scale_factor
+    return base_cost, cfg.fixed_cost_inflation, utilization, sensitivity, computed_cost
 
 
 def _parse_spend_curve_input(text: str) -> Optional[Dict[int, float]]:
@@ -1283,6 +1337,101 @@ def _variable_production_cost_schedule(
     return df
 
 
+def _variable_cost_breakdown_tables(
+    cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[Tuple[int, str], Dict[str, float]]]:
+    model = model or {}
+    years = _config_years(cfg)
+    products = list(cfg.product_portfolio.keys())
+    product_units: Dict[int, Dict[str, float]] = model.get("product_units", {})
+    variable_breakdown: Dict[int, Dict[str, float]] = model.get("variable_cogs_breakdown", {})
+    cost_overrides = getattr(cfg, "product_cost_overrides", {}) or {}
+
+    raw_rows: List[Dict[str, Any]] = []
+    display_rows: List[Dict[str, Any]] = []
+    lookup: Dict[Tuple[int, str], Dict[str, float]] = {}
+
+    for year in years:
+        utilization = _carry_forward_value(cfg.capacity_utilization, year, 1.0)
+        for product in products:
+            label = _product_label(product)
+            drivers = cfg.product_portfolio.get(product, {})
+            base_cost_start = float(drivers.get("base_cost_per_unit", 0.0))
+            cost_inflation = float(drivers.get("cost_inflation", cfg.variable_cost_inflation))
+            scale_sensitivity = float(drivers.get("scale_sensitivity", 0.0))
+            years_since_start = max(0, year - cfg.start_year)
+            inflation_factor = (1 + cost_inflation) ** years_since_start
+            scale_factor = 1.0 - scale_sensitivity * (utilization - 1.0)
+            scale_factor = max(0.5, min(1.5, scale_factor))
+            computed_cost_per_unit = base_cost_start * inflation_factor * scale_factor
+
+            override_cost = None
+            if cost_overrides:
+                override_cost = cost_overrides.get(year, {}).get(product)
+
+            units = float(product_units.get(year, {}).get(product, 0.0))
+            total_cost = variable_breakdown.get(year, {}).get(product)
+            if total_cost is None:
+                total_cost = computed_cost_per_unit * units
+
+            if units > 0:
+                applied_cost_per_unit = total_cost / units
+            elif override_cost is not None:
+                applied_cost_per_unit = float(override_cost)
+            else:
+                applied_cost_per_unit = computed_cost_per_unit
+
+            row_id = f"{year}:{product}"
+            raw_row = {
+                "RowID": row_id,
+                "Year": year,
+                "Product": label,
+                "Units": units,
+                "Base Cost per Unit": base_cost_start,
+                "Cost Inflation %": cost_inflation * 100,
+                "Utilization %": utilization * 100,
+                "Scale Sensitivity": scale_sensitivity,
+                "Scale Factor": scale_factor,
+                "Computed Cost per Unit": computed_cost_per_unit,
+                "Override Cost per Unit": override_cost if override_cost is not None else applied_cost_per_unit,
+                "Applied Cost per Unit": applied_cost_per_unit,
+                "Variable Cost": total_cost,
+            }
+            raw_rows.append(raw_row)
+
+            lookup[(year, product)] = {
+                "computed": computed_cost_per_unit,
+                "applied": applied_cost_per_unit,
+                "units": units,
+            }
+
+            display_rows.append(
+                {
+                    "Year": year,
+                    "Product": label,
+                    "Units": f"{units:,.0f}",
+                    "Base Cost per Unit": f"${base_cost_start:,.0f}",
+                    "Cost Inflation %": f"{cost_inflation * 100:.2f}%",
+                    "Utilization %": f"{utilization * 100:.1f}%",
+                    "Scale Sensitivity": f"{scale_sensitivity:.2f}",
+                    "Scale Factor": f"{scale_factor:.2f}",
+                    "Computed Cost per Unit": f"${computed_cost_per_unit:,.0f}",
+                    "Override Cost per Unit": "—" if override_cost is None else f"${float(override_cost):,.0f}",
+                    "Applied Cost per Unit": f"${applied_cost_per_unit:,.0f}",
+                    "Variable Cost": f"${total_cost:,.0f}",
+                }
+            )
+
+    raw_df = pd.DataFrame(raw_rows)
+    display_df = pd.DataFrame(display_rows)
+    if not raw_df.empty:
+        raw_df = raw_df.sort_values(["Year", "Product"]).reset_index(drop=True)
+    if not display_df.empty:
+        display_df = display_df.sort_values(["Year", "Product"]).reset_index(drop=True)
+
+    return raw_df, display_df, lookup
+
+
 def _fixed_manufacturing_cost_schedule(
     cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None
 ) -> pd.DataFrame:
@@ -1300,6 +1449,72 @@ def _fixed_manufacturing_cost_schedule(
 
     df["Fixed Manufacturing Cost"] = _currency_series(df["Fixed Manufacturing Cost"])
     return df
+
+
+def _fixed_cost_breakdown_tables(
+    cfg: CompanyConfig, model: Optional[Dict[str, Any]] = None
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[int, Dict[str, float]]]:
+    model = model or {}
+    years = _config_years(cfg)
+    fixed_cogs: Dict[int, float] = model.get("fixed_cogs", {})
+    overrides = getattr(cfg, "fixed_cost_overrides", {}) or {}
+
+    raw_rows: List[Dict[str, Any]] = []
+    display_rows: List[Dict[str, Any]] = []
+    lookup: Dict[int, Dict[str, float]] = {}
+
+    for year in years:
+        base_cost, inflation_rate, utilization, sensitivity, computed_cost = _default_fixed_cost(cfg, year)
+        override_value = overrides.get(year)
+        applied_cost = float(fixed_cogs.get(year, computed_cost))
+        if override_value is None:
+            override_display = "—"
+            override_numeric = applied_cost
+        else:
+            override_numeric = float(override_value)
+            override_display = f"${override_numeric:,.0f}"
+
+        raw_rows.append(
+            {
+                "Year": year,
+                "Base Fixed Cost": base_cost,
+                "Fixed Cost Inflation %": inflation_rate * 100,
+                "Utilization %": utilization * 100,
+                "Utilization Sensitivity": sensitivity,
+                "Scale Factor": computed_cost / base_cost if base_cost else 1.0,
+                "Computed Fixed Cost": computed_cost,
+                "Override Fixed Cost": override_numeric,
+                "Applied Fixed Cost": applied_cost,
+            }
+        )
+
+        display_rows.append(
+            {
+                "Year": year,
+                "Base Fixed Cost": f"${base_cost:,.0f}",
+                "Fixed Cost Inflation %": f"{inflation_rate * 100:.2f}%",
+                "Utilization %": f"{utilization * 100:.1f}%",
+                "Utilization Sensitivity": f"{sensitivity:.2f}",
+                "Scale Factor": f"{(computed_cost / base_cost if base_cost else 1.0):.2f}",
+                "Computed Fixed Cost": f"${computed_cost:,.0f}",
+                "Override Fixed Cost": override_display,
+                "Applied Fixed Cost": f"${applied_cost:,.0f}",
+            }
+        )
+
+        lookup[year] = {
+            "computed": computed_cost,
+            "applied": applied_cost,
+        }
+
+    raw_df = pd.DataFrame(raw_rows)
+    display_df = pd.DataFrame(display_rows)
+    if not raw_df.empty:
+        raw_df = raw_df.sort_values("Year").reset_index(drop=True)
+    if not display_df.empty:
+        display_df = display_df.sort_values("Year").reset_index(drop=True)
+
+    return raw_df, display_df, lookup
 
 
 def _other_operating_cost_schedule(
@@ -2508,6 +2723,143 @@ def _render_variable_cost_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> N
             status_placeholder.success("Variable production cost schedule updated.")
 
 
+def _render_variable_cost_breakdown_editor(
+    cfg: CompanyConfig,
+    model: Dict[str, Any],
+    *,
+    raw_df: Optional[pd.DataFrame] = None,
+    lookup: Optional[Dict[Tuple[int, str], Dict[str, float]]] = None,
+) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    if raw_df is None or lookup is None:
+        raw_df, _, lookup = _variable_cost_breakdown_tables(cfg, model)
+
+    if raw_df.empty:
+        st.info("Run the financial model to populate variable cost inputs before editing overrides.")
+        return
+
+    products = list(cfg.product_portfolio.keys())
+
+    action = _schedule_toolbar("variable_cost_breakdown", years)
+    if action:
+        target_year = int(action["year"])
+        if action["action"] == "remove":
+            if getattr(cfg, "product_cost_overrides", None):
+                cfg.product_cost_overrides.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Variable cost overrides removed for {target_year}.")
+            return
+        if action["action"] == "add":
+            new_year = _next_available_year(years, target_year + 1)
+            _ensure_year_in_horizon(cfg, new_year)
+            cfg.product_cost_overrides = cfg.product_cost_overrides or {}
+            defaults: Dict[str, float] = {}
+            for product in products:
+                defaults[product] = _default_cost_per_unit(cfg, product, new_year)
+            cfg.product_cost_overrides[new_year] = defaults
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Variable cost overrides initialized for {new_year}.")
+            return
+
+    field_definitions = [
+        {"column": "Year", "label": "Year", "type": "int", "editable": False},
+        {"column": "Product", "label": "Product", "type": "text", "editable": False},
+        {
+            "column": "Units",
+            "label": "Units",
+            "type": "float",
+            "precision": 0,
+            "editable": False,
+        },
+        {
+            "column": "Computed Cost per Unit",
+            "label": "Computed Cost / Unit",
+            "type": "currency",
+            "editable": False,
+        },
+        {
+            "column": "Override Cost per Unit",
+            "label": "Override Cost / Unit",
+            "type": "currency",
+            "min": 0.0,
+            "step": 100.0,
+            "data_key": "override",
+        },
+        {
+            "column": "Applied Cost per Unit",
+            "label": "Applied Cost / Unit",
+            "type": "currency",
+            "editable": False,
+        },
+        {
+            "column": "Variable Cost",
+            "label": "Variable Cost",
+            "type": "currency",
+            "editable": False,
+        },
+    ]
+
+    def _save_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        product_label = str(row["Product"])
+        product_key = _product_key_from_label(cfg, product_label)
+        if not product_key:
+            raise ValueError("Unknown product.")
+
+        override_value = float(values.get("override", row.get("Override Cost per Unit", 0.0)))
+        if override_value < 0:
+            raise ValueError("Override cost per unit cannot be negative.")
+
+        cfg.product_cost_overrides = cfg.product_cost_overrides or {}
+        year_map = dict(cfg.product_cost_overrides.get(year, {}))
+        year_map[product_key] = override_value
+        cfg.product_cost_overrides[year] = year_map
+        cfg.__post_init__()
+        _run_model()
+        return f"Override updated for {product_label} in {year}."
+
+    _render_inline_row_editor(
+        "variable_cost_breakdown_inline",
+        raw_df,
+        field_definitions,
+        on_save=_save_row,
+        row_id_column="RowID",
+        empty_message="Run the financial model to populate variable cost inputs.",
+    )
+
+    def _apply_increment(selected_years: Sequence[int], increment_pct: float) -> Optional[str]:
+        if not selected_years:
+            raise ValueError("Select at least one year to increment.")
+
+        cfg.product_cost_overrides = cfg.product_cost_overrides or {}
+        for year in selected_years:
+            year_map = dict(cfg.product_cost_overrides.get(year, {}))
+            for product in products:
+                key = (year, product)
+                baseline = lookup.get(key, {}).get("applied")
+                if baseline is None:
+                    baseline = _default_cost_per_unit(cfg, product, year)
+                year_map[product] = max(0.0, _apply_increment(float(baseline), increment_pct))
+            cfg.product_cost_overrides[year] = year_map
+
+        cfg.__post_init__()
+        _run_model()
+        return "Variable cost overrides increment applied."
+
+    _schedule_increment_helper(
+        "variable_cost_breakdown",
+        years,
+        _apply_increment,
+        help_text="Adjust per-unit variable cost overrides across selected years.",
+    )
+
 def _render_fixed_cost_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
     years = _config_years(cfg)
     if not years:
@@ -2630,6 +2982,120 @@ def _render_fixed_cost_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None
         else:
             status_placeholder.success("Fixed manufacturing cost schedule updated.")
 
+
+def _render_fixed_cost_breakdown_editor(
+    cfg: CompanyConfig,
+    model: Dict[str, Any],
+    *,
+    raw_df: Optional[pd.DataFrame] = None,
+    lookup: Optional[Dict[int, Dict[str, float]]] = None,
+) -> None:
+    years = _config_years(cfg)
+    if not years:
+        return
+
+    if raw_df is None or lookup is None:
+        raw_df, _, lookup = _fixed_cost_breakdown_tables(cfg, model)
+
+    if raw_df.empty:
+        st.info("Run the financial model to populate fixed cost inputs before editing overrides.")
+        return
+
+    action = _schedule_toolbar("fixed_cost_breakdown", years)
+    if action:
+        target_year = int(action["year"])
+        if action["action"] == "remove":
+            if getattr(cfg, "fixed_cost_overrides", None):
+                cfg.fixed_cost_overrides.pop(target_year, None)
+            if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
+                cfg.projection_years -= 1
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Fixed cost override removed for {target_year}.")
+            return
+        if action["action"] == "add":
+            new_year = _next_available_year(years, target_year + 1)
+            _ensure_year_in_horizon(cfg, new_year)
+            cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
+            defaults = _default_fixed_cost(cfg, new_year)[-1]
+            cfg.fixed_cost_overrides[new_year] = defaults
+            cfg.__post_init__()
+            _run_model()
+            st.success(f"Fixed cost override initialized for {new_year}.")
+            return
+
+    field_definitions = [
+        {"column": "Year", "label": "Year", "type": "int", "editable": False},
+        {
+            "column": "Base Fixed Cost",
+            "label": "Base Fixed Cost",
+            "type": "currency",
+            "editable": False,
+        },
+        {
+            "column": "Computed Fixed Cost",
+            "label": "Computed Fixed Cost",
+            "type": "currency",
+            "editable": False,
+        },
+        {
+            "column": "Override Fixed Cost",
+            "label": "Override Fixed Cost",
+            "type": "currency",
+            "min": 0.0,
+            "step": 1000.0,
+            "data_key": "override",
+        },
+        {
+            "column": "Applied Fixed Cost",
+            "label": "Applied Fixed Cost",
+            "type": "currency",
+            "editable": False,
+        },
+    ]
+
+    def _save_row(row: pd.Series, values: Dict[str, Any]) -> Optional[str]:
+        year = int(row["Year"])
+        override_value = float(values.get("override", row.get("Override Fixed Cost", 0.0)))
+        if override_value < 0:
+            raise ValueError("Override fixed cost cannot be negative.")
+
+        cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
+        cfg.fixed_cost_overrides[year] = override_value
+        cfg.__post_init__()
+        _run_model()
+        return f"Fixed cost override updated for {year}."
+
+    _render_inline_row_editor(
+        "fixed_cost_breakdown_inline",
+        raw_df,
+        field_definitions,
+        on_save=_save_row,
+        row_id_column="Year",
+        empty_message="Run the financial model to populate fixed cost inputs.",
+    )
+
+    def _apply_increment(selected_years: Sequence[int], increment_pct: float) -> Optional[str]:
+        if not selected_years:
+            raise ValueError("Select at least one year to increment.")
+
+        cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
+        for year in selected_years:
+            baseline = lookup.get(year, {}).get("applied")
+            if baseline is None:
+                baseline = _default_fixed_cost(cfg, year)[-1]
+            cfg.fixed_cost_overrides[year] = max(0.0, _apply_increment(float(baseline), increment_pct))
+
+        cfg.__post_init__()
+        _run_model()
+        return "Fixed cost overrides increment applied."
+
+    _schedule_increment_helper(
+        "fixed_cost_breakdown",
+        years,
+        _apply_increment,
+        help_text="Adjust fixed manufacturing cost overrides across selected years.",
+    )
 
 def _render_other_operating_cost_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> None:
     years = _config_years(cfg)
@@ -5143,12 +5609,26 @@ def _render_platform_settings() -> None:
         _render_table(variable_cost_df, hide_index=True)
         _render_variable_cost_editor(cfg, model)
 
+        st.markdown("#### Variable Cost Input Breakdown")
+        var_raw, var_display, var_lookup = _variable_cost_breakdown_tables(cfg, model)
+        if var_display.empty:
+            st.write("Run the financial model to populate variable cost inputs.")
+        _render_table(var_display, hide_index=True)
+        _render_variable_cost_breakdown_editor(cfg, model, raw_df=var_raw, lookup=var_lookup)
+
         st.markdown("#### Fixed Manufacturing Cost Schedule")
         fixed_cost_df = _fixed_manufacturing_cost_schedule(cfg, model)
         if fixed_cost_df.empty:
             st.write("Run the financial model to populate fixed manufacturing cost projections across the horizon.")
         _render_table(fixed_cost_df, hide_index=True)
         _render_fixed_cost_editor(cfg, model)
+
+        st.markdown("#### Fixed Cost Input Breakdown")
+        fixed_raw, fixed_display, fixed_lookup = _fixed_cost_breakdown_tables(cfg, model)
+        if fixed_display.empty:
+            st.write("Run the financial model to populate fixed cost inputs.")
+        _render_table(fixed_display, hide_index=True)
+        _render_fixed_cost_breakdown_editor(cfg, model, raw_df=fixed_raw, lookup=fixed_lookup)
 
         st.markdown("#### Other Operating Cost Schedule")
         other_cost_df = _other_operating_cost_schedule(cfg, model)

@@ -603,6 +603,7 @@ class CompanyConfig:
     accrued_expense_ratio: float = 0.04
     product_unit_overrides: Optional[Dict[int, Dict[str, float]]] = None
     product_price_overrides: Optional[Dict[int, Dict[str, float]]] = None
+    product_cost_overrides: Optional[Dict[int, Dict[str, float]]] = None
     variable_cost_overrides: Optional[Dict[int, float]] = None
     fixed_cost_overrides: Optional[Dict[int, float]] = None
     other_opex_overrides: Optional[Dict[int, float]] = None
@@ -622,6 +623,7 @@ class CompanyConfig:
         )
 
         self.product_price_overrides = _sanitize_nested_numeric_mapping(self.product_price_overrides)
+        self.product_cost_overrides = _sanitize_nested_numeric_mapping(self.product_cost_overrides)
 
         # Update the blended cogs ratio so downstream analytics remain meaningful.
         blended_ratio = sum(
@@ -914,6 +916,15 @@ def calculate_cogs(
             scale_factor = max(0.5, min(1.5, scale_factor))
 
             cost_per_unit = base_cost * inflation_factor * scale_factor
+
+            if getattr(cfg, "product_cost_overrides", None):
+                override_cost = cfg.product_cost_overrides.get(y, {}).get(product)
+                if override_cost is not None:
+                    try:
+                        cost_per_unit = max(0.0, float(override_cost))
+                    except (TypeError, ValueError):
+                        cost_per_unit = base_cost * inflation_factor * scale_factor
+
             variable_cost = cost_per_unit * units
             per_product[product] = variable_cost
             variable_total += variable_cost

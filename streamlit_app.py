@@ -4978,6 +4978,14 @@ def _render_reports(model: Dict[str, Any]) -> None:
         st.divider()
 
 
+def _render_financial_forecast(model: Dict[str, Any]) -> None:
+    st.markdown("## Financial Model Schedules")
+    _render_financial_model(model)
+
+    st.markdown("## Reports & Analytics")
+    _render_reports(model)
+
+
 def _render_platform_settings() -> None:
     cfg: CompanyConfig = st.session_state["company_config"]
 
@@ -5253,8 +5261,7 @@ def _render_navigation() -> Dict[str, DeltaGenerator]:
     pages = [
         "Dashboard",
         "Advanced Analytics",
-        "Financial Model",
-        "Reports",
+        "Financial Forecast",
         "Platform Settings",
         "AI & Machine Learning",
     ]
@@ -5283,11 +5290,8 @@ def main() -> None:
     with tabs["Advanced Analytics"]:
         _render_advanced_analytics(model)
 
-    with tabs["Financial Model"]:
-        _render_financial_model(model)
-
-    with tabs["Reports"]:
-        _render_reports(model)
+    with tabs["Financial Forecast"]:
+        _render_financial_forecast(model)
 
     with tabs["Platform Settings"]:
         _render_platform_settings()

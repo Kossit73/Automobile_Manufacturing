@@ -5247,11 +5247,11 @@ def _render_navigation() -> Dict[str, DeltaGenerator]:
     """Render the primary navigation as tabs and return the tab containers."""
 
     pages = [
-        "Dashboard",
-        "Advanced Analytics",
-        "Financial Forecast",
         "Platform Settings",
         "AI & Machine Learning",
+        "Dashboard",
+        "Financial Forecast",
+        "Advanced Analytics",
     ]
 
     tabs = st.tabs(pages)
@@ -5272,20 +5272,20 @@ def main() -> None:
 
     tabs = _render_navigation()
 
-    with tabs["Dashboard"]:
-        _render_dashboard(model)
-
-    with tabs["Advanced Analytics"]:
-        _render_advanced_analytics(model)
-
-    with tabs["Financial Forecast"]:
-        _render_financial_forecast(model)
-
     with tabs["Platform Settings"]:
         _render_platform_settings()
 
     with tabs["AI & Machine Learning"]:
         _render_ai_settings(st.session_state["ai_payload"])
+
+    with tabs["Dashboard"]:
+        _render_dashboard(model)
+
+    with tabs["Financial Forecast"]:
+        _render_financial_forecast(model)
+
+    with tabs["Advanced Analytics"]:
+        _render_advanced_analytics(model)
 
 
 if __name__ == "__main__":

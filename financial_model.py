@@ -664,7 +664,7 @@ def _normalize_debt_instruments(
 @dataclass
 class CompanyConfig:
     """Configuration class for company parameters"""
-    company_name: str = "Volt Rider"
+    company_name: str = "NumQuants"
     start_year: int = 2026
     projection_years: int = 5
     facility_size: int = 2000

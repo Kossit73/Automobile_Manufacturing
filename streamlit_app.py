@@ -2150,16 +2150,23 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
 
     variable_cogs: Dict[int, float] = model.get("variable_cogs", {}) if model else {}
     fixed_cogs: Dict[int, float] = model.get("fixed_cogs", {}) if model else {}
+    summary = _cost_component_summary(cfg, model)
 
     cost_defaults: Dict[int, Dict[str, float]] = {}
     for year in years:
         variable_default = float(variable_cogs.get(year, 0.0))
         fixed_default = float(fixed_cogs.get(year, 0.0))
         marketing_default = float(cfg.marketing_budget.get(year, 0.0))
+        other_default = 0.0
+        if summary and year in summary:
+            other_default = float(summary[year].get("other", 0.0))
+        if getattr(cfg, "other_opex_overrides", None):
+            other_default = float(cfg.other_opex_overrides.get(year, other_default))
         cost_defaults[year] = {
             "variable": variable_default,
             "fixed": fixed_default,
             "marketing": marketing_default,
+            "other": other_default,
         }
 
     st.markdown("##### Edit Cost Structure")
@@ -2173,6 +2180,8 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
                 cfg.fixed_cost_overrides.pop(target_year, None)
             if getattr(cfg, "marketing_budget", None):
                 cfg.marketing_budget.pop(target_year, None)
+            if getattr(cfg, "other_opex_overrides", None):
+                cfg.other_opex_overrides.pop(target_year, None)
             if target_year == _horizon_end(cfg) and cfg.projection_years > 1:
                 cfg.projection_years -= 1
             cfg.__post_init__()
@@ -2182,13 +2191,18 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
         if action["action"] == "add":
             new_year = _next_available_year(years, target_year + 1)
             _ensure_year_in_horizon(cfg, new_year)
-            defaults = cost_defaults.get(target_year, {"variable": 0.0, "fixed": 0.0, "marketing": 0.0})
+            defaults = cost_defaults.get(
+                target_year,
+                {"variable": 0.0, "fixed": 0.0, "marketing": 0.0, "other": 0.0},
+            )
             cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
             cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
             cfg.marketing_budget = cfg.marketing_budget or {}
+            cfg.other_opex_overrides = cfg.other_opex_overrides or {}
             cfg.variable_cost_overrides[new_year] = float(defaults.get("variable", 0.0))
             cfg.fixed_cost_overrides[new_year] = float(defaults.get("fixed", 0.0))
             cfg.marketing_budget[new_year] = float(defaults.get("marketing", 0.0))
+            cfg.other_opex_overrides[new_year] = float(defaults.get("other", 0.0))
             cfg.__post_init__()
             _run_model()
             st.success(f"Cost structure row added for {new_year}.")
@@ -2196,13 +2210,16 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
 
     rows: List[Dict[str, Any]] = []
     for year in years:
-        defaults = cost_defaults.get(year, {"variable": 0.0, "fixed": 0.0, "marketing": 0.0})
+        defaults = cost_defaults.get(
+            year, {"variable": 0.0, "fixed": 0.0, "marketing": 0.0, "other": 0.0}
+        )
         rows.append(
             {
                 "Year": year,
                 "Variable Production Cost": defaults.get("variable", 0.0),
                 "Fixed Manufacturing Cost": defaults.get("fixed", 0.0),
                 "Marketing Spend": defaults.get("marketing", 0.0),
+                "Other Operating Cost": defaults.get("other", 0.0),
             }
         )
 
@@ -2213,12 +2230,15 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
         variable_value = max(0.0, float(values.get("Variable Production Cost", row["Variable Production Cost"])))
         fixed_value = max(0.0, float(values.get("Fixed Manufacturing Cost", row["Fixed Manufacturing Cost"])))
         marketing_value = max(0.0, float(values.get("Marketing Spend", row["Marketing Spend"])))
+        other_value = max(0.0, float(values.get("Other Operating Cost", row.get("Other Operating Cost", 0.0))))
         cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
         cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
         cfg.marketing_budget = cfg.marketing_budget or {}
+        cfg.other_opex_overrides = cfg.other_opex_overrides or {}
         cfg.variable_cost_overrides[year] = variable_value
         cfg.fixed_cost_overrides[year] = fixed_value
         cfg.marketing_budget[year] = marketing_value
+        cfg.other_opex_overrides[year] = other_value
         cfg.__post_init__()
         return f"Cost structure updated for {year}."
 
@@ -2248,6 +2268,13 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
                 "min": 0.0,
                 "step": 1000.0,
             },
+            {
+                "column": "Other Operating Cost",
+                "label": "Other Operating Cost",
+                "type": "currency",
+                "min": 0.0,
+                "step": 1000.0,
+            },
         ],
         on_save=_save_cost_row,
         row_id_column="Year",
@@ -2257,8 +2284,13 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
     edited_df, status_placeholder, warnings, has_changes = _schedule_table_editor(
         "cost_structure",
         base_df,
-        guidance="Maintain consistency between variable, fixed, and marketing costs across years.",
-        non_negative_columns=["Variable Production Cost", "Fixed Manufacturing Cost", "Marketing Spend"],
+        guidance="Maintain consistency between variable, fixed, marketing, and other operating costs across years.",
+        non_negative_columns=[
+            "Variable Production Cost",
+            "Fixed Manufacturing Cost",
+            "Marketing Spend",
+            "Other Operating Cost",
+        ],
     )
 
     def _apply_cost_increment(selected_years: Sequence[int], increment_pct: float) -> Optional[str]:
@@ -2267,8 +2299,11 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
         cfg.variable_cost_overrides = cfg.variable_cost_overrides or {}
         cfg.fixed_cost_overrides = cfg.fixed_cost_overrides or {}
         cfg.marketing_budget = cfg.marketing_budget or {}
+        cfg.other_opex_overrides = cfg.other_opex_overrides or {}
         for year in selected_years:
-            defaults = cost_defaults.get(year, {"variable": 0.0, "fixed": 0.0, "marketing": 0.0})
+            defaults = cost_defaults.get(
+                year, {"variable": 0.0, "fixed": 0.0, "marketing": 0.0, "other": 0.0}
+            )
             cfg.variable_cost_overrides[year] = max(
                 0.0, _apply_increment(defaults.get("variable", 0.0), increment_pct)
             )
@@ -2278,6 +2313,9 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
             cfg.marketing_budget[year] = max(
                 0.0, _apply_increment(defaults.get("marketing", 0.0), increment_pct)
             )
+            cfg.other_opex_overrides[year] = max(
+                0.0, _apply_increment(defaults.get("other", 0.0), increment_pct)
+            )
         cfg.__post_init__()
         _run_model()
         return "Cost structure increments applied."
@@ -2286,7 +2324,7 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
         "cost_structure",
         years,
         _apply_cost_increment,
-        help_text="Apply a uniform percentage change to variable, fixed, and marketing costs.",
+        help_text="Apply a uniform percentage change to variable, fixed, marketing, and other operating costs.",
     )
 
     if st.button("Apply Cost Structure Updates", key="cost_structure_apply"):
@@ -2299,21 +2337,25 @@ def _render_cost_structure_editor(cfg: CompanyConfig, model: Dict[str, Any]) -> 
             variable_overrides: Dict[int, float] = {}
             fixed_overrides: Dict[int, float] = {}
             marketing_overrides: Dict[int, float] = {}
+            other_overrides: Dict[int, float] = {}
 
             for _, row in sanitized.iterrows():
                 year_value = int(row["Year"])
                 variable = float(row.get("Variable Production Cost", 0.0))
                 fixed = float(row.get("Fixed Manufacturing Cost", 0.0))
                 marketing = float(row.get("Marketing Spend", 0.0))
-                if variable < 0 or fixed < 0 or marketing < 0:
+                other = float(row.get("Other Operating Cost", 0.0))
+                if variable < 0 or fixed < 0 or marketing < 0 or other < 0:
                     raise ValueError("Cost values cannot be negative.")
                 variable_overrides[year_value] = variable
                 fixed_overrides[year_value] = fixed
                 marketing_overrides[year_value] = marketing
+                other_overrides[year_value] = other
 
             cfg.variable_cost_overrides = variable_overrides
             cfg.fixed_cost_overrides = fixed_overrides
             cfg.marketing_budget = marketing_overrides
+            cfg.other_opex_overrides = other_overrides
             cfg.projection_years = max(variable_overrides.keys()) - cfg.start_year + 1
             cfg.__post_init__()
             _run_model()

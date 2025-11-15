@@ -5,6 +5,9 @@ Clean, professional interface with horizontal navigation and comprehensive sched
 
 from __future__ import annotations
 
+import io
+import zipfile
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -3264,7 +3267,7 @@ def _render_debt_schedule_editor(cfg: CompanyConfig) -> None:
                 _run_model()
                 st.success(f"Instrument {idx + 1} updated.")
 
-def _forecast_schedule(model: Dict[str, Any]) -> pd.DataFrame:
+def _forecast_schedule(model: Dict[str, Any], formatted: bool = True) -> pd.DataFrame:
     years = _projection_years(model)
     rows = []
     for year in years:
@@ -3283,8 +3286,9 @@ def _forecast_schedule(model: Dict[str, Any]) -> pd.DataFrame:
         return pd.DataFrame(
             columns=["Year", "Revenue", "COGS", "Operating Expenses", "Net Profit", "Closing Cash"]
         )
-    for column in ["Revenue", "COGS", "Operating Expenses", "Net Profit", "Closing Cash"]:
-        df[column] = _currency_series(df[column])
+    if formatted:
+        for column in ["Revenue", "COGS", "Operating Expenses", "Net Profit", "Closing Cash"]:
+            df[column] = _currency_series(df[column])
     return df
 
 
@@ -3341,6 +3345,321 @@ def _display_schedule(title: str, df: pd.DataFrame, note: str = "") -> None:
     if df.empty and note:
         st.write(note)
     _render_table(df, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# REPORTING HELPERS
+# ---------------------------------------------------------------------------
+
+def _calculate_cagr(start: float, end: float, periods: int) -> float:
+    if periods <= 0 or start <= 0 or end <= 0:
+        return 0.0
+    try:
+        return (end / start) ** (1 / periods) - 1
+    except ZeroDivisionError:
+        return 0.0
+
+
+def _reports_kpi_summary(model: Dict[str, Any], years: Sequence[int]) -> List[Dict[str, str]]:
+    if not years:
+        return []
+
+    first_year, final_year = years[0], years[-1]
+    revenue = model.get("revenue", {})
+    ebitda = model.get("ebitda", {})
+    net_profit = model.get("net_profit", {})
+    cash = model.get("cash_balance", {})
+    outstanding_debt = model.get("outstanding_debt", {})
+    equity = model.get("total_equity", {})
+
+    revenue_start = float(revenue.get(first_year, 0.0))
+    revenue_end = float(revenue.get(final_year, 0.0))
+    net_profit_end = float(net_profit.get(final_year, 0.0))
+    cash_end = float(cash.get(final_year, 0.0))
+    ebitda_end = float(ebitda.get(final_year, 0.0))
+    debt_end = float(outstanding_debt.get(final_year, 0.0))
+    equity_end = float(equity.get(final_year, 0.0))
+
+    cagr = _calculate_cagr(revenue_start, revenue_end, len(years) - 1)
+    ebitda_margin = (ebitda_end / revenue_end) if revenue_end else 0.0
+    debt_to_equity = (debt_end / equity_end) if equity_end else 0.0
+
+    return [
+        {
+            "label": "Revenue CAGR",
+            "value": f"{cagr * 100:.1f}%",
+            "delta": f"${revenue_start:,.0f} → ${revenue_end:,.0f}",
+        },
+        {
+            "label": "EBITDA Margin (final year)",
+            "value": f"{ebitda_margin * 100:.1f}%",
+            "delta": f"EBITDA ${ebitda_end:,.0f}",
+        },
+        {
+            "label": "Net Profit (final year)",
+            "value": f"${net_profit_end:,.0f}",
+            "delta": f"Closing Cash ${cash_end:,.0f}",
+        },
+        {
+            "label": "Debt-to-Equity",
+            "value": f"{debt_to_equity:.2f}x",
+            "delta": f"Debt ${debt_end:,.0f}",
+        },
+    ]
+
+
+def _reports_quality_notes(model: Dict[str, Any], capex_manager: CapexScheduleManager, years: Sequence[int]) -> List[str]:
+    notes: List[str] = []
+    balance_check = model.get("balance_check", {})
+    for year in years:
+        variance = float(balance_check.get(year, 0.0))
+        if abs(variance) > 1.0:
+            notes.append(
+                f"Balance sheet is off by ${variance:,.0f} in {year}. Review working-capital or debt inputs."
+            )
+            break
+
+    if not capex_manager.list_items():
+        notes.append("No CAPEX projects configured; spend and depreciation schedules show placeholders.")
+
+    if not model.get("labor_metrics"):
+        notes.append("Labor metrics unavailable; connect the labor manager to populate workforce schedules.")
+
+    return notes
+
+
+def _report_controls(years: Sequence[int]) -> Tuple[List[int], bool, bool]:
+    st.markdown("### Report Controls")
+    filter_col, toggle_col = st.columns([3, 1])
+    with filter_col:
+        selected_years = st.multiselect(
+            "Select Years",
+            options=list(years),
+            default=list(years),
+            key="report_year_filter",
+        )
+    if not selected_years:
+        selected_years = list(years)
+    selected_years = sorted(selected_years)
+
+    with toggle_col:
+        show_yoy = st.checkbox("YoY Variance", value=True, key="report_show_yoy")
+        show_charts = st.checkbox("Show Charts", value=True, key="report_show_charts")
+
+    return selected_years, show_yoy, show_charts
+
+
+def _filter_schedule_years(df: pd.DataFrame, years: Sequence[int]) -> pd.DataFrame:
+    if df.empty or "Year" not in df.columns:
+        return df
+    return df[df["Year"].isin(years)]
+
+
+def _series_map_from_dataframe(df: pd.DataFrame, columns: Sequence[str]) -> Dict[str, Dict[int, float]]:
+    if df.empty or "Year" not in df.columns:
+        return {}
+
+    series_map: Dict[str, Dict[int, float]] = {}
+    for column in columns:
+        if column not in df.columns:
+            continue
+        values: Dict[int, float] = {}
+        for year, value in zip(df["Year"], df[column]):
+            try:
+                values[int(year)] = float(value)
+            except Exception:
+                try:
+                    cleaned = str(value).replace("$", "").replace(",", "")
+                    values[int(year)] = float(cleaned)
+                except Exception:
+                    values[int(year)] = 0.0
+        series_map[column] = values
+    return series_map
+
+
+def _build_yoy_dataframe(series_map: Dict[str, Dict[int, float]], years: Sequence[int]) -> pd.DataFrame:
+    if not series_map or len(years) < 2:
+        return pd.DataFrame()
+
+    sorted_years = sorted(years)
+    rows: List[Dict[str, Any]] = []
+    previous_year: Optional[int] = None
+    for year in sorted_years:
+        row: Dict[str, Any] = {"Year": year}
+        for label, series in series_map.items():
+            current_value = float(series.get(year, 0.0))
+            if previous_year is None:
+                row[f"{label} Δ"] = None
+                row[f"{label} Δ%"] = None
+            else:
+                previous_value = float(series.get(previous_year, 0.0))
+                delta = current_value - previous_value
+                percent = (delta / previous_value * 100.0) if previous_value else 0.0
+                row[f"{label} Δ"] = delta
+                row[f"{label} Δ%"] = percent
+        rows.append(row)
+        previous_year = year
+
+    return pd.DataFrame(rows)
+
+
+def _format_variance_value(column: str, value: Optional[float]) -> str:
+    if value is None:
+        return "–"
+    if column.endswith("Δ%"):
+        return f"{value:+.1f}%"
+
+    normalized = column.lower()
+    monetary_tokens = [
+        "revenue",
+        "cogs",
+        "profit",
+        "cash",
+        "debt",
+        "spend",
+        "expense",
+        "ebitda",
+        "interest",
+        "principal",
+        "draw",
+        "capital",
+    ]
+    if any(token in normalized for token in monetary_tokens):
+        return f"${value:+,.0f}"
+    if "headcount" in normalized or "units" in normalized:
+        return f"{value:+,.0f}"
+    return f"{value:+,.2f}"
+
+
+def _format_yoy_dataframe(yoy_df: pd.DataFrame) -> pd.DataFrame:
+    if yoy_df.empty:
+        return yoy_df
+
+    formatted = pd.DataFrame({"Year": yoy_df["Year"]})
+    for column in yoy_df.columns:
+        if column == "Year":
+            continue
+        formatted[column] = [
+            _format_variance_value(column, value) for value in yoy_df[column]
+        ]
+    return formatted
+
+
+def _schedule_commentary(series_map: Dict[str, Dict[int, float]], years: Sequence[int]) -> str:
+    if not series_map or not years:
+        return ""
+
+    sorted_years = sorted(years)
+    start_year, end_year = sorted_years[0], sorted_years[-1]
+    comments: List[str] = []
+    for label, data in series_map.items():
+        start_value = float(data.get(start_year, 0.0))
+        end_value = float(data.get(end_year, 0.0))
+        change = end_value - start_value
+        change_text: str
+        if start_value:
+            pct = change / start_value * 100.0
+            change_text = f"{change:+,.0f} ({pct:+.1f}%)"
+        else:
+            change_text = f"{change:+,.0f}"
+
+        label_lower = label.lower()
+        if any(token in label_lower for token in ["headcount", "units"]):
+            base_text = f"{start_value:,.0f} → {end_value:,.0f}"
+        else:
+            base_text = f"${start_value:,.0f} → ${end_value:,.0f}"
+
+        comments.append(f"{label}: {base_text} ({change_text})")
+
+    return " | ".join(comments)
+
+
+def _build_schedule_chart(title: str, series_map: Dict[str, Dict[int, float]], years: Sequence[int]) -> Optional[go.Figure]:
+    if not series_map or not years:
+        return None
+
+    sorted_years = sorted(years)
+    fig = go.Figure()
+    for label, data in series_map.items():
+        y_values = [float(data.get(year, 0.0)) for year in sorted_years]
+        fig.add_trace(
+            go.Scatter(
+                name=label,
+                x=sorted_years,
+                y=y_values,
+                mode="lines+markers",
+            )
+        )
+
+    fig.update_layout(
+        margin=dict(t=20, r=20, b=20, l=20),
+        height=320,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    fig.update_xaxes(title_text="Year")
+    fig.update_yaxes(title_text="Value")
+    return fig
+
+
+def _reports_export_controls(raw_tables: Dict[str, pd.DataFrame], years: Sequence[int]) -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for title, df in raw_tables.items():
+            if df is None or df.empty:
+                continue
+            export_df = df
+            if "Year" in df.columns:
+                export_df = df[df["Year"].isin(years)]
+            csv_buffer = io.StringIO()
+            export_df.to_csv(csv_buffer, index=False)
+            filename = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_") + ".csv"
+            archive.writestr(filename, csv_buffer.getvalue())
+
+    st.download_button(
+        "Download filtered schedules (ZIP)",
+        data=buffer.getvalue(),
+        file_name="report_schedules.zip",
+        mime="application/zip",
+        key="report_export_zip",
+    )
+
+
+def _labor_schedule_raw(model: Dict[str, Any], years: Sequence[int]) -> pd.DataFrame:
+    labor_metrics = model.get("labor_metrics", {})
+    rows: List[Dict[str, Any]] = []
+    for year in years:
+        metrics = labor_metrics.get(year, {})
+        rows.append(
+            {
+                "Year": year,
+                "Direct Labor Cost": float(metrics.get("direct_labor_cost", 0.0)),
+                "Indirect Labor Cost": float(metrics.get("indirect_labor_cost", 0.0)),
+                "Total Labor Cost": float(metrics.get("total_labor_cost", 0.0)),
+                "Total Headcount": float(metrics.get("total_headcount", 0.0)),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _capex_spend_raw(manager: CapexScheduleManager, cfg: CompanyConfig, years: Sequence[int]) -> pd.DataFrame:
+    schedule = manager.yearly_capex_schedule(cfg.start_year, len(years))
+    rows = [{"Year": year, "Capital Spend": float(schedule.get(year, 0.0))} for year in years]
+    return pd.DataFrame(rows)
+
+
+def _debt_schedule_raw(model: Dict[str, Any], years: Sequence[int]) -> pd.DataFrame:
+    rows = []
+    for year in years:
+        rows.append(
+            {
+                "Year": year,
+                "Debt Draw": float(model.get("debt_draws", {}).get(year, 0.0)),
+                "Interest Payment": float(model.get("interest_payment", {}).get(year, 0.0)),
+                "Principal Repayment": float(model.get("loan_repayment", {}).get(year, 0.0)),
+                "Outstanding Debt": float(model.get("outstanding_debt", {}).get(year, 0.0)),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -4563,35 +4882,100 @@ def _render_financial_model(model: Dict[str, Any]) -> None:
 
 def _render_reports(model: Dict[str, Any]) -> None:
     cfg: CompanyConfig = st.session_state["company_config"]
-    labor_df = generate_labor_statement(model)
     capex_manager: CapexScheduleManager = st.session_state["capex_manager"]
+    years = _projection_years(model)
 
-    forecast_df = _forecast_schedule(model)
-    _display_schedule(
-        "Financial Forecast Schedule",
-        forecast_df,
-        "Revenue, profitability, and liquidity outlook.",
-    )
+    if not years:
+        st.info("Run the financial model to populate the reports page.")
+        return
 
-    _display_schedule(
-        "Labor Cost Schedule",
-        labor_df,
-        "Labor schedule replicated for reporting completeness.",
-    )
+    st.markdown("### Executive KPI Summary")
+    kpis = _reports_kpi_summary(model, years)
+    if kpis:
+        kpi_columns = st.columns(len(kpis))
+        for column, kpi in zip(kpi_columns, kpis):
+            column.metric(kpi["label"], kpi["value"], kpi.get("delta", ""))
 
-    capex_spend_df = _capex_spend_schedule(capex_manager, cfg)
-    _display_schedule(
-        "CAPEX Spend Schedule",
-        capex_spend_df,
-        "Capital expenditures included in consolidated reports.",
-    )
+    st.markdown("### Data Quality & Notes")
+    quality_notes = _reports_quality_notes(model, capex_manager, years)
+    if quality_notes:
+        for note in quality_notes:
+            st.write(f"- {note}")
+    else:
+        st.write("All schedules are aligned with the current configuration.")
 
-    debt_df = _debt_schedule(model)
-    _display_schedule(
-        "Debt Amortization Schedule",
-        debt_df,
-        "Debt schedule replicated for reporting completeness.",
-    )
+    selected_years, show_yoy, show_charts = _report_controls(years)
+
+    forecast_display = _forecast_schedule(model, formatted=True)
+    forecast_raw = _forecast_schedule(model, formatted=False)
+    labor_display = generate_labor_statement(model)
+    labor_raw = _labor_schedule_raw(model, years)
+    capex_spend_display = _capex_spend_schedule(capex_manager, cfg)
+    capex_spend_raw = _capex_spend_raw(capex_manager, cfg, years)
+    debt_display = _debt_schedule(model)
+    debt_raw = _debt_schedule_raw(model, years)
+
+    st.markdown("### Export Schedules")
+    export_tables = {
+        "Financial Forecast Schedule": forecast_raw,
+        "Labor Cost Schedule": labor_raw,
+        "CAPEX Spend Schedule": capex_spend_raw,
+        "Debt Amortization Schedule": debt_raw,
+    }
+    _reports_export_controls(export_tables, selected_years)
+
+    schedules = [
+        {
+            "title": "Financial Forecast Schedule",
+            "display": forecast_display,
+            "note": "Revenue, profitability, and liquidity outlook.",
+            "raw": forecast_raw,
+            "columns": ["Revenue", "Operating Expenses", "Net Profit", "Closing Cash"],
+        },
+        {
+            "title": "Labor Cost Schedule",
+            "display": labor_display,
+            "note": "Labor schedule replicated for reporting completeness.",
+            "raw": labor_raw,
+            "columns": ["Total Labor Cost", "Total Headcount"],
+        },
+        {
+            "title": "CAPEX Spend Schedule",
+            "display": capex_spend_display,
+            "note": "Capital expenditures included in consolidated reports.",
+            "raw": capex_spend_raw,
+            "columns": ["Capital Spend"],
+        },
+        {
+            "title": "Debt Amortization Schedule",
+            "display": debt_display,
+            "note": "Debt schedule replicated for reporting completeness.",
+            "raw": debt_raw,
+            "columns": ["Debt Draw", "Principal Repayment", "Outstanding Debt", "Interest Payment"],
+        },
+    ]
+
+    for schedule in schedules:
+        filtered_display = _filter_schedule_years(schedule["display"], selected_years)
+        _display_schedule(schedule["title"], filtered_display, schedule["note"])
+
+        series_map = _series_map_from_dataframe(schedule["raw"], schedule["columns"])
+        commentary = _schedule_commentary(series_map, selected_years)
+        if commentary:
+            st.caption(commentary)
+
+        if show_yoy:
+            yoy_df = _build_yoy_dataframe(series_map, selected_years)
+            if not yoy_df.empty:
+                st.markdown("_Year-over-year variance_")
+                _render_table(_format_yoy_dataframe(yoy_df), hide_index=True)
+
+        if show_charts:
+            chart = _build_schedule_chart(schedule["title"], series_map, selected_years)
+            if chart is not None:
+                st.plotly_chart(chart, use_container_width=True)
+
+        st.divider()
 
 
 def _render_platform_settings() -> None:

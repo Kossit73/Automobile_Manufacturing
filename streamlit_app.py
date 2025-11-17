@@ -501,6 +501,78 @@ def _generate_ai_report(project: Dict[str, Any], outline: List[str], hint: str) 
     project["report_md"] = "\n".join(md_lines)
 
 
+def _render_feasibility_financials(model: Dict[str, Any]) -> None:
+    cfg: CompanyConfig = st.session_state["company_config"]
+    capex_manager: CapexScheduleManager = st.session_state["capex_manager"]
+    years = _projection_years(model)
+
+    if not years:
+        st.info("Run the financial model to populate supporting schedules for the feasibility study.")
+        return
+
+    st.markdown("#### Financial Statements")
+    income_df, cashflow_df, balance_df = generate_financial_statements(model)
+    _display_schedule(
+        "Income Statement Schedule",
+        income_df,
+        "Revenue, gross profit, and net profit projections for each modeled year.",
+    )
+    _display_schedule(
+        "Cash Flow Schedule",
+        cashflow_df,
+        "Operating, investing, and financing cash flow summary.",
+    )
+    _display_schedule(
+        "Balance Sheet Schedule",
+        balance_df,
+        "Assets, liabilities, and equity balances derived from the current configuration.",
+    )
+
+    st.markdown("#### Schedules & Supporting Tables")
+    forecast_display = _forecast_schedule(model, formatted=True)
+    forecast_raw = _forecast_schedule(model, formatted=False)
+    labor_display = generate_labor_statement(model)
+    capex_spend_display = _capex_spend_schedule(capex_manager, cfg)
+    debt_display = _debt_schedule(model)
+
+    _display_schedule(
+        "Financial Forecast Schedule",
+        forecast_display,
+        "Combined revenue, expense, and cash projections that feed the feasibility analysis.",
+    )
+    _display_schedule(
+        "Labor Cost Schedule",
+        labor_display,
+        "Direct and indirect labor costs aligned with the configured projection horizon.",
+    )
+    _display_schedule(
+        "CAPEX Spend Schedule",
+        capex_spend_display,
+        "Capital outlays by year based on the CAPEX manager spend curves.",
+    )
+    _display_schedule(
+        "Debt Amortization Schedule",
+        debt_display,
+        "Debt draws, interest, principal, and outstanding balances.",
+    )
+
+    st.markdown("#### Supporting Charts")
+    schedule_series = _series_map_from_dataframe(
+        forecast_raw, ["Revenue", "Operating Expenses", "Net Profit", "Closing Cash"]
+    )
+    forecast_chart = _build_schedule_chart("Financial Forecast Schedule", schedule_series, years)
+    if forecast_chart is not None:
+        st.plotly_chart(forecast_chart, use_container_width=True)
+
+    debt_raw = _debt_schedule_raw(model, years)
+    debt_series = _series_map_from_dataframe(
+        debt_raw, ["Outstanding Debt", "Debt Draw", "Principal Repayment", "Interest Payment"]
+    )
+    debt_chart = _build_schedule_chart("Debt Amortization Schedule", debt_series, years)
+    if debt_chart is not None:
+        st.plotly_chart(debt_chart, use_container_width=True)
+
+
 LABOR_TYPE_OPTIONS: Dict[str, LaborType] = {labor_type.value: labor_type for labor_type in LaborType}
 JOB_CATEGORY_OPTIONS: Dict[str, JobCategory] = {
     category.value: category for category in JobCategory
@@ -6857,6 +6929,9 @@ def _render_ai_settings(payload: Dict[str, Any], container: Optional[DeltaGenera
     if st.button("Generate Study", key=f"generate_{project['project_id']}"):
         _generate_ai_report(project, outline or AI_DEFAULT_SECTIONS, hint)
         st.success("Feasibility study prepared from the current project context.")
+
+    st.markdown("#### Financial Statements, Schedules, and Charts")
+    _render_feasibility_financials(st.session_state["financial_model"])
 
     if project.get("sections"):
         for sec in project["sections"]:

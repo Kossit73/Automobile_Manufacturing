@@ -2835,7 +2835,9 @@ def _render_variable_cost_breakdown_editor(
         empty_message="Run the financial model to populate variable cost inputs.",
     )
 
-    def _apply_increment(selected_years: Sequence[int], increment_pct: float) -> Optional[str]:
+    def _apply_variable_breakdown_increment(
+        selected_years: Sequence[int], increment_pct: float
+    ) -> Optional[str]:
         if not selected_years:
             raise ValueError("Select at least one year to increment.")
 
@@ -2847,7 +2849,9 @@ def _render_variable_cost_breakdown_editor(
                 baseline = lookup.get(key, {}).get("applied")
                 if baseline is None:
                     baseline = _default_cost_per_unit(cfg, product, year)
-                year_map[product] = max(0.0, _apply_increment(float(baseline), increment_pct))
+                year_map[product] = max(
+                    0.0, _apply_increment(float(baseline), increment_pct)
+                )
             cfg.product_cost_overrides[year] = year_map
 
         cfg.__post_init__()
@@ -2857,7 +2861,7 @@ def _render_variable_cost_breakdown_editor(
     _schedule_increment_helper(
         "variable_cost_breakdown",
         years,
-        _apply_increment,
+        _apply_variable_breakdown_increment,
         help_text="Adjust per-unit variable cost overrides across selected years.",
     )
 
@@ -3076,7 +3080,9 @@ def _render_fixed_cost_breakdown_editor(
         empty_message="Run the financial model to populate fixed cost inputs.",
     )
 
-    def _apply_increment(selected_years: Sequence[int], increment_pct: float) -> Optional[str]:
+    def _apply_fixed_breakdown_increment(
+        selected_years: Sequence[int], increment_pct: float
+    ) -> Optional[str]:
         if not selected_years:
             raise ValueError("Select at least one year to increment.")
 
@@ -3085,7 +3091,9 @@ def _render_fixed_cost_breakdown_editor(
             baseline = lookup.get(year, {}).get("applied")
             if baseline is None:
                 baseline = _default_fixed_cost(cfg, year)[-1]
-            cfg.fixed_cost_overrides[year] = max(0.0, _apply_increment(float(baseline), increment_pct))
+            cfg.fixed_cost_overrides[year] = max(
+                0.0, _apply_increment(float(baseline), increment_pct)
+            )
 
         cfg.__post_init__()
         _run_model()
@@ -3094,7 +3102,7 @@ def _render_fixed_cost_breakdown_editor(
     _schedule_increment_helper(
         "fixed_cost_breakdown",
         years,
-        _apply_increment,
+        _apply_fixed_breakdown_increment,
         help_text="Adjust fixed manufacturing cost overrides across selected years.",
     )
 

@@ -100,6 +100,83 @@ with st.sidebar:
 # PAGE 1: DASHBOARD
 # =====================================================
 
+def _render_reports_page(model):
+    """Render the reports view without duplicating supporting tables elsewhere."""
+    st.markdown("# 📈 Financial Reports & Exports")
+
+    st.info(
+        "Supporting statements, schedules, and charts are consolidated here so other workspaces ("
+        "including feasibility tools) stay focused on their core actions."
+    )
+
+    # Summary Report
+    st.markdown("## Executive Summary")
+
+    summary_text = f"""
+    **2026 Financials:**
+    - Revenue: ${model['revenue'][0]/1e6:.1f}M
+    - EBIT: ${model['ebit'][0]/1e6:.1f}M
+    - Net Profit: ${model['net_profit'][0]/1e6:.1f}M
+    - FCF: ${model['fcf'][0]/1e6:.1f}M
+
+    **Valuation:**
+    - Enterprise Value: ${model['enterprise_value']/1e6:.1f}M
+    - 5-Year FCF: ${sum(model['fcf'])/1e6:.1f}M
+
+    **Workforce:**
+    - Headcount: {st.session_state.labor_manager.get_total_headcount(2026)} employees
+    - Labor Cost: ${(st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)['Direct'] + st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)['Indirect'])/1e6:.2f}M
+    """
+
+    st.markdown(summary_text)
+
+    # Export buttons
+    st.markdown("## Download Reports")
+
+    # Financial summary
+    export_df = pd.DataFrame({
+        'Year': range(2026, 2031),
+        'Revenue': model['revenue'],
+        'COGS': model['cogs'],
+        'OPEX': model['opex'],
+        'EBIT': model['ebit'],
+        'Net Profit': model['net_profit'],
+        'FCF': model['fcf']
+    })
+
+    csv = export_df.to_csv(index=False)
+    st.download_button(
+        "📥 Download Financial Forecast (CSV)",
+        csv,
+        "financial_forecast.csv",
+        "text/csv"
+    )
+
+    # Labor summary
+    cost_schedule = LaborCostSchedule(st.session_state.labor_manager)
+    labor_df = cost_schedule.generate_5year_schedule(salary_growth=st.session_state.salary_growth_rate)
+
+    csv = labor_df.to_csv(index=False)
+    st.download_button(
+        "📥 Download Labor Schedule (CSV)",
+        csv,
+        "labor_schedule.csv",
+        "text/csv"
+    )
+
+    # CAPEX schedule
+    capex_df = st.session_state.capex_manager.get_capex_spend_schedule()
+    csv = capex_df.to_csv(index=False)
+    st.download_button(
+        "📥 Download CAPEX Schedule (CSV)",
+        csv,
+        "capex_schedule.csv",
+        "text/csv"
+    )
+
+    st.success("Reports generated successfully. Use the download buttons above.")
+
+
 if page == "🏠 Dashboard":
     st.markdown("# 📊 Executive Dashboard")
     
@@ -563,65 +640,8 @@ elif page == "💰 Financial Model":
 # =====================================================
 
 elif page == "📈 Reports":
-    st.markdown("# 📈 Financial Reports & Exports")
-    
     if st.session_state.financial_model:
-        model = st.session_state.financial_model
-        
-        # Summary Report
-        st.markdown("## Executive Summary")
-        
-        summary_text = f"""
-        **2026 Financials:**
-        - Revenue: ${model['revenue'][0]/1e6:.1f}M
-        - EBIT: ${model['ebit'][0]/1e6:.1f}M
-        - Net Profit: ${model['net_profit'][0]/1e6:.1f}M
-        - FCF: ${model['fcf'][0]/1e6:.1f}M
-        
-        **Valuation:**
-        - Enterprise Value: ${model['enterprise_value']/1e6:.1f}M
-        - 5-Year FCF: ${sum(model['fcf'])/1e6:.1f}M
-        
-        **Workforce:**
-        - Headcount: {st.session_state.labor_manager.get_total_headcount(2026)} employees
-        - Labor Cost: ${(st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)['Direct'] + st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)['Indirect'])/1e6:.2f}M
-        """
-        
-        st.markdown(summary_text)
-        
-        # Export buttons
-        st.markdown("## Download Reports")
-        
-        # Financial summary
-        export_df = pd.DataFrame({
-            'Year': range(2026, 2031),
-            'Revenue': model['revenue'],
-            'COGS': model['cogs'],
-            'OPEX': model['opex'],
-            'EBIT': model['ebit'],
-            'Net Profit': model['net_profit'],
-            'FCF': model['fcf']
-        })
-        
-        csv = export_df.to_csv(index=False)
-        st.download_button(
-            "📥 Download Financial Forecast (CSV)",
-            csv,
-            "financial_forecast.csv",
-            "text/csv"
-        )
-        
-        # Labor summary
-        cost_schedule = LaborCostSchedule(st.session_state.labor_manager)
-        labor_df = cost_schedule.generate_5year_schedule(salary_growth=st.session_state.salary_growth_rate)
-        
-        csv = labor_df.to_csv(index=False)
-        st.download_button(
-            "📥 Download Labor Schedule (CSV)",
-            csv,
-            "labor_schedule.csv",
-            "text/csv"
-        )
+        _render_reports_page(st.session_state.financial_model)
     else:
         st.info("Run the financial model first to generate reports")
 

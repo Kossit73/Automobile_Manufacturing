@@ -238,10 +238,18 @@ def calculate_balance_sheet(years: range, cfg: CompanyConfig, net_profit, cash_b
     else:
         total_capex = cfg.land_acquisition + cfg.factory_construction + cfg.machinery_automation
         fixed_assets = {}
-        for y in years:
-            years_since_start = y - cfg.start_year
-            accumulated_dep = depreciation * (years_since_start + 1)
-            fixed_assets[y] = max(0, total_capex - accumulated_dep)
+        if isinstance(depreciation, dict):
+            for y in years:
+                acc_dep = 0.0
+                for t in years:
+                    if t <= y:
+                        acc_dep += depreciation.get(t, 0.0)
+                fixed_assets[y] = max(0, total_capex - acc_dep)
+        else:
+            for y in years:
+                years_since_start = y - cfg.start_year
+                accumulated_dep = depreciation * (years_since_start + 1)
+                fixed_assets[y] = max(0, total_capex - accumulated_dep)
     
     current_assets = {y: cash_balance[y] + 200_000 for y in years}
     current_liabilities = {y: 150_000 for y in years}

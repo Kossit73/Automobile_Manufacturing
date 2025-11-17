@@ -41,20 +41,9 @@ class FinancialValidator:
             warnings_list.append("Headcount should be positive")
         
         # Check reasonable ranges
-        if config.cogs_ratio < 0 or config.cogs_ratio > 1.5:
-            warnings_list.append("Blended COGS ratio should be between 0 and 150% of revenue")
-
-        # Product portfolio sanity checks
-        mix_total = sum(driver["mix"] for driver in config.product_portfolio.values()) if config.product_portfolio else 0
-        if abs(mix_total - 1.0) > 1e-6:
-            warnings_list.append("Product mix weights do not sum to 1.0")
-
-        for name, driver in (config.product_portfolio or {}).items():
-            if driver["price"] <= 0:
-                warnings_list.append(f"Product '{name}' has a non-positive price")
-            if driver["base_cost_per_unit"] < 0:
-                warnings_list.append(f"Product '{name}' has a negative cost per unit")
-
+        if config.cogs_ratio < 0 or config.cogs_ratio > 1:
+            warnings_list.append("COGS ratio should be between 0 and 1")
+        
         if config.tax_rate < 0 or config.tax_rate > 1:
             warnings_list.append("Tax rate should be between 0 and 1")
         
@@ -64,22 +53,9 @@ class FinancialValidator:
         if config.annual_salary_growth < -0.5 or config.annual_salary_growth > 0.5:
             warnings_list.append("Annual salary growth should be between -50% and 50%")
         
-        instruments = getattr(config, "debt_instruments", []) or []
-        total_debt = sum(getattr(inst, "principal", 0.0) for inst in instruments)
-        if total_debt > 0 and config.loan_term <= 0:
-            warnings_list.append("Loan term should be positive for outstanding debt")
-
-        for inst in instruments:
-            if getattr(inst, "term", 0) <= 0:
-                warnings_list.append(f"Debt instrument '{inst.name}' has a non-positive term")
-            if getattr(inst, "interest_rate", 0.0) < 0:
-                warnings_list.append(f"Debt instrument '{inst.name}' has a negative interest rate")
-            draws_total = sum((inst.draw_schedule or {}).values()) if getattr(inst, "draw_schedule", None) else 0.0
-            if abs(draws_total - getattr(inst, "principal", 0.0)) > 1e-3:
-                warnings_list.append(
-                    f"Debt instrument '{inst.name}' draw schedule does not align with principal amount"
-                )
-
+        if config.loan_term <= 0:
+            warnings_list.append("Loan term should be positive")
+        
         if config.useful_life <= 0:
             warnings_list.append("Useful life should be positive")
         
@@ -410,7 +386,7 @@ class ReportUtilities:
     @staticmethod
     def highlight_value(value: float, threshold: float, good_if_above: bool = True) -> str:
         """Highlight value if it meets condition"""
-        symbol = "PASS" if (value >= threshold) == good_if_above else "FAIL"
+        symbol = "✓" if (value >= threshold) == good_if_above else "✗"
         return f"{symbol} {value:.2f}"
 
 
@@ -457,7 +433,7 @@ if __name__ == "__main__":
     print(f"Std Dev of {data1}: {FinancialStatistics.calculate_std_dev(data1):.2f}")
     print(f"Correlation between series: {FinancialStatistics.calculate_correlation(data1, data2):.2f}")
     slope, intercept, r_sq = FinancialStatistics.linear_regression([1, 2, 3, 4, 5], [2, 4, 5, 4, 5])
-    print(f"Linear Regression - Slope: {slope:.2f}, R^2: {r_sq:.4f}")
+    print(f"Linear Regression - Slope: {slope:.2f}, R²: {r_sq:.4f}")
     
     # Test Report Utilities
     print("\n6. REPORT UTILITIES:")

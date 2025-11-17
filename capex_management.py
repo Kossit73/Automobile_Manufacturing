@@ -21,7 +21,6 @@ class CapexItem:
     salvage_value: float = 0.0
     category: str = "General"
     notes: str = ""
-    spend_curve: Optional[Dict[int, float]] = None
     created_date: str = field(default_factory=lambda: datetime.now().isoformat())
     last_modified: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -54,7 +53,6 @@ class CapexItem:
             'salvage_value': self.salvage_value,
             'category': self.category,
             'notes': self.notes,
-            'spend_curve': self.spend_curve,
             'created_date': self.created_date,
             'last_modified': self.last_modified
         }
@@ -64,28 +62,15 @@ class CapexScheduleManager:
         self.items: Dict[str, CapexItem] = {}
         self._counter = 0
 
-    @staticmethod
-    def _validate_spend_curve(spend_curve: Dict[int, float]) -> None:
-        if any(not isinstance(offset, int) or offset < 0 for offset in spend_curve):
-            raise ValueError("Spend curve offsets must be non-negative integers")
-        if any(value < 0 for value in spend_curve.values()):
-            raise ValueError("Spend curve allocations must be non-negative")
-        total_allocation = sum(spend_curve.values())
-        if abs(total_allocation - 1.0) > 1e-6:
-            raise ValueError("Spend curve allocations must sum to 1.0")
-
     def add_item(self, name: str, amount: float, start_year: int, useful_life: int = 10,
-                 salvage_value: float = 0.0, category: str = "General", notes: str = "",
-                 spend_curve: Optional[Dict[int, float]] = None) -> str:
-        if spend_curve is not None:
-            self._validate_spend_curve(spend_curve)
+                 salvage_value: float = 0.0, category: str = "General", notes: str = "") -> str:
         self._counter += 1
         item_id = f"CAP_{self._counter:03d}"
         item = CapexItem(item_id=item_id, name=name, amount=amount, start_year=start_year,
                          useful_life=useful_life, salvage_value=salvage_value,
-                         category=category, notes=notes, spend_curve=spend_curve)
+                         category=category, notes=notes)
         self.items[item_id] = item
-        print(f"CAPEX item added: {item_id} - {name} (${amount:,.0f})")
+        print(f"✓ CAPEX item added: {item_id} - {name} (${amount:,.0f})")
         return item_id
 
     def get_item(self, item_id: str) -> Optional[CapexItem]:
@@ -98,15 +83,13 @@ class CapexScheduleManager:
         if item_id not in self.items:
             raise ValueError(f"CAPEX item {item_id} not found")
         item = self.items[item_id]
-        if 'spend_curve' in kwargs and kwargs['spend_curve'] is not None:
-            self._validate_spend_curve(kwargs['spend_curve'])
         for key, value in kwargs.items():
             if hasattr(item, key):
                 setattr(item, key, value)
             else:
                 raise ValueError(f"Invalid field for CapexItem: {key}")
         item.last_modified = datetime.now().isoformat()
-        print(f"CAPEX item updated: {item_id}")
+        print(f"✓ CAPEX item updated: {item_id}")
         return True
 
     def remove_item(self, item_id: str) -> bool:
@@ -114,21 +97,16 @@ class CapexScheduleManager:
             raise ValueError(f"CAPEX item {item_id} not found")
         name = self.items[item_id].name
         del self.items[item_id]
-        print(f"CAPEX item removed: {item_id} - {name}")
+        print(f"✓ CAPEX item removed: {item_id} - {name}")
         return True
 
     def yearly_capex_schedule(self, start_year: int, years: int) -> Dict[int, float]:
-        """Return dictionary mapping year -> total CAPEX spend in that year, honoring spend curves."""
+        """Return dictionary mapping year -> total CAPEX spend in that year"""
         ylist = [start_year + i for i in range(years)]
         schedule = {y: 0.0 for y in ylist}
         for item in self.items.values():
-            if item.spend_curve:
-                for offset, share in item.spend_curve.items():
-                    target_year = item.start_year + offset
-                    allocation = item.amount * share
-                    schedule[target_year] = schedule.get(target_year, 0.0) + allocation
-            else:
-                schedule[item.start_year] = schedule.get(item.start_year, 0.0) + item.amount
+            if item.start_year in schedule:
+                schedule[item.start_year] += item.amount
         return schedule
 
     def depreciation_schedule(self, start_year: int, years: int) -> Dict[int, float]:
@@ -145,46 +123,10 @@ class CapexScheduleManager:
         return sum(item.amount for item in self.items.values())
 
 # Helper initializer
-def initialize_default_capex(manager: Optional[CapexScheduleManager] = None) -> CapexScheduleManager:
-    """Populate a CAPEX manager with default assets, creating one if needed."""
-
-    manager = manager or CapexScheduleManager()
-
-    # Avoid duplicating defaults when an existing manager already has entries.
-    if manager.items:
-        return manager
-
+def initialize_default_capex(manager: CapexScheduleManager) -> CapexScheduleManager:
     # Add some default capex items
-    manager.add_item(
-        name="Land Acquisition",
-        amount=1_000_000,
-        start_year=2026,
-        useful_life=30,
-        salvage_value=0,
-        category="Land",
-    )
-    manager.add_item(
-        name="Factory Construction",
-        amount=2_500_000,
-        start_year=2026,
-        useful_life=30,
-        salvage_value=0,
-        category="Buildings",
-    )
-    manager.add_item(
-        name="Machinery & Automation",
-        amount=500_000,
-        start_year=2026,
-        useful_life=10,
-        salvage_value=50_000,
-        category="Machinery",
-    )
-    manager.add_item(
-        name="Tooling & Fixtures",
-        amount=150_000,
-        start_year=2027,
-        useful_life=7,
-        salvage_value=5_000,
-        category="Equipment",
-    )
+    manager.add_item(name="Land Acquisition", amount=1_000_000, start_year=2026, useful_life=30, salvage_value=0, category="Land")
+    manager.add_item(name="Factory Construction", amount=2_500_000, start_year=2026, useful_life=30, salvage_value=0, category="Buildings")
+    manager.add_item(name="Machinery & Automation", amount=500_000, start_year=2026, useful_life=10, salvage_value=50_000, category="Machinery")
+    manager.add_item(name="Tooling & Fixtures", amount=150_000, start_year=2027, useful_life=7, salvage_value=5_000, category="Equipment")
     return manager

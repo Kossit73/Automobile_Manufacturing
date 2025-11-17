@@ -6,6 +6,7 @@ Author: Advanced Analytics Team
 """
 
 import pandas as pd
+import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from enum import Enum
@@ -152,7 +153,7 @@ class LaborScheduleManager:
         )
         
         self.positions[position_id] = position
-        print(f"Position added: {position_id} - {position_name}")
+        print(f"✓ Position added: {position_id} - {position_name}")
         return position_id
     
     # ===== READ =====
@@ -223,7 +224,7 @@ class LaborScheduleManager:
                 raise ValueError(f"Position does not have field: {key}")
         
         position.last_modified = datetime.now().isoformat()
-        print(f"Position updated: {position_id}")
+        print(f"✓ Position updated: {position_id}")
         return True
     
     # ===== DELETE =====
@@ -234,7 +235,7 @@ class LaborScheduleManager:
         
         position_name = self.positions[position_id].position_name
         del self.positions[position_id]
-        print(f"Position removed: {position_id} - {position_name}")
+        print(f"✓ Position removed: {position_id} - {position_name}")
         return True
     
     def mark_inactive(self, position_id: str, end_year: int) -> bool:
@@ -270,7 +271,7 @@ class LaborScheduleManager:
                 if pos.status == EmploymentStatus.ACTIVE or pos.status == EmploymentStatus.SEASONAL:
                     years_since_start = year - pos.start_year
                     growth_factor = (1 + salary_growth) ** years_since_start
-                    annual_cost = pos.calculate_annual_cost(growth_factor - 1)
+                    annual_cost = pos.calculate_annual_cost(salary_growth * years_since_start)
                     
                     if pos.labor_type == LaborType.DIRECT:
                         costs['Direct'] += annual_cost
@@ -287,9 +288,7 @@ class LaborScheduleManager:
             if pos.start_year <= year and (pos.end_year is None or pos.end_year >= year):
                 if pos.status == EmploymentStatus.ACTIVE or pos.status == EmploymentStatus.SEASONAL:
                     category = pos.job_category.value
-                    years_since_start = year - pos.start_year
-                    growth_factor = (1 + salary_growth) ** years_since_start
-                    annual_cost = pos.calculate_annual_cost(growth_factor - 1)
+                    annual_cost = pos.calculate_annual_cost(salary_growth * (year - pos.start_year))
                     costs[category] = costs.get(category, 0) + annual_cost
         
         return costs
@@ -479,7 +478,7 @@ class LaborVarianceAnalysis:
                 'Actual': actual_val,
                 'Variance': variance,
                 'Variance %': f"{variance_pct:.1f}%",
-                'Status': 'Unfavorable' if variance > 0 else 'Favorable'
+                'Status': '🔴 Unfavorable' if variance > 0 else '🟢 Favorable'
             })
         
         return pd.DataFrame(data)
@@ -697,5 +696,5 @@ if __name__ == "__main__":
     labor_manager.mark_inactive(new_pos_id, 2026)
     
     print("\n" + "="*80)
-    print("LABOR MANAGEMENT SYSTEM READY FOR INTEGRATION")
+    print("✅ LABOR MANAGEMENT SYSTEM READY FOR INTEGRATION")
     print("="*80)

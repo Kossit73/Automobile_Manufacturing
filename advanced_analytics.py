@@ -30,8 +30,8 @@ Features:
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Callable, Any, Optional
-from dataclasses import dataclass, replace
+from typing import Dict, List, Tuple, Callable, Any
+from dataclasses import dataclass
 from scipy import stats, optimize
 from scipy.stats import norm, multivariate_normal
 import warnings
@@ -73,8 +73,8 @@ class AdvancedSensitivityAnalyzer:
             base_value = getattr(self.config, param)
             range_pct = ranges.get(param, 0.25)
             
-            cfg_low = replace(self.config)
-            cfg_high = replace(self.config)
+            cfg_low = self.config.__class__(**self.config.__dict__)
+            cfg_high = self.config.__class__(**self.config.__dict__)
             
             setattr(cfg_low, param, base_value * (1 - range_pct))
             setattr(cfg_high, param, base_value * (1 + range_pct))
@@ -177,7 +177,7 @@ class StressTestEngine:
         
         results = {}
         for scenario_name, shocks in scenarios.items():
-            cfg = replace(self.config)
+            cfg = self.config.__class__(**self.config.__dict__)
             
             # Apply shocks
             for key, value in shocks.items():
@@ -197,38 +197,25 @@ class StressTestEngine:
                         setattr(cfg, key, value)
             
             model = run_financial_model(cfg)
-            years = model.get('years') or []
-            last_year = years[-1] if years else None
-            penultimate_year = years[-2] if len(years) > 1 else last_year
-
             results[scenario_name] = {
                 'enterprise_value': model['enterprise_value'],
-                'revenue_2030': model['revenue'].get(last_year, 0.0) if last_year else 0.0,
-                'net_profit_2030': model['net_profit'].get(last_year, 0.0) if last_year else 0.0,
-                'final_cash': model['cash_balance'].get(last_year, 0.0) if last_year else 0.0,
-                'recovery_probability': self._recovery_score(model, last_year, penultimate_year)
+                'revenue_2030': model['revenue'][2030],
+                'net_profit_2030': model['net_profit'][2030],
+                'final_cash': model['cash_balance'][2030],
+                'recovery_probability': self._recovery_score(model)
             }
         
         return results
     
-    def _recovery_score(self, model_data: dict, final_year: Optional[int], compare_year: Optional[int]) -> float:
-        """Calculate probability of recovery (0-100) using available years."""
-        if final_year is None:
+    def _recovery_score(self, model_data: dict) -> float:
+        """Calculate probability of recovery (0-100)"""
+        if model_data['cash_balance'][2030] < 0:
             return 0
-
-        cash_balance = model_data.get('cash_balance', {})
-        net_profit = model_data.get('net_profit', {})
-
-        final_cash = cash_balance.get(final_year, 0.0)
-        compare_cash = cash_balance.get(compare_year, 0.0) if compare_year is not None else final_cash
-
-        if final_cash < 0:
-            return 0
-        if model_data.get('enterprise_value', 0.0) < 0:
+        if model_data['enterprise_value'] < 0:
             return 20
-        if net_profit.get(final_year, 0.0) < 0:
+        if model_data['net_profit'][2030] < 0:
             return 40
-        if final_cash > compare_cash:
+        if model_data['cash_balance'][2030] > model_data['cash_balance'][2026]:
             return 100
         return 60
 
@@ -375,7 +362,7 @@ class MonteCarloSimulator:
         np.random.seed(42)
         
         for _ in range(self.num_simulations):
-            cfg = replace(self.config)
+            cfg = self.config.__class__(**self.config.__dict__)
             
             # Sample parameters from distributions
             for param, (dist_type, param1, param2) in parameter_distributions.items():
@@ -454,7 +441,7 @@ class WhatIfAnalyzer:
         from financial_model import run_financial_model
         
         # Create modified config
-        cfg = replace(self.config)
+        cfg = self.config.__class__(**self.config.__dict__)
         for param, value in adjustments.items():
             if hasattr(cfg, param):
                 setattr(cfg, param, value)
@@ -466,18 +453,15 @@ class WhatIfAnalyzer:
             baseline_model = run_financial_model(self.config)
             self.baseline_results = baseline_model
         
-        years = model.get('years') or []
-        last_year = years[-1] if years else None
-
         return {
             'scenario_name': scenario_name,
             'adjustments': adjustments,
             'enterprise_value': model['enterprise_value'],
             'ev_change': model['enterprise_value'] - self.baseline_results['enterprise_value'],
-            'ev_change_pct': ((model['enterprise_value'] - self.baseline_results['enterprise_value']) /
+            'ev_change_pct': ((model['enterprise_value'] - self.baseline_results['enterprise_value']) / 
                              self.baseline_results['enterprise_value'] * 100),
-            'revenue_2030': model['revenue'].get(last_year, 0.0) if last_year else 0.0,
-            'profit_2030': model['net_profit'].get(last_year, 0.0) if last_year else 0.0
+            'revenue_2030': model['revenue'][2030],
+            'profit_2030': model['net_profit'][2030]
         }
     
     def sensitivity_waterfall(self, base_ev: float, adjustments: Dict[str, Tuple[str, float]]) -> pd.DataFrame:
@@ -489,7 +473,7 @@ class WhatIfAnalyzer:
         from financial_model import run_financial_model
         
         steps = [{'step': 'Baseline', 'value': base_ev, 'impact': 0}]
-        current_config = replace(self.config)
+        current_config = self.config.__class__(**self.config.__dict__)
         
         for adj_name, (param, new_value) in adjustments.items():
             if hasattr(current_config, param):
@@ -530,7 +514,7 @@ class GoalSeekOptimizer:
         from financial_model import run_financial_model
         
         def objective(param_value):
-            cfg = replace(self.config)
+            cfg = self.config.__class__(**self.config.__dict__)
             setattr(cfg, parameter, param_value)
             model = run_financial_model(cfg)
             
@@ -548,7 +532,7 @@ class GoalSeekOptimizer:
         
         if result.success:
             optimal_value = result.x
-            cfg = replace(self.config)
+            cfg = self.config.__class__(**self.config.__dict__)
             setattr(cfg, parameter, optimal_value)
             model = run_financial_model(cfg)
             
@@ -645,7 +629,7 @@ class RegressionModeler:
         # Add intercept column
         X = np.column_stack([np.ones(len(X_data)), X_data])
         
-        # Normal equations: beta = (X'X)^-1 X'y
+        # Normal equations: β = (X'X)^-1 X'y
         try:
             coefficients = np.linalg.inv(X.T @ X) @ X.T @ y_data
         except np.linalg.LinAlgError:
@@ -869,7 +853,7 @@ class RealOptionsAnalyzer:
                               upside_scenario_npv: float, probability: float = 0.5) -> Dict:
         """
         Value of option to expand
-        Option Value = Probability * max(Expansion NPV - Cost, 0)
+        Option Value = Probability × max(Expansion NPV - Cost, 0)
         """
         expansion_npv = upside_scenario_npv - expansion_cost
         option_value = probability * max(expansion_npv, 0)
@@ -1159,5 +1143,5 @@ if __name__ == "__main__":
         print(f"  Year {year}: ${data['annual_cost']:,.0f} (Cumulative: ${data['cumulative_cost']:,.0f})")
     
     print("\n" + "="*80)
-    print("Advanced Analytics Complete.")
+    print("Advanced Analytics Complete ✅")
     print("="*80)

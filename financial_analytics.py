@@ -32,7 +32,7 @@ class FinancialAnalyzer:
         
         Args:
             parameter: Parameter name to vary (e.g., 'cogs_ratio', 'wacc', 'tax_rate')
-            range_pct: Range to vary (0.5 = +/-50%)
+            range_pct: Range to vary (0.5 = ±50%)
             steps: Number of steps in analysis
         
         Returns:
@@ -277,19 +277,14 @@ class FinancialAnalyzer:
     def break_even_analysis(self) -> Dict:
         """Calculate break-even metrics"""
         # Break-even volume: Fixed Costs / (Price - Variable Cost per Unit)
-        first_year = self.years[0]
-        production_volume = self.model_data['production_volume'][first_year]
-        avg_selling_price = self.model_data['revenue'][first_year] / production_volume if production_volume else 0.0
-
-        variable_total = self.model_data.get('variable_cogs', {}).get(first_year, 0.0)
-        variable_cost_per_unit = variable_total / production_volume if production_volume else 0.0
-
-        fixed_production = self.model_data.get('fixed_cogs', {}).get(first_year, 0.0)
-        total_fixed_costs = self.model_data['opex'][first_year] + fixed_production
-
+        total_fixed_costs = self.model_data['opex'][self.years[0]]  # Approximate
+        avg_selling_price = self.model_data['revenue'][self.years[0]] / self.model_data['production_volume'][self.years[0]]
+        variable_cost_per_unit = (self.model_data['cogs'][self.years[0]] / 
+                                 self.model_data['production_volume'][self.years[0]])
+        
         contribution_margin_per_unit = avg_selling_price - variable_cost_per_unit
         break_even_volume = total_fixed_costs / contribution_margin_per_unit if contribution_margin_per_unit != 0 else 0
-
+        
         break_even_revenue = break_even_volume * avg_selling_price
         
         return {
@@ -373,7 +368,7 @@ if __name__ == "__main__":
     print("="*80)
     
     # 1. Sensitivity Analysis
-    print("\n--- SENSITIVITY ANALYSIS: COGS Ratio (+/-50%) ---")
+    print("\n--- SENSITIVITY ANALYSIS: COGS Ratio (±50%) ---")
     cogs_sensitivity = analyzer.sensitivity_analysis('cogs_ratio', range_pct=0.5, steps=11)
     print(cogs_sensitivity.to_string(index=False))
     
@@ -434,5 +429,5 @@ if __name__ == "__main__":
                 print(f"  {metric}: {value:.2f}")
     
     print("\n" + "="*80)
-    print("Analysis complete.")
+    print("Analysis complete ✅")
     print("="*80)

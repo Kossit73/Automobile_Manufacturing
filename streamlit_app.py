@@ -85,6 +85,8 @@ GEN_AI_FEATURE_LABELS: Dict[str, str] = {
     "sensitivity": "Sensitivity Commentary",
 }
 
+RAG_BLUEPRINT_PATH = Path(__file__).with_name("RAG_FEASIBILITY_GUIDE.md")
+
 ML_LABEL_TO_CODE: Dict[str, str] = {label: code for code, label in ML_METHOD_LABELS.items()}
 GEN_AI_LABEL_TO_CODE: Dict[str, str] = {
     label: code for code, label in GEN_AI_FEATURE_LABELS.items()
@@ -120,6 +122,16 @@ AI_DEFAULT_SNAPSHOT: Dict[str, Any] = {
 
 AI_CHUNK_TOKENS = 500
 AI_CHUNK_OVERLAP = 100
+
+
+@st.cache_data(show_spinner=False)
+def _load_rag_blueprint() -> str:
+    """Load the RAG feasibility blueprint text for in-app reference."""
+
+    try:
+        return RAG_BLUEPRINT_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return "RAG blueprint file not found."
 
 
 def _ensure_ai_workspace() -> Dict[str, Any]:
@@ -6614,6 +6626,16 @@ def _render_ai_settings(payload: Dict[str, Any], container: Optional[DeltaGenera
             st.session_state["ai_api_key"] = settings.get("api_key", "")
             _ai_settings_to_payload(settings, payload)
             st.success("AI configuration saved for this session.")
+
+    with target.expander("RAG Feasibility Study Generator Blueprint", expanded=False):
+        blueprint_md = _load_rag_blueprint()
+        st.markdown(blueprint_md)
+        st.download_button(
+            "Download Blueprint (Markdown)",
+            data=blueprint_md.encode("utf-8"),
+            file_name="RAG_Feasibility_Study_Guide.md",
+            mime="text/markdown",
+        )
 
     target.markdown("### Feasibility Study Workspace")
     project_col, action_col = target.columns([3, 1])

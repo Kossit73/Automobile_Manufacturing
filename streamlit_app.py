@@ -4536,6 +4536,163 @@ def _reports_export_controls(raw_tables: Dict[str, pd.DataFrame], years: Sequenc
     )
 
 
+def _escape_xml(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def _column_letter(index: int) -> str:
+    letters = ""
+    while index >= 0:
+        letters = chr(index % 26 + ord("A")) + letters
+        index = index // 26 - 1
+    return letters
+
+
+def _dataframe_to_sheet_xml(df: pd.DataFrame) -> str:
+    headers = list(df.columns)
+    rows = [headers]
+    try:
+        records = df.to_dict(orient="records")
+    except Exception:
+        records = []
+    for record in records:
+        rows.append([record.get(col, "") for col in headers])
+
+    xml_lines = [
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+        "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">",
+        "  <sheetData>",
+    ]
+
+    for row_idx, values in enumerate(rows, start=1):
+        xml_lines.append(f"    <row r=\"{row_idx}\">")
+        for col_idx, value in enumerate(values, start=1):
+            cell_ref = f"{_column_letter(col_idx - 1)}{row_idx}"
+            cell_value = value
+            cell_type = "n"
+
+            if isinstance(value, (int, float)) and value == value:
+                cell_text = str(value)
+                cell_type = "n"
+                xml_lines.append(f"      <c r=\"{cell_ref}\" t=\"{cell_type}\"><v>{cell_text}</v></c>")
+            else:
+                cell_text = "" if value is None else _escape_xml(str(value))
+                xml_lines.append(
+                    f"      <c r=\"{cell_ref}\" t=\"inlineStr\"><is><t>{cell_text}</t></is></c>"
+                )
+
+        xml_lines.append("    </row>")
+
+    xml_lines.extend(["  </sheetData>", "</worksheet>"])
+    return "\n".join(xml_lines)
+
+
+def _build_simple_xlsx(sheets: Mapping[str, pd.DataFrame]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        sheet_entries = []
+
+        for idx, (name, df) in enumerate(sheets.items(), start=1):
+            safe_name = name.strip() or f"Sheet {idx}"
+            worksheet_xml = _dataframe_to_sheet_xml(df)
+            worksheet_path = f"xl/worksheets/sheet{idx}.xml"
+            archive.writestr(worksheet_path, worksheet_xml)
+            sheet_entries.append((idx, safe_name))
+
+        workbook_sheets = "\n".join(
+            [
+                f"    <sheet name=\"{_escape_xml(name)}\" sheetId=\"{idx}\" r:id=\"rId{idx}\"/>"
+                for idx, name in sheet_entries
+            ]
+        )
+
+        workbook_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+{sheets}
+  </sheets>
+</workbook>""".format(sheets=workbook_sheets)
+
+        rels_xml = "\n".join(
+            [
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">",
+                *[
+                    f"  <Relationship Id=\"rId{idx}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{idx}.xml\"/>"
+                    for idx, _ in sheet_entries
+                ],
+                "</Relationships>",
+            ]
+        )
+
+        content_types = "\n".join(
+            [
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+                "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">",
+                "  <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>",
+                "  <Default Extension=\"xml\" ContentType=\"application/xml\"/>",
+                "  <Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>",
+                *[
+                    f"  <Override PartName=\"/xl/worksheets/sheet{idx}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+                    for idx, _ in sheet_entries
+                ],
+                "</Types>",
+            ]
+        )
+
+        root_rels = """<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"""
+
+        archive.writestr("xl/workbook.xml", workbook_xml)
+        archive.writestr("xl/_rels/workbook.xml.rels", rels_xml)
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", root_rels)
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _generate_excel_bytes(model: Dict[str, Any]) -> bytes:
+    cfg: CompanyConfig = st.session_state["company_config"]
+    capex_manager: CapexScheduleManager = st.session_state["capex_manager"]
+    years = _projection_years(model)
+
+    income_df, cashflow_df, balance_df = generate_financial_statements(model)
+    sheets: Dict[str, pd.DataFrame] = {
+        "Income Statement": income_df,
+        "Cash Flow": cashflow_df,
+        "Balance Sheet": balance_df,
+    }
+
+    forecast_raw = _forecast_schedule(model, formatted=False)
+    if forecast_raw is not None and not forecast_raw.empty:
+        sheets["Financial Forecast"] = forecast_raw
+
+    if years:
+        labor_raw = _labor_schedule_raw(model, years)
+        if labor_raw is not None and not labor_raw.empty:
+            sheets["Labor Cost"] = labor_raw
+
+        capex_spend_raw = _capex_spend_raw(capex_manager, cfg, years)
+        if capex_spend_raw is not None and not capex_spend_raw.empty:
+            sheets["CAPEX Spend"] = capex_spend_raw
+
+        debt_raw = _debt_schedule_raw(model, years)
+        if debt_raw is not None and not debt_raw.empty:
+            sheets["Debt Schedule"] = debt_raw
+
+    return _build_simple_xlsx(sheets)
+
+
 def _labor_schedule_raw(model: Dict[str, Any], years: Sequence[int]) -> pd.DataFrame:
     labor_metrics = model.get("labor_metrics", {})
     rows: List[Dict[str, Any]] = []
@@ -5762,6 +5919,36 @@ def _render_capex_management() -> None:
 
 def _render_financial_model(model: Dict[str, Any]) -> None:
     income_df, cashflow_df, balance_df = generate_financial_statements(model)
+
+    st.markdown("### Excel Model Download")
+    download_container = st.container()
+    selected_scenario = st.session_state.get("selected_scenario", "Base Case")
+    excel_map: Dict[str, bytes] = st.session_state.setdefault("excel_bytes_map", {})
+    excel_bytes = excel_map.get(selected_scenario)
+
+    with download_container:
+        if not excel_bytes:
+            if st.button("Prepare Excel Model", key=f"prepare_excel_{selected_scenario.lower().replace(' ', '_')}"):
+                with st.spinner("Preparing Excel workbook..."):
+                    excel_bytes = _generate_excel_bytes(model)
+                excel_map[selected_scenario] = excel_bytes
+                st.session_state.excel_bytes_map = excel_map
+        if excel_bytes:
+            st.download_button(
+                "Download Excel Model",
+                data=excel_bytes,
+                file_name="Ecommerce_Financial_Model.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            if st.button(
+                "Clear Prepared Excel",
+                key=f"clear_excel_{selected_scenario.lower().replace(' ', '_')}",
+            ):
+                excel_map.pop(selected_scenario, None)
+                st.session_state.excel_bytes_map = excel_map
+                excel_bytes = None
+        if not excel_bytes:
+            st.info("Click 'Prepare Excel Model' to generate the workbook for download.")
 
     _display_schedule(
         "Income Statement Schedule",

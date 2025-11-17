@@ -13,7 +13,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # Import platform modules
-from financial_model import run_financial_model, CompanyConfig
+from financial_model import (
+    run_financial_model,
+    CompanyConfig,
+    generate_financial_statements,
+    generate_labor_statement,
+)
 from labor_management import (
     initialize_default_labor_structure, LaborScheduleManager, LaborCostSchedule,
     ProductionLinkedLabor, LaborType, EmploymentStatus, JobCategory
@@ -53,6 +58,18 @@ def initialize_session_state():
         st.session_state.last_update = None
 
 initialize_session_state()
+
+
+def _format_currency(val: float) -> str:
+    return f"${val:,.0f}"
+
+
+def _format_statement(df: pd.DataFrame, money_cols):
+    formatted = df.copy()
+    for col in money_cols:
+        if col in formatted.columns:
+            formatted[col] = formatted[col].apply(_format_currency)
+    return formatted
 
 # =====================================================
 # SIDEBAR - NAVIGATION & SETTINGS
@@ -567,61 +584,147 @@ elif page == "📈 Reports":
     
     if st.session_state.financial_model:
         model = st.session_state.financial_model
-        
+
         # Summary Report
         st.markdown("## Executive Summary")
-        
+
         summary_text = f"""
         **2026 Financials:**
         - Revenue: ${model['revenue'][0]/1e6:.1f}M
         - EBIT: ${model['ebit'][0]/1e6:.1f}M
         - Net Profit: ${model['net_profit'][0]/1e6:.1f}M
         - FCF: ${model['fcf'][0]/1e6:.1f}M
-        
+
         **Valuation:**
         - Enterprise Value: ${model['enterprise_value']/1e6:.1f}M
         - 5-Year FCF: ${sum(model['fcf'])/1e6:.1f}M
-        
+
         **Workforce:**
         - Headcount: {st.session_state.labor_manager.get_total_headcount(2026)} employees
         - Labor Cost: ${(st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)['Direct'] + st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)['Indirect'])/1e6:.2f}M
         """
-        
+
         st.markdown(summary_text)
-        
-        # Export buttons
-        st.markdown("## Download Reports")
-        
-        # Financial summary
-        export_df = pd.DataFrame({
-            'Year': range(2026, 2031),
-            'Revenue': model['revenue'],
-            'COGS': model['cogs'],
-            'OPEX': model['opex'],
-            'EBIT': model['ebit'],
-            'Net Profit': model['net_profit'],
-            'FCF': model['fcf']
-        })
-        
-        csv = export_df.to_csv(index=False)
-        st.download_button(
-            "📥 Download Financial Forecast (CSV)",
-            csv,
-            "financial_forecast.csv",
-            "text/csv"
-        )
-        
-        # Labor summary
-        cost_schedule = LaborCostSchedule(st.session_state.labor_manager)
-        labor_df = cost_schedule.generate_5year_schedule(salary_growth=st.session_state.salary_growth_rate)
-        
-        csv = labor_df.to_csv(index=False)
-        st.download_button(
-            "📥 Download Labor Schedule (CSV)",
-            csv,
-            "labor_schedule.csv",
-            "text/csv"
-        )
+
+        statements_tab, schedules_tab, downloads_tab = st.tabs([
+            "Financial Statements",
+            "Schedules & Drivers",
+            "Exports",
+        ])
+
+        years = list(model['years'])
+
+        with statements_tab:
+            st.markdown("### Income Statement")
+            income_df, cashflow_df, balance_df = generate_financial_statements(model)
+            st.dataframe(
+                _format_statement(income_df, ["Revenue", "COGS", "Opex", "EBITDA", "EBIT", "Tax", "Net Profit"]),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+            st.markdown("### Cash Flow Statement")
+            st.dataframe(
+                _format_statement(cashflow_df, ["CFO", "CFI", "CFF", "Net Cash Flow", "Closing Cash"]),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+            st.markdown("### Balance Sheet")
+            st.dataframe(
+                _format_statement(
+                    balance_df,
+                    [
+                        "Fixed Assets",
+                        "Current Assets",
+                        "Total Assets",
+                        "Current Liabilities",
+                        "Long Term Debt",
+                        "Total Equity",
+                        "Total Liabilities + Equity",
+                    ],
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        with schedules_tab:
+            st.markdown("### Labor Cost Schedule")
+            labor_df = generate_labor_statement(model)
+            if labor_df.empty:
+                st.info("Labor schedule not available. Add positions to view projected costs.")
+            else:
+                st.dataframe(labor_df, hide_index=True, use_container_width=True)
+
+            st.markdown("### CAPEX Spend Schedule")
+            if st.session_state.capex_manager:
+                capex_schedule = st.session_state.capex_manager.yearly_capex_schedule(
+                    st.session_state.capex_manager.start_year,
+                    len(years),
+                )
+                capex_df = pd.DataFrame({"Year": years, "CAPEX Spend": [capex_schedule.get(y, 0.0) for y in years]})
+                st.dataframe(_format_statement(capex_df, ["CAPEX Spend"]), hide_index=True, use_container_width=True)
+            else:
+                st.info("No CAPEX manager configured.")
+
+            st.markdown("### Debt Schedule")
+            interest = model.get('interest_payment', {})
+            principal = model.get('loan_repayment', {})
+            outstanding = []
+            balance = st.session_state.financial_model['config'].loan_amount
+            for y in years:
+                balance = max(0.0, balance - principal.get(y, 0.0))
+                outstanding.append(balance)
+            debt_df = pd.DataFrame(
+                {
+                    "Year": years,
+                    "Interest": [interest.get(y, 0.0) for y in years],
+                    "Principal": [principal.get(y, 0.0) for y in years],
+                    "Ending Balance": outstanding,
+                }
+            )
+            st.dataframe(
+                _format_statement(debt_df, ["Interest", "Principal", "Ending Balance"]),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+            st.markdown("### Working Capital Changes")
+            wc_change = model.get('working_capital_change', {})
+            wc_df = pd.DataFrame({"Year": years, "Change in Working Capital": [wc_change.get(y, 0.0) for y in years]})
+            st.dataframe(_format_statement(wc_df, ["Change in Working Capital"]), hide_index=True, use_container_width=True)
+
+        with downloads_tab:
+            st.markdown("### Download Reports")
+
+            export_df = pd.DataFrame({
+                'Year': years,
+                'Revenue': [model['revenue'][y] for y in years],
+                'COGS': [model['cogs'][y] for y in years],
+                'OPEX': [model['opex'][y] for y in years],
+                'EBIT': [model['ebit'][y] for y in years],
+                'Net Profit': [model['net_profit'][y] for y in years],
+                'FCF': [model['fcf'][y] for y in years]
+            })
+
+            csv = export_df.to_csv(index=False)
+            st.download_button(
+                "📥 Download Financial Forecast (CSV)",
+                csv,
+                "financial_forecast.csv",
+                "text/csv"
+            )
+
+            cost_schedule = LaborCostSchedule(st.session_state.labor_manager)
+            labor_schedule = cost_schedule.generate_5year_schedule(salary_growth=st.session_state.salary_growth_rate)
+
+            csv = labor_schedule.to_csv(index=False)
+            st.download_button(
+                "📥 Download Labor Schedule (CSV)",
+                csv,
+                "labor_schedule.csv",
+                "text/csv"
+            )
     else:
         st.info("Run the financial model first to generate reports")
 

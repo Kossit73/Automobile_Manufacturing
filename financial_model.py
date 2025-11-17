@@ -288,8 +288,13 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
     fcf, discounted_fcf, enterprise_value = calculate_dcf(years, ebit, cfg, depreciation)
     
     # Cash flow components
-    change_in_working_capital = {cfg.start_year: -500_000, cfg.start_year + 1: -250_000,
-                                 cfg.start_year + 2: 0, cfg.start_year + 3: 200_000, cfg.start_year + 4: 200_000}
+    change_in_working_capital = {
+        cfg.start_year: -500_000,
+        cfg.start_year + 1: -250_000,
+        cfg.start_year + 2: 0,
+        cfg.start_year + 3: 200_000,
+        cfg.start_year + 4: 200_000,
+    }
 
     interest_payment = {y: cfg.loan_amount * cfg.loan_interest_rate for y in years}
     loan_repayment = {y: cfg.loan_amount / cfg.loan_term if y - cfg.start_year < cfg.loan_term else 0 for y in years}
@@ -338,6 +343,9 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         'cfo': cfo,
         'cfi': cfi,
         'cff': cff,
+        'working_capital_change': change_in_working_capital,
+        'interest_payment': interest_payment,
+        'loan_repayment': loan_repayment,
         'cash_balance': cash_balance,
         'fixed_assets': fixed_assets,
         'current_assets': current_assets,

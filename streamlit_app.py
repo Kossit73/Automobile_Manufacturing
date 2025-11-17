@@ -6,12 +6,14 @@ Clean, professional interface with horizontal navigation and comprehensive sched
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
+from pathlib import Path
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from scipy import optimize
@@ -87,6 +89,248 @@ ML_LABEL_TO_CODE: Dict[str, str] = {label: code for code, label in ML_METHOD_LAB
 GEN_AI_LABEL_TO_CODE: Dict[str, str] = {
     label: code for code, label in GEN_AI_FEATURE_LABELS.items()
 }
+
+AI_DEFAULT_SECTIONS: List[str] = [
+    "Executive Summary",
+    "Project Description & Scope",
+    "Market & Demand Analysis",
+    "Technical & Operations",
+    "Legal, Permitting & Environmental",
+    "Implementation Plan",
+    "Financial Analysis",
+    "Risk Assessment & ESG",
+    "Conclusion & Recommendation",
+]
+
+AI_DEFAULT_SNAPSHOT: Dict[str, Any] = {
+    "as_of": datetime.utcnow().isoformat(),
+    "currency": "USD",
+    "capex_total": 3_000_000,
+    "opex_annual": 850_000,
+    "revenue_annual": 2_750_000,
+    "npv": 1_200_000,
+    "irr": 0.18,
+    "payback_years": 4,
+    "dscr_min": 1.35,
+    "assumptions": {
+        "discount_rate": 0.12,
+        "tax_rate": 0.21,
+    },
+}
+
+AI_CHUNK_TOKENS = 500
+AI_CHUNK_OVERLAP = 100
+
+
+def _ensure_ai_workspace() -> Dict[str, Any]:
+    """Initialize the AI workspace structure in session state."""
+
+    workspace = st.session_state.setdefault(
+        "ai_workspace",
+        {
+            "current_project": "demo-project",
+            "projects": {},
+        },
+    )
+
+    current = workspace["current_project"]
+    projects = workspace["projects"]
+    if current not in projects:
+        projects[current] = {
+            "project_id": current,
+            "financial_snapshot": dict(AI_DEFAULT_SNAPSHOT),
+            "cell_map": {},
+            "workbook_hash": None,
+            "uploads": [],
+            "chunks": [],
+            "sections": [],
+            "report_md": "",
+        }
+
+    return workspace
+
+
+def _get_or_create_project(workspace: Dict[str, Any], project_id: str) -> Dict[str, Any]:
+    project_id = project_id.strip() or workspace.get("current_project", "demo-project")
+    workspace["current_project"] = project_id
+    projects = workspace.setdefault("projects", {})
+    if project_id not in projects:
+        projects[project_id] = {
+            "project_id": project_id,
+            "financial_snapshot": dict(AI_DEFAULT_SNAPSHOT),
+            "cell_map": {},
+            "workbook_hash": None,
+            "uploads": [],
+            "chunks": [],
+            "sections": [],
+            "report_md": "",
+        }
+    return projects[project_id]
+
+
+def _parse_upload_to_text(upload: Any) -> List[Dict[str, Any]]:
+    """Lightweight, dependency-free parser for common text-based uploads."""
+
+    name = getattr(upload, "name", "upload")
+    suffix = Path(name).suffix.lower()
+    raw = upload.read()
+
+    if suffix in {".txt", ".md"}:
+        text = raw.decode("utf-8", errors="ignore")
+        return [{"page_or_sheet": 1, "text": text}]
+
+    if suffix in {".csv", ".tsv"}:
+        try:
+            df = pd.read_csv(io.BytesIO(raw))
+            return [{"page_or_sheet": 1, "text": df.to_csv(index=False)}]
+        except Exception:
+            return [{"page_or_sheet": 1, "text": raw.decode("utf-8", errors="ignore")}] 
+
+    if suffix in {".xlsx", ".xls"}:
+        try:
+            xls = pd.ExcelFile(io.BytesIO(raw))
+            items: List[Dict[str, Any]] = []
+            for sheet in xls.sheet_names:
+                df = xls.parse(sheet)
+                items.append({"page_or_sheet": sheet, "text": df.to_csv(index=False)})
+            return items
+        except Exception:
+            return [{"page_or_sheet": 1, "text": "Unable to parse workbook; please verify format."}]
+
+    # Fallback for other binaries (PDF/DOCX/PPTX) without heavy dependencies
+    try:
+        text = raw.decode("utf-8", errors="ignore")
+    except Exception:
+        text = "(binary content; text extraction unavailable in this environment)"
+    return [{"page_or_sheet": 1, "text": text}]
+
+
+def _chunk_text_simple(text: str, chunk_tokens: int = AI_CHUNK_TOKENS, overlap: int = AI_CHUNK_OVERLAP) -> List[str]:
+    tokens = text.split()
+    chunks: List[str] = []
+    start = 0
+    while start < len(tokens):
+        end = min(len(tokens), start + chunk_tokens)
+        chunk = " ".join(tokens[start:end])
+        chunks.append(chunk)
+        if end == len(tokens):
+            break
+        start = max(0, end - overlap)
+    return chunks
+
+
+def _ingest_documents(project: Dict[str, Any], uploads: List[Any]) -> None:
+    """Store uploads and chunk their text for lightweight retrieval."""
+
+    for upload in uploads:
+        parsed_items = _parse_upload_to_text(upload)
+        chunks: List[Dict[str, Any]] = []
+        for item in parsed_items:
+            for chunk in _chunk_text_simple(item.get("text", "")):
+                if not chunk.strip():
+                    continue
+                chunks.append(
+                    {
+                        "file_name": getattr(upload, "name", "upload"),
+                        "page_or_sheet": item.get("page_or_sheet"),
+                        "text": chunk,
+                    }
+                )
+
+        project.setdefault("uploads", []).append(
+            {
+                "name": getattr(upload, "name", "upload"),
+                "size": len(raw),
+                "parsed_items": parsed_items,
+            }
+        )
+        project.setdefault("chunks", []).extend(chunks)
+
+
+def _best_context(chunks: List[Dict[str, Any]], top_k: int = 6) -> str:
+    """Return a compact context block from the first K chunks."""
+
+    if not chunks:
+        return "No documents ingested yet. Upload files to build the context index."
+    preview = chunks[:top_k]
+    lines = []
+    for idx, ch in enumerate(preview, start=1):
+        label = ch.get("file_name", "source")
+        page = ch.get("page_or_sheet", "?")
+        snippet = ch.get("text", "")[:500]
+        lines.append(f"[{idx}] {label} p.{page}: {snippet}")
+    return "\n\n".join(lines)
+
+
+def _render_snapshot_editor(project: Dict[str, Any]) -> None:
+    st.markdown("#### Financial Snapshot")
+    snapshot_text = st.text_area(
+        "Snapshot JSON",
+        value=json.dumps(project.get("financial_snapshot", {}), indent=2),
+        height=240,
+        help="Paste or edit the key financial metrics that feed AI commentary.",
+    )
+    if st.button("Save Snapshot", key=f"save_snapshot_{project['project_id']}"):
+        try:
+            project["financial_snapshot"] = json.loads(snapshot_text)
+            st.success("Financial snapshot updated for this project.")
+        except json.JSONDecodeError:
+            st.error("Snapshot must be valid JSON.")
+
+
+def _synthesize_section(section: str, snapshot: Dict[str, Any], context: str, hint: str) -> str:
+    """Simple template-driven section synthesis that avoids external APIs."""
+
+    metrics = []
+    currency = snapshot.get("currency", "")
+    if snapshot:
+        for key in ["revenue_annual", "opex_annual", "capex_total", "npv", "irr", "payback_years", "dscr_min"]:
+            if key in snapshot:
+                value = snapshot[key]
+                metrics.append(
+                    f"- {key.replace('_', ' ').title()}: {value} {currency}"
+                    if currency
+                    else f"- {key.replace('_', ' ').title()}: {value}"
+                )
+
+    body = [
+        f"### {section}",
+        f"**Context hint:** {hint or 'feasibility study focus'}",
+    ]
+    if metrics:
+        body.append("**Key financial markers:**")
+        body.extend(metrics)
+
+    body.append("**Source highlights:**")
+    body.append(context or "No documents ingested yet.")
+
+    body.append("**Commentary:**")
+    body.append(
+        "This section summarizes the available context and snapshot values. "
+        "Upload more documents or refine the snapshot to deepen the analysis."
+    )
+    return "\n\n".join(body)
+
+
+def _generate_ai_report(project: Dict[str, Any], outline: List[str], hint: str) -> None:
+    context_block = _best_context(project.get("chunks", []))
+    snapshot = project.get("financial_snapshot", {})
+    sections = []
+    for sec in outline:
+        sections.append({"section": sec, "content": _synthesize_section(sec, snapshot, context_block, hint)})
+    project["sections"] = sections
+
+    md_lines = ["# Feasibility Study", f"**Project:** {project['project_id']}", ""]
+    for sec in sections:
+        md_lines.append(f"## {sec['section']}")
+        md_lines.append(sec["content"])
+        md_lines.append("")
+    md_lines.append("---")
+    md_lines.append("### Financial Snapshot")
+    md_lines.append("```json")
+    md_lines.append(json.dumps(snapshot, indent=2))
+    md_lines.append("```")
+    project["report_md"] = "\n".join(md_lines)
 
 
 LABOR_TYPE_OPTIONS: Dict[str, LaborType] = {labor_type.value: labor_type for labor_type in LaborType}
@@ -6280,6 +6524,7 @@ def _render_platform_settings() -> None:
 
 def _render_ai_settings(payload: Dict[str, Any], container: Optional[DeltaGenerator] = None) -> None:
     target = container or st
+    workspace = _ensure_ai_workspace()
     settings = st.session_state.setdefault("ai_settings", _payload_to_ai_settings(payload))
     st.session_state.setdefault("ai_api_key", settings.get("api_key", ""))
 
@@ -6288,10 +6533,7 @@ def _render_ai_settings(payload: Dict[str, Any], container: Optional[DeltaGenera
         provider_options.append(settings.get("provider"))
 
     current_provider = settings.get("provider", "OpenAI")
-    try:
-        provider_index = provider_options.index(current_provider)
-    except ValueError:
-        provider_index = 0
+    provider_index = provider_options.index(current_provider) if current_provider in provider_options else 0
 
     ml_defaults = [
         ML_METHOD_LABELS.get(code, code.replace("_", " ").title())
@@ -6302,76 +6544,153 @@ def _render_ai_settings(payload: Dict[str, Any], container: Optional[DeltaGenera
         for code in settings.get("generative_features", ["summary"])
     ]
 
-    form = target.form("ai_settings_form")
-    with form:
-        enabled = form.checkbox(
-            "Enable AI Enhancements",
-            value=bool(settings.get("enabled", False)),
-            help="Toggle machine-learning forecasts and generative commentary.",
-        )
-        provider = form.selectbox(
-            "Provider",
-            provider_options,
-            index=provider_index,
-            help="Select the API provider powering generative insights.",
-        )
-        model_name = form.text_input(
-            "Model",
-            value=settings.get("model", "gpt-4"),
-            help="Name of the deployed model (for example `gpt-4o-mini`).",
-        )
-        horizon = form.number_input(
-            "Forecast Horizon (years)",
-            min_value=0,
-            max_value=20,
-            value=int(settings.get("forecast_horizon", 3)),
-            step=1,
-            help="Number of additional years used for machine-learning revenue forecasts.",
-        )
+    with target.expander("Model & Provider Settings", expanded=False):
+        form = st.form("ai_settings_form")
+        with form:
+            enabled = form.checkbox(
+                "Enable AI Enhancements",
+                value=bool(settings.get("enabled", False)),
+                help="Toggle machine-learning forecasts and generative commentary.",
+            )
+            provider = form.selectbox(
+                "Provider",
+                provider_options,
+                index=provider_index,
+                help="Select the API provider powering generative insights.",
+            )
+            model_name = form.text_input(
+                "Model",
+                value=settings.get("model", "gpt-4"),
+                help="Name of the deployed model (for example `gpt-4o-mini`).",
+            )
+            horizon = form.number_input(
+                "Forecast Horizon (years)",
+                min_value=0,
+                max_value=20,
+                value=int(settings.get("forecast_horizon", 3)),
+                step=1,
+                help="Number of additional years used for machine-learning revenue forecasts.",
+            )
 
-        ml_selection = form.multiselect(
-            "Machine Learning Methods",
-            list(ML_METHOD_LABELS.values()),
-            default=ml_defaults,
-            help="Choose algorithms applied to projected net revenue.",
-        )
-        feature_selection = form.multiselect(
-            "Generative Features",
-            list(GEN_AI_FEATURE_LABELS.values()),
-            default=feature_defaults,
-            help="Pick the narrative focus areas generated by the AI summary.",
-        )
-        api_key = form.text_input(
-            "API Key",
-            value=st.session_state.get("ai_api_key", ""),
-            type="password",
-            help="Store your provider API key securely. Keys are retained only for the current session.",
-        )
+            ml_selection = form.multiselect(
+                "Machine Learning Methods",
+                list(ML_METHOD_LABELS.values()),
+                default=ml_defaults,
+                help="Choose algorithms applied to projected net revenue.",
+            )
+            feature_selection = form.multiselect(
+                "Generative Features",
+                list(GEN_AI_FEATURE_LABELS.values()),
+                default=feature_defaults,
+                help="Pick the narrative focus areas generated by the AI summary.",
+            )
+            api_key = form.text_input(
+                "API Key",
+                value=st.session_state.get("ai_api_key", ""),
+                type="password",
+                help="Store your provider API key securely. Keys are retained only for the current session.",
+            )
 
-        submitted = form.form_submit_button("Save AI Configuration")
+            submitted = form.form_submit_button("Save AI Configuration")
 
-    if submitted:
-        ml_codes = [ML_LABEL_TO_CODE.get(label, label.replace(" ", "_").lower()) for label in ml_selection]
-        feature_codes = [
-            GEN_AI_LABEL_TO_CODE.get(label, label.replace(" ", "_").lower()) for label in feature_selection
-        ]
+        if submitted:
+            ml_codes = [ML_LABEL_TO_CODE.get(label, label.replace(" ", "_").lower()) for label in ml_selection]
+            feature_codes = [
+                GEN_AI_LABEL_TO_CODE.get(label, label.replace(" ", "_").lower()) for label in feature_selection
+            ]
 
-        settings.update(
-            {
-                "enabled": enabled,
-                "provider": provider,
-                "model": model_name.strip() or "gpt-4",
-                "forecast_horizon": int(horizon),
-                "ml_methods": ml_codes or ["linear_regression"],
-                "generative_features": feature_codes or ["summary"],
-                "api_key": api_key.strip(),
-            }
+            settings.update(
+                {
+                    "enabled": enabled,
+                    "provider": provider,
+                    "model": model_name.strip() or "gpt-4",
+                    "forecast_horizon": int(horizon),
+                    "ml_methods": ml_codes or ["linear_regression"],
+                    "generative_features": feature_codes or ["summary"],
+                    "api_key": api_key.strip(),
+                }
+            )
+            st.session_state["ai_settings"] = settings
+            st.session_state["ai_api_key"] = settings.get("api_key", "")
+            _ai_settings_to_payload(settings, payload)
+            st.success("AI configuration saved for this session.")
+
+    target.markdown("### Feasibility Study Workspace")
+    project_col, action_col = target.columns([3, 1])
+    project_input = project_col.text_input(
+        "Project ID",
+        value=workspace.get("current_project", "demo-project"),
+        help="Assign a unique ID to organize uploads, snapshots, and generated studies.",
+    )
+    if action_col.button("Activate Project", key="activate_ai_project"):
+        _get_or_create_project(workspace, project_input)
+        st.success(f"Project '{project_input}' is active.")
+
+    project = _get_or_create_project(workspace, project_input)
+
+    target.caption("Upload files, capture a financial snapshot, and generate a feasibility study without leaving the page.")
+
+    snapshot_col, ingest_col = target.columns(2)
+    with snapshot_col:
+        _render_snapshot_editor(project)
+
+    with ingest_col:
+        st.markdown("#### Document Ingestion")
+        st.write(
+            "Upload PDFs, spreadsheets, CSVs, or text. The app chunks their contents for retrieval-augmented summaries."
         )
-        st.session_state["ai_settings"] = settings
-        st.session_state["ai_api_key"] = settings.get("api_key", "")
-        _ai_settings_to_payload(settings, payload)
-        st.success("AI configuration updated. Rerunning the model with the new settings.")
-        _rerun()
+        uploads = st.file_uploader(
+            "Uploads",
+            type=["pdf", "docx", "pptx", "txt", "md", "csv", "tsv", "xlsx", "xls"],
+            accept_multiple_files=True,
+            key=f"ai_uploads_{project['project_id']}",
+        )
+        if uploads and st.button("Ingest Files", key=f"ingest_{project['project_id']}"):
+            _ingest_documents(project, uploads)
+            st.success(f"Ingested {len(uploads)} file(s); context now has {len(project.get('chunks', []))} chunks.")
+
+        if project.get("uploads"):
+            upload_df = pd.DataFrame(
+                [
+                    {
+                        "File": u.get("name"),
+                        "Parsed Items": len(u.get("parsed_items", [])),
+                    }
+                    for u in project.get("uploads", [])
+                ]
+            )
+            _render_table(upload_df, hide_index=True)
+        context_preview = _best_context(project.get("chunks", []))
+        st.text_area("Context Preview", value=context_preview, height=200)
+
+    target.markdown("#### Generate Feasibility Study")
+    outline = st.multiselect(
+        "Section Outline",
+        options=AI_DEFAULT_SECTIONS,
+        default=AI_DEFAULT_SECTIONS,
+        help="Select the sections to generate using the ingested context and snapshot.",
+    )
+    hint = st.text_area(
+        "Query Hint",
+        value="feasibility study for the project",
+        height=80,
+        help="Describe what the AI should emphasize (markets, risks, financing, etc.).",
+    )
+    if st.button("Generate Study", key=f"generate_{project['project_id']}"):
+        _generate_ai_report(project, outline or AI_DEFAULT_SECTIONS, hint)
+        st.success("Feasibility study prepared from the current project context.")
+
+    if project.get("sections"):
+        for sec in project["sections"]:
+            with st.expander(sec["section"], expanded=False):
+                st.markdown(sec["content"])
+
+        st.download_button(
+            "Download Study (Markdown)",
+            data=project.get("report_md", ""),
+            file_name=f"{project['project_id']}_study.md",
+            mime="text/markdown",
+        )
 
 
 # ---------------------------------------------------------------------------

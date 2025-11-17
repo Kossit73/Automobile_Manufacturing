@@ -323,6 +323,43 @@ Draft the {section} for the feasibility study.
 """
 
 
+class _RestChatClient:
+    """Minimal REST-based chat client to avoid hard dependency on `openai` package."""
+
+    def __init__(self, api_key: str, base_url: str = "https://api.openai.com/v1"):
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+
+    def create(self, model: str, messages: List[Dict[str, str]], temperature: float = 0.2):
+        import json
+        from types import SimpleNamespace
+        from urllib import request
+
+        payload = json.dumps({"model": model, "messages": messages, "temperature": temperature}).encode(
+            "utf-8"
+        )
+        req = request.Request(
+            f"{self.base_url}/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+        )
+        try:
+            with request.urlopen(req, timeout=30) as resp:  # nosec B310 - controlled URL
+                body = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:  # pragma: no cover - network dependent
+            raise RuntimeError(f"REST LLM request failed: {exc}")
+
+        try:
+            content = body["choices"][0]["message"]["content"]
+        except Exception as exc:  # pragma: no cover - response shape guard
+            raise RuntimeError(f"Unexpected LLM response: {exc}")
+
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+
 class RagLLMClient:
     """Lightweight LLM client that honors session-provided API keys."""
 
@@ -348,9 +385,13 @@ class RagLLMClient:
                 self._error = "Missing OpenAI API key. Save it in AI Settings or set OPENAI_API_KEY."
                 return
             try:
-                from openai import OpenAI
+                from openai import OpenAI  # type: ignore
 
                 self._client = OpenAI(api_key=self.api_key)
+            except ImportError:
+                # Fall back to a lightweight REST client so environments without the SDK can still run
+                # the external LLM when a key is provided.
+                self._client = _RestChatClient(self.api_key)
             except Exception as exc:  # pragma: no cover - import/runtime guard
                 self._error = f"OpenAI client unavailable: {exc}"
         else:

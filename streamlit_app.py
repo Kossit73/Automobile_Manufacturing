@@ -22,6 +22,7 @@ from plotly.subplots import make_subplots
 
 from financial_model import (
     CompanyConfig,
+    DebtInstrument,
     generate_financial_statements,
     generate_labor_statement,
     run_financial_model,
@@ -3941,7 +3942,31 @@ def _render_debt_schedule_editor(cfg: CompanyConfig) -> None:
     years = _config_years(cfg)
     instruments = list(getattr(cfg, "debt_instruments", []) or [])
 
-    if not years or not instruments:
+    if not years:
+        st.info("Set a projection horizon before editing the debt schedule.")
+        return
+
+    if not instruments:
+        st.info("No debt instruments are configured yet. Seed a loan to edit its draw schedule.")
+        default_principal = cfg.loan_amount if cfg.loan_amount > 0 else 1_000_000.0
+        default_rate = cfg.loan_interest_rate if cfg.loan_interest_rate > 0 else 0.05
+        default_term = int(cfg.loan_term if cfg.loan_term > 0 else max(1, cfg.projection_years))
+        default_start = cfg.start_year
+
+        if st.button("Add Default Debt Instrument", key="debt_schedule_seed_default"):
+            cfg.debt_instruments = [
+                DebtInstrument(
+                    name="Debt Instrument 1",
+                    principal=default_principal,
+                    interest_rate=default_rate,
+                    term=default_term,
+                    start_year=default_start,
+                    draw_schedule={default_start: default_principal},
+                )
+            ]
+            cfg.__post_init__()
+            _run_model()
+            st.success("Default debt instrument added. You can now edit the schedule.")
         return
 
     draw_defaults: Dict[int, Dict[int, float]] = {}

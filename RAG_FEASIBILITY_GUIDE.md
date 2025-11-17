@@ -344,4 +344,16 @@ if __name__ == "__main__":
 * LLM provider and model.
 * Any industry-specific compliance/ESG frameworks.
 
+---
+
+## 12) Recommended Improvements
+
+* **Retrieval robustness** – Add hybrid retrieval (BM25 + dense) with section-specific queries, apply language detection to route embeddings to the right model, and deduplicate near-identical chunks before indexing to reduce noise.
+* **Chunk quality** – Introduce layout-aware parsing for PDFs/PowerPoint (tables, headers, bullet hierarchy) and structured Excel table extraction so section prompts receive semantically coherent passages rather than raw text dumps.
+* **Grounding safeguards** – Enforce a rerank-and-verify step: cross-encoder top-*k* followed by faithfulness checks (e.g., string matching for cited figures) to filter hallucinated numbers, with automatic “insufficient evidence” fallbacks in generation.
+* **Performance & scale** – Move embedding and rerank jobs to a background worker queue, cache embeddings by file hash, and add batch ingest endpoints to keep 1 GB uploads responsive under concurrent usage.
+* **Observability** – Emit structured logs/metrics for retrieval hits, citation density, generation latency, and section-level token usage; wire them into a lightweight dashboard for run-to-run drift detection.
+* **Security & governance** – Add MIME allowlists, antivirus/PII scans on upload, and optional encryption-at-rest for the project store; record an audit manifest (file hash → cited sections) alongside `report.json` for downstream compliance.
+* **Evaluation harness** – Build regression tests using golden reports plus automated RAG metrics (answer similarity, groundedness) so model, prompt, or embedding upgrades can be shipped with confidence.
+
 You now have a working foundation to ingest large files, extract key model results, and generate a grounded, audit-friendly feasibility study. Plug in your model, load your documents, and run `/generate`. ✅

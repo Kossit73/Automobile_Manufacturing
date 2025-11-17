@@ -1,68 +1,120 @@
-"""Lightweight numpy-compatible shim for offline use."""
+"""Runtime shim that defers to real numpy when available."""
 from __future__ import annotations
-import math
-import random as _random
-import statistics
+
+import importlib
+import os
+import sys
+from types import ModuleType
 from typing import Iterable, Sequence, Union
 
-Number = Union[int, float]
 
-# ---------------- Array helper -----------------
-class SimpleArray:
-    def __init__(self, data):
-        if isinstance(data, SimpleArray):
-            self.data = data.data
-        else:
-            self.data = _to_nested_list(data)
+def _remove_shim_paths() -> list[str]:
+    """Temporarily remove shim paths so the real package can be imported."""
 
-    def __iter__(self):
-        return iter(self.data)
+    package_dir = os.path.dirname(__file__)
+    project_root = os.path.dirname(package_dir)
+    removed: list[str] = []
+    for path in list(sys.path):
+        abs_path = os.path.abspath(path or ".")
+        if abs_path in {package_dir, project_root}:
+            removed.append(path)
+            sys.path.remove(path)
+    return removed
 
-    def __len__(self):
-        return len(self.data)
 
-    def __getitem__(self, idx):
-        return self.data[idx]
+def _restore_paths(paths: Iterable[str]) -> None:
+    for path in reversed(list(paths)):
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
-    @property
-    def T(self):
-        if not self.data:
-            return SimpleArray([])
-        if not isinstance(self.data[0], (list, tuple, SimpleArray)):
-            return SimpleArray([[v] for v in self.data])
-        rows = [[row[i] for row in self.data] for i in range(len(self.data[0]))]
-        return SimpleArray(rows)
 
-    def _binary_op(self, other, op):
-        other_data = other.data if isinstance(other, SimpleArray) else other
-        return SimpleArray(_apply_elementwise(self.data, other_data, op))
+def _import_real_numpy() -> ModuleType | None:
+    """Attempt to import the system-installed numpy distribution."""
 
-    def __add__(self, other):
-        return self._binary_op(other, lambda a, b: a + b)
+    shim_name = __name__
+    existing = sys.modules.get(shim_name)
+    sys.modules.pop(shim_name, None)
+    removed_paths = _remove_shim_paths()
+    try:
+        return importlib.import_module(shim_name)
+    except ModuleNotFoundError:
+        if existing is not None:
+            sys.modules[shim_name] = existing
+        return None
+    finally:
+        _restore_paths(removed_paths)
 
-    def __sub__(self, other):
-        return self._binary_op(other, lambda a, b: a - b)
 
-    def __mul__(self, other):
-        return self._binary_op(other, lambda a, b: a * b)
+_real_numpy = None
+if not os.environ.get("NUMPY_SHIM_ONLY"):
+    _real_numpy = _import_real_numpy()
 
-    __rmul__ = __mul__
+if _real_numpy is not None:
+    globals().update(_real_numpy.__dict__)
+    sys.modules[__name__] = _real_numpy
+else:
+    import math
+    import random as _random
+    import statistics
 
-    def __truediv__(self, other):
-        return self._binary_op(other, lambda a, b: a / b)
+    Number = Union[int, float]
 
-    def __pow__(self, power, modulo=None):
-        return self._binary_op(power, lambda a, b: a ** b)
+    # ---------------- Array helper -----------------
+    class SimpleArray:
+        def __init__(self, data):
+            if isinstance(data, SimpleArray):
+                self.data = data.data
+            else:
+                self.data = _to_nested_list(data)
 
-    def __matmul__(self, other):
-        other_data = other.data if isinstance(other, SimpleArray) else other
-        return SimpleArray(_matmul(self.data, other_data))
+        def __iter__(self):
+            return iter(self.data)
 
-    def to_list(self):
-        return self.data
+        def __len__(self):
+            return len(self.data)
 
-    def __repr__(self):
-        return f"SimpleArray({self.data!r})"
+        def __getitem__(self, idx):
+            return self.data[idx]
+
+        @property
+        def T(self):
+            if not self.data:
+                return SimpleArray([])
+            if not isinstance(self.data[0], (list, tuple, SimpleArray)):
+                return SimpleArray([[v] for v in self.data])
+            rows = [[row[i] for row in self.data] for i in range(len(self.data[0]))]
+            return SimpleArray(rows)
+
+        def _binary_op(self, other, op):
+            other_data = other.data if isinstance(other, SimpleArray) else other
+            return SimpleArray(_apply_elementwise(self.data, other_data, op))
+
+        def __add__(self, other):
+            return self._binary_op(other, lambda a, b: a + b)
+
+        def __sub__(self, other):
+            return self._binary_op(other, lambda a, b: a - b)
+
+        def __mul__(self, other):
+            return self._binary_op(other, lambda a, b: a * b)
+
+        __rmul__ = __mul__
+
+        def __truediv__(self, other):
+            return self._binary_op(other, lambda a, b: a / b)
+
+        def __pow__(self, power, modulo=None):
+            return self._binary_op(power, lambda a, b: a ** b)
+
+        def __matmul__(self, other):
+            other_data = other.data if isinstance(other, SimpleArray) else other
+            return SimpleArray(_matmul(self.data, other_data))
+
+        def to_list(self):
+            return self.data
+
+        def __repr__(self):
+            return f"SimpleArray({self.data!r})"
 
 
 # --------------- core helpers ------------------

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import zipfile
 
 import streamlit as st
@@ -290,46 +291,160 @@ def _render_snapshot_editor(project: Dict[str, Any]) -> None:
             st.error("Snapshot must be valid JSON.")
 
 
-def _synthesize_section(section: str, snapshot: Dict[str, Any], context: str, hint: str) -> str:
-    """Simple template-driven section synthesis that avoids external APIs."""
+RAG_SYSTEM_PROMPT = (
+    "You are a financial analyst producing a feasibility study. Only use facts from provided CONTEXT "
+    "and FINANCIAL_SNAPSHOT. Cite sources inline like [Source: filename p.12] or [Sheet: Assumptions!B7]. "
+    "If a claim is unsupported, say so. Keep each section structured, concise, and decision-oriented."
+)
 
-    metrics = []
+
+RAG_SECTION_PROMPT = """
+[GOAL]
+Draft the {section} for the feasibility study.
+
+[GUIDANCE]
+- Use FINANCIAL_SNAPSHOT metrics explicitly where relevant.
+- Use CONTEXT passages with inline citations [Source: <file> p.<n>] or [Sheet: <name>!<cell>].
+- State uncertainties and missing data.
+- Avoid boilerplate; keep it specific to the project.
+- Context hint: {hint}
+
+[FINANCIAL_SNAPSHOT]
+{snapshot}
+
+[CONTEXT]
+{context}
+
+[OUTPUT]
+- 3–7 well-structured paragraphs
+- Subheadings
+- Bullet lists for key metrics & risks
+- Citations inline
+"""
+
+
+class RagLLMClient:
+    """Lightweight LLM client that honors session-provided API keys."""
+
+    def __init__(self, settings: Dict[str, Any]):
+        self.provider = (settings.get("provider") or "OpenAI").lower()
+        self.model = settings.get("model") or "gpt-4o"
+        self.api_key = settings.get("api_key") or os.getenv("OPENAI_API_KEY")
+        self._client = None
+        self._error: Optional[str] = None
+        self._configure()
+
+    @property
+    def available(self) -> bool:
+        return self._client is not None and self._error is None
+
+    @property
+    def error(self) -> Optional[str]:
+        return self._error
+
+    def _configure(self) -> None:
+        if self.provider == "openai":
+            if not self.api_key:
+                self._error = "Missing OpenAI API key. Save it in AI Settings or set OPENAI_API_KEY."
+                return
+            try:
+                from openai import OpenAI
+
+                self._client = OpenAI(api_key=self.api_key)
+            except Exception as exc:  # pragma: no cover - import/runtime guard
+                self._error = f"OpenAI client unavailable: {exc}"
+        else:
+            self._error = f"Provider '{self.provider}' is not supported yet."
+
+    def complete(self, prompt: str, system: Optional[str] = None) -> str:
+        if not self.available:
+            raise RuntimeError(self._error or "LLM client unavailable")
+
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        response = self._client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=0.2,
+        )
+        return response.choices[0].message.content
+
+
+def _format_snapshot_bullets(snapshot: Dict[str, Any]) -> str:
+    if not snapshot:
+        return "- (no financial snapshot provided)"
+
     currency = snapshot.get("currency", "")
-    if snapshot:
-        for key in ["revenue_annual", "opex_annual", "capex_total", "npv", "irr", "payback_years", "dscr_min"]:
-            if key in snapshot:
-                value = snapshot[key]
-                metrics.append(
-                    f"- {key.replace('_', ' ').title()}: {value} {currency}"
-                    if currency
-                    else f"- {key.replace('_', ' ').title()}: {value}"
-                )
+    metrics = []
+    for key in ["revenue_annual", "opex_annual", "capex_total", "npv", "irr", "payback_years", "dscr_min"]:
+        if key in snapshot:
+            val = snapshot.get(key)
+            label = key.replace("_", " ").title()
+            metrics.append(f"- {label}: {val} {currency}" if currency else f"- {label}: {val}")
 
+    if snapshot.get("assumptions"):
+        metrics.append("- assumptions:")
+        for ak, av in snapshot.get("assumptions", {}).items():
+            metrics.append(f"  - {ak}: {av}")
+
+    return "\n".join(metrics) if metrics else "- (no financial metrics captured)"
+
+
+def _synthesize_section(section: str, snapshot: Dict[str, Any], context: str, hint: str) -> str:
+    """Template-driven fallback synthesis when an external LLM is unavailable."""
+
+    metrics = _format_snapshot_bullets(snapshot)
     body = [
         f"### {section}",
         f"**Context hint:** {hint or 'feasibility study focus'}",
+        "**Key financial markers:**",
+        metrics,
+        "**Source highlights:**",
+        context or "No documents ingested yet.",
+        "**Commentary:**",
+        (
+            "This section summarizes the available context and snapshot values. "
+            "Upload more documents, enable AI, and provide an API key to generate a richer narrative."
+        ),
     ]
-    if metrics:
-        body.append("**Key financial markers:**")
-        body.extend(metrics)
-
-    body.append("**Source highlights:**")
-    body.append(context or "No documents ingested yet.")
-
-    body.append("**Commentary:**")
-    body.append(
-        "This section summarizes the available context and snapshot values. "
-        "Upload more documents or refine the snapshot to deepen the analysis."
-    )
     return "\n\n".join(body)
 
 
 def _generate_ai_report(project: Dict[str, Any], outline: List[str], hint: str) -> None:
     context_block = _best_context(project.get("chunks", []))
     snapshot = project.get("financial_snapshot", {})
+    ai_settings = st.session_state.get("ai_settings", {})
+    rag_client = RagLLMClient(ai_settings)
+    use_llm = bool(ai_settings.get("enabled")) and rag_client.available
     sections = []
+
+    if ai_settings.get("enabled") and not rag_client.available and rag_client.error:
+        st.warning(f"AI is enabled but unavailable: {rag_client.error}")
+
     for sec in outline:
-        sections.append({"section": sec, "content": _synthesize_section(sec, snapshot, context_block, hint)})
+        if use_llm:
+            prompt = RAG_SECTION_PROMPT.format(
+                section=sec,
+                hint=hint or "feasibility study",
+                snapshot=_format_snapshot_bullets(snapshot),
+                context=context_block or "No context provided.",
+            )
+            try:
+                content = rag_client.complete(prompt, system=RAG_SYSTEM_PROMPT)
+            except Exception as exc:  # pragma: no cover - network/SDK dependent
+                st.warning(
+                    "Falling back to offline synthesis because the external model call failed: "
+                    f"{exc}"
+                )
+                use_llm = False
+                content = _synthesize_section(sec, snapshot, context_block, hint)
+        else:
+            content = _synthesize_section(sec, snapshot, context_block, hint)
+        sections.append({"section": sec, "content": content})
+
     project["sections"] = sections
 
     md_lines = ["# Feasibility Study", f"**Project:** {project['project_id']}", ""]

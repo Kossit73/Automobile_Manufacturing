@@ -5,6 +5,7 @@ Author: Advanced Analytics Team
 Version: 1.0 (November 2025)
 """
 
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -57,6 +58,14 @@ def initialize_session_state():
     if 'last_update' not in st.session_state:
         st.session_state.last_update = None
 
+    if 'ai_settings' not in st.session_state:
+        st.session_state.ai_settings = {
+            "provider": "OpenAI",
+            "model": "gpt-4o",
+            "api_key": os.getenv("OPENAI_API_KEY", ""),
+            "enabled": True,
+        }
+
 initialize_session_state()
 
 
@@ -81,8 +90,14 @@ with st.sidebar:
     # Navigation
     page = st.radio(
         "Select Module:",
-        ["🏠 Dashboard", "👥 Labor Management", "🏗️ CAPEX Management", 
-         "💰 Financial Model", "📈 Reports"],
+        [
+            "🏠 Dashboard",
+            "🤖 AI & Machine Learning",
+            "👥 Labor Management",
+            "🏗️ CAPEX Management",
+            "💰 Financial Model",
+            "📈 Reports",
+        ],
         help="Choose which module to work with"
     )
     
@@ -204,7 +219,70 @@ if page == "🏠 Dashboard":
         st.metric("Annual Depreciation", f"${model['depreciation'][0]/1e3:.0f}K")
 
 # =====================================================
-# PAGE 2: LABOR MANAGEMENT
+# PAGE 2: AI & MACHINE LEARNING (RAG)
+# =====================================================
+
+elif page == "🤖 AI & Machine Learning":
+    st.markdown("# 🤖 AI & Machine Learning")
+    st.info(
+        "Store your model provider settings and run the standalone `rag_app.py` service "
+        "to generate feasibility studies grounded in your financial snapshots and uploaded documents."
+    )
+
+    settings = st.session_state.ai_settings
+
+    with st.form("ai_settings_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            provider = st.text_input("Provider", value=settings.get("provider", "OpenAI"))
+            model = st.text_input("Model", value=settings.get("model", "gpt-4o"))
+        with col2:
+            api_key = st.text_input(
+                "API Key",
+                value=settings.get("api_key", ""),
+                type="password",
+                help="Used by the RAG service to call the selected provider.",
+            )
+            enabled = st.checkbox("Enable RAG Feasibility", value=settings.get("enabled", True))
+
+        saved = st.form_submit_button("Save AI Configuration")
+
+    if saved:
+        st.session_state.ai_settings = {
+            "provider": provider.strip() or "OpenAI",
+            "model": model.strip() or "gpt-4o",
+            "api_key": api_key.strip(),
+            "enabled": enabled,
+        }
+        st.success("AI configuration saved for this session.")
+
+    st.markdown("## RAG Feasibility Study Generator")
+    st.write(
+        "Use the `rag_app.py` service in this repository to ingest documents, capture the "
+        "financial snapshot from Excel, and compose grounded feasibility study sections."
+    )
+
+    with st.expander("How to run the generator", expanded=True):
+        st.markdown(
+            "1. Install dependencies: `pip install -r requirements.txt faiss-cpu sentence-transformers fastapi uvicorn pypdf python-docx python-pptx`\n"
+            "2. Export your API key: `export OPENAI_API_KEY=...` (or enter it above).\n"
+            "3. Start the service: `python rag_app.py`.\n"
+            "4. POST to `/collect` with your financial snapshot, `/ingest` with project files, then `/generate` to build the report." 
+        )
+        st.code("uvicorn rag_app:app --host 0.0.0.0 --port 8000", language="bash")
+
+    st.markdown("### Current Session Status")
+    st.write(
+        {
+            "provider": st.session_state.ai_settings.get("provider"),
+            "model": st.session_state.ai_settings.get("model"),
+            "api_key_set": bool(st.session_state.ai_settings.get("api_key")),
+            "enabled": st.session_state.ai_settings.get("enabled", True),
+        }
+    )
+
+# =====================================================
+# PAGE 3: LABOR MANAGEMENT
 # =====================================================
 
 elif page == "👥 Labor Management":

@@ -30,7 +30,7 @@ Features:
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Callable, Any
+from typing import Dict, List, Tuple, Callable, Any, Optional
 from dataclasses import dataclass, replace
 from scipy import stats, optimize
 from scipy.stats import norm, multivariate_normal
@@ -197,25 +197,38 @@ class StressTestEngine:
                         setattr(cfg, key, value)
             
             model = run_financial_model(cfg)
+            years = model.get('years') or []
+            last_year = years[-1] if years else None
+            penultimate_year = years[-2] if len(years) > 1 else last_year
+
             results[scenario_name] = {
                 'enterprise_value': model['enterprise_value'],
-                'revenue_2030': model['revenue'][2030],
-                'net_profit_2030': model['net_profit'][2030],
-                'final_cash': model['cash_balance'][2030],
-                'recovery_probability': self._recovery_score(model)
+                'revenue_2030': model['revenue'].get(last_year, 0.0) if last_year else 0.0,
+                'net_profit_2030': model['net_profit'].get(last_year, 0.0) if last_year else 0.0,
+                'final_cash': model['cash_balance'].get(last_year, 0.0) if last_year else 0.0,
+                'recovery_probability': self._recovery_score(model, last_year, penultimate_year)
             }
         
         return results
     
-    def _recovery_score(self, model_data: dict) -> float:
-        """Calculate probability of recovery (0-100)"""
-        if model_data['cash_balance'][2030] < 0:
+    def _recovery_score(self, model_data: dict, final_year: Optional[int], compare_year: Optional[int]) -> float:
+        """Calculate probability of recovery (0-100) using available years."""
+        if final_year is None:
             return 0
-        if model_data['enterprise_value'] < 0:
+
+        cash_balance = model_data.get('cash_balance', {})
+        net_profit = model_data.get('net_profit', {})
+
+        final_cash = cash_balance.get(final_year, 0.0)
+        compare_cash = cash_balance.get(compare_year, 0.0) if compare_year is not None else final_cash
+
+        if final_cash < 0:
+            return 0
+        if model_data.get('enterprise_value', 0.0) < 0:
             return 20
-        if model_data['net_profit'][2030] < 0:
+        if net_profit.get(final_year, 0.0) < 0:
             return 40
-        if model_data['cash_balance'][2030] > model_data['cash_balance'][2026]:
+        if final_cash > compare_cash:
             return 100
         return 60
 
@@ -453,15 +466,18 @@ class WhatIfAnalyzer:
             baseline_model = run_financial_model(self.config)
             self.baseline_results = baseline_model
         
+        years = model.get('years') or []
+        last_year = years[-1] if years else None
+
         return {
             'scenario_name': scenario_name,
             'adjustments': adjustments,
             'enterprise_value': model['enterprise_value'],
             'ev_change': model['enterprise_value'] - self.baseline_results['enterprise_value'],
-            'ev_change_pct': ((model['enterprise_value'] - self.baseline_results['enterprise_value']) / 
+            'ev_change_pct': ((model['enterprise_value'] - self.baseline_results['enterprise_value']) /
                              self.baseline_results['enterprise_value'] * 100),
-            'revenue_2030': model['revenue'][2030],
-            'profit_2030': model['net_profit'][2030]
+            'revenue_2030': model['revenue'].get(last_year, 0.0) if last_year else 0.0,
+            'profit_2030': model['net_profit'].get(last_year, 0.0) if last_year else 0.0
         }
     
     def sensitivity_waterfall(self, base_ev: float, adjustments: Dict[str, Tuple[str, float]]) -> pd.DataFrame:

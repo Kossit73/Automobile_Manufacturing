@@ -1572,11 +1572,11 @@ with tab_advanced:
         "Optimization & Valuation",
     ])
 
-        with analytics_tabs[0]:
-            st.markdown("### Sensitivity analysis, tornado & spider views")
-            if sens_df.empty:
-                st.info("No sensitivity results available for the current configuration.")
-            else:
+    with analytics_tabs[0]:
+        st.markdown("### Sensitivity analysis, tornado & spider views")
+        if sens_df.empty:
+            st.info("No sensitivity results available for the current configuration.")
+        else:
             display_cols = ["parameter", "base_value", "low_ev", "high_ev", "impact_pct"]
             sens_view = sens_df[display_cols].rename(
                 columns={
@@ -1629,11 +1629,11 @@ with tab_advanced:
             )
             st.plotly_chart(tornado_chart, use_container_width=True)
 
-        with analytics_tabs[1]:
-            st.markdown("### Scenario stress testing & spider metrics")
-            if stress_df.empty:
-                st.info("No stress scenarios available.")
-            else:
+    with analytics_tabs[1]:
+        st.markdown("### Scenario stress testing & spider metrics")
+        if stress_df.empty:
+            st.info("No stress scenarios available.")
+        else:
             currency_cols = ["enterprise_value", "revenue_2030", "net_profit_2030", "final_cash"]
             stress_view = stress_df.copy()
             for col in currency_cols:
@@ -1670,28 +1670,28 @@ with tab_advanced:
             classification_rows.append({"Year": y, "Debt/Equity": ratio, "Risk Band": band})
         st.dataframe(pd.DataFrame(classification_rows), hide_index=True, use_container_width=True)
 
-        with analytics_tabs[2]:
-            st.markdown("### Trend, seasonality & segmentation")
-            ma_df = pd.DataFrame(
-                {
-                    "Year": moving_avg.get("years", years),
-                    "Revenue": list(revenue_series.values()),
-                    "3Y Moving Avg": moving_avg.get("moving_average", []),
-                }
-            )
-            st.dataframe(ma_df, hide_index=True, use_container_width=True)
-            seasonality_msg = "Seasonality detected" if seasonality.get("seasonal") else "No strong seasonality"
-            st.caption(f"Autocorrelation: {seasonality.get('autocorrelation', 0):.2f} — {seasonality_msg}")
+    with analytics_tabs[2]:
+        st.markdown("### Trend, seasonality & segmentation")
+        ma_df = pd.DataFrame(
+            {
+                "Year": moving_avg.get("years", years),
+                "Revenue": list(revenue_series.values()),
+                "3Y Moving Avg": moving_avg.get("moving_average", []),
+            }
+        )
+        st.dataframe(ma_df, hide_index=True, use_container_width=True)
+        seasonality_msg = "Seasonality detected" if seasonality.get("seasonal") else "No strong seasonality"
+        st.caption(f"Autocorrelation: {seasonality.get('autocorrelation', 0):.2f} — {seasonality_msg}")
 
-            if not ma_df.empty:
-                ma_chart = px.line(
-                    ma_df,
-                    x="Year",
-                    y=[col for col in ma_df.columns if col != "Year"],
-                    title="Revenue Trend & Moving Average",
-                    labels={"value": "Amount", "variable": "Series"},
-                )
-                st.plotly_chart(ma_chart, use_container_width=True)
+        if not ma_df.empty:
+            ma_chart = px.line(
+                ma_df,
+                x="Year",
+                y=[col for col in ma_df.columns if col != "Year"],
+                title="Revenue Trend & Moving Average",
+                labels={"value": "Amount", "variable": "Series"},
+            )
+            st.plotly_chart(ma_chart, use_container_width=True)
 
         forecast_df = pd.DataFrame(
             {
@@ -1701,10 +1701,6 @@ with tab_advanced:
         )
         if not forecast_df.empty:
             st.dataframe(forecast_df, hide_index=True, use_container_width=True)
-        else:
-            st.info("SES forecast not available for the current series.")
-
-        if not forecast_df.empty:
             forecast_chart = px.line(
                 forecast_df,
                 x="Future Year",
@@ -1714,6 +1710,8 @@ with tab_advanced:
                 labels={"SES Forecast": "Forecast", "Future Year": "Year"},
             )
             st.plotly_chart(forecast_chart, use_container_width=True)
+        else:
+            st.info("SES forecast not available for the current series.")
 
         if not segment_df.empty:
             seg_view = segment_df.copy()
@@ -1724,10 +1722,7 @@ with tab_advanced:
                 hide_index=True,
                 use_container_width=True,
             )
-        else:
-            st.info("Segmentation results will appear once product mix and revenue are available.")
 
-        if not segment_df.empty:
             seg_chart = px.bar(
                 segment_df,
                 x="segment",
@@ -1737,6 +1732,8 @@ with tab_advanced:
                 labels={"segment": "Segment", "value": "Amount", "variable": "Metric"},
             )
             st.plotly_chart(seg_chart, use_container_width=True)
+        else:
+            st.info("Segmentation results will appear once product mix and revenue are available.")
 
         if regression:
             st.caption(
@@ -1756,9 +1753,9 @@ with tab_advanced:
         else:
             st.info("Regression insights will display after production and revenue data are populated.")
 
-        with analytics_tabs[3]:
-            st.markdown("### Monte Carlo, VaR/CVaR & probabilistic valuation")
-            formatted_summary = mc_summary_df.copy()
+    with analytics_tabs[3]:
+        st.markdown("### Monte Carlo, VaR/CVaR & probabilistic valuation")
+        formatted_summary = mc_summary_df.copy()
         for idx, row in formatted_summary.iterrows():
             if "ROI" in row["Metric"]:
                 formatted_summary.loc[idx, ["Mean", "P5", "P95"]] = [

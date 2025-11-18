@@ -5,7 +5,7 @@ Generates charts and reports for financial analysis
 
 import pandas as pd
 import numpy as np
-from financial_model import run_financial_model
+from financial_model import run_financial_model, generate_financial_statements
 from financial_analytics import FinancialAnalyzer
 import json
 from typing import Dict, List
@@ -137,7 +137,7 @@ GROWTH ANALYSIS:
     
     def financial_statement_summary(self) -> str:
         """Generate complete financial statement summary"""
-        income_df, cashflow_df, balance_df = self.analyzer.calculate_ratios()
+        income_df, cashflow_df, balance_df = generate_financial_statements(self.model_data)
         
         summary = f"""
 {'='*80}

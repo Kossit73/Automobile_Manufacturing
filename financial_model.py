@@ -59,6 +59,7 @@ class CompanyConfig:
 
     # Optional per-year overrides
     opex_overrides: Optional[Dict[int, float]] = None
+    labor_cost_overrides: Optional[Dict[int, float]] = None
     cogs_overrides: Optional[Dict[int, float]] = None
     loan_repayment_overrides: Optional[Dict[int, float]] = None
     other_cost_overrides: Optional[Dict[int, float]] = None
@@ -91,6 +92,8 @@ class CompanyConfig:
         # Normalize override containers for downstream use
         if self.opex_overrides is None:
             self.opex_overrides = {}
+        if self.labor_cost_overrides is None:
+            self.labor_cost_overrides = {}
         if self.cogs_overrides is None:
             self.cogs_overrides = {}
         if self.loan_repayment_overrides is None:
@@ -210,6 +213,9 @@ def calculate_opex_breakdown(years: range, cfg: CompanyConfig) -> Tuple[Dict[int
             direct_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Direct', 0)
             indirect_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Indirect', 0)
             labor_cost = direct_cost + indirect_cost
+
+        if cfg.labor_cost_overrides and y in cfg.labor_cost_overrides:
+            labor_cost = cfg.labor_cost_overrides[y]
 
         other_cost = 0.0
 

@@ -185,6 +185,7 @@ def initialize_session_state():
 
     # Schedule override containers
     for key in [
+        'labor_cost_overrides',
         'fixed_cost_overrides',
         'variable_cost_overrides',
         'other_cost_overrides',
@@ -218,6 +219,7 @@ def _build_company_config() -> CompanyConfig:
         production_end_year=st.session_state.production_end_year,
         labor_manager=st.session_state.labor_manager,
         capex_manager=st.session_state.capex_manager,
+        labor_cost_overrides=st.session_state.get('labor_cost_overrides', {}),
         opex_overrides=st.session_state.get('fixed_cost_overrides', {}),
         cogs_overrides=st.session_state.get('variable_cost_overrides', {}),
         loan_repayment_overrides=st.session_state.get('loan_repayment_overrides', {}),
@@ -323,7 +325,33 @@ with tab_platform:
     model = run_financial_model(cfg)
     years = list(model["years"])
     income_df, cashflow_df, balance_df = generate_financial_statements(model)
-    labor_df = generate_labor_statement(model)
+    # Build labor cost schedule for editing
+    labor_rows = []
+    for y in years:
+        costs = st.session_state.labor_manager.get_labor_cost_by_type(y, st.session_state.salary_growth_rate)
+        headcounts = st.session_state.labor_manager.get_headcount_by_type(y)
+        total_hc = headcounts.get('Direct', 0) + headcounts.get('Indirect', 0)
+        total_cost = costs.get('Direct', 0) + costs.get('Indirect', 0)
+        labor_rows.append(
+            {
+                'Year': y,
+                'Direct Labor Cost': costs.get('Direct', 0),
+                'Indirect Labor Cost': costs.get('Indirect', 0),
+                'Total Labor Cost': total_cost,
+                'Total Headcount': total_hc,
+                'Avg Cost per HC': total_cost / total_hc if total_hc else 0.0,
+            }
+        )
+
+    labor_df = pd.DataFrame(labor_rows)
+    if not labor_df.empty and st.session_state.labor_cost_overrides:
+        overrides = st.session_state.labor_cost_overrides
+        labor_df['Total Labor Cost'] = [overrides.get(y, val) for y, val in zip(labor_df['Year'], labor_df['Total Labor Cost'])]
+        labor_df['Avg Cost per HC'] = [
+            (labor_df.loc[idx, 'Total Labor Cost'] / labor_df.loc[idx, 'Total Headcount']) if labor_df.loc[idx, 'Total Headcount'] else 0.0
+            for idx in labor_df.index
+        ]
+        labor_df['Override Applied'] = [overrides.get(y) if y in overrides else None for y in labor_df['Year']]
 
     capex_spend = st.session_state.capex_manager.yearly_capex_schedule(years[0], len(years))
     capex_spend_df = pd.DataFrame({"Year": years, "CAPEX Spend": [capex_spend.get(y, 0.0) for y in years]})
@@ -431,7 +459,13 @@ with tab_platform:
         if labor_df.empty:
             st.info("No labor schedule available. Add positions to view costs and headcount.")
         else:
-            st.dataframe(labor_df, use_container_width=True, hide_index=True)
+            _editable_schedule(
+                "Labor Cost Schedule",
+                labor_df,
+                "labor_cost_overrides",
+                "Total Labor Cost",
+                "Edit labor totals inline; add or remove years to reshape the schedule.",
+            )
 
     with schedule_tabs[1]:
         st.dataframe(_format_statement(capex_spend_df, ["CAPEX Spend"]), use_container_width=True, hide_index=True)

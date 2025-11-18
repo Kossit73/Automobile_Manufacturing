@@ -26,7 +26,20 @@ from labor_management import (
     ProductionLinkedLabor, LaborType, EmploymentStatus, JobCategory
 )
 from capex_management import initialize_default_capex, CapexScheduleManager
-from advanced_analytics import AdvancedSensitivityAnalyzer, StressTestEngine, MonteCarloSimulator
+from advanced_analytics import (
+    AdvancedSensitivityAnalyzer,
+    StressTestEngine,
+    MonteCarloSimulator,
+    SegmentationAnalyzer,
+    WhatIfAnalyzer,
+    GoalSeekOptimizer,
+    RegressionModeler,
+    TimeSeriesAnalyzer,
+    RiskAnalyzer,
+    PortfolioOptimizer,
+    RealOptionsAnalyzer,
+    ESGAnalyzer,
+)
 
 # =====================================================
 # PAGE CONFIG
@@ -1068,39 +1081,12 @@ with tab_advanced:
             _format_currency(model.get("net_profit", {}).get(final_year, 0)),
         )
 
-    st.markdown("## Sensitivity Analysis")
+    # Shared analytics used across the advanced feature tabs
     sens_params = ["annual_capacity", "cogs_ratio", "loan_interest_rate", "loan_amount", "wacc"]
     sens_ranges = {p: 0.2 for p in sens_params}
     sensitivity = AdvancedSensitivityAnalyzer(model, cfg)
     sens_df = sensitivity.pareto_sensitivity(sens_params, sens_ranges)
 
-    if sens_df.empty:
-        st.info("No sensitivity results available for the current configuration.")
-    else:
-        display_cols = [
-            "parameter",
-            "base_value",
-            "low_ev",
-            "high_ev",
-            "impact_pct",
-        ]
-        sens_view = sens_df[display_cols].rename(
-            columns={
-                "parameter": "Parameter",
-                "base_value": "Base",
-                "low_ev": "Low EV",
-                "high_ev": "High EV",
-                "impact_pct": "Impact (%)",
-            }
-        )
-        currency_cols = ["Base", "Low EV", "High EV"]
-        formatted = sens_view.copy()
-        for col in currency_cols:
-            formatted[col] = formatted[col].apply(_format_currency)
-        formatted["Impact (%)"] = formatted["Impact (%)"].apply(lambda v: f"{v:.1f}%")
-        st.dataframe(formatted, hide_index=True, use_container_width=True)
-
-    st.markdown("## Stress Testing")
     stress_engine = StressTestEngine(model, cfg)
     stress_results = stress_engine.extreme_scenarios()
     stress_df = (
@@ -1109,26 +1095,6 @@ with tab_advanced:
         .rename(columns={"index": "Scenario"})
     )
 
-    if stress_df.empty:
-        st.info("No stress scenarios available.")
-    else:
-        currency_cols = [
-            "enterprise_value",
-            "revenue_2030",
-            "net_profit_2030",
-            "final_cash",
-        ]
-        stress_view = stress_df.copy()
-        for col in currency_cols:
-            if col in stress_view.columns:
-                stress_view[col] = stress_view[col].apply(_format_currency)
-        if "recovery_probability" in stress_view.columns:
-            stress_view["recovery_probability"] = stress_view["recovery_probability"].apply(
-                lambda v: f"{v:.0f}%"
-            )
-        st.dataframe(stress_view, hide_index=True, use_container_width=True)
-
-    st.markdown("## Monte Carlo Simulation")
     mc_engine = MonteCarloSimulator(model, cfg, num_simulations=400)
     mc_stats = mc_engine.run_simulation(
         {
@@ -1155,35 +1121,235 @@ with tab_advanced:
                 "P95": stats.get("p95", 0.0),
             }
         )
+    mc_summary_df = pd.DataFrame(summary_rows)
 
-    summary_df = pd.DataFrame(summary_rows)
-    currency_cols = [c for c in summary_df.columns if c != "Metric" and "ROI" not in summary_df["Metric"].values]
-    formatted_summary = summary_df.copy()
-    for idx, row in formatted_summary.iterrows():
-        if "ROI" in row["Metric"]:
-            formatted_summary.loc[idx, ["Mean", "P5", "P95"]] = [
-                f"{row['Mean']:.1f}%",
-                f"{row['P5']:.1f}%",
-                f"{row['P95']:.1f}%",
-            ]
-        else:
-            formatted_summary.loc[idx, ["Mean", "P5", "P95"]] = [
-                _format_currency(row["Mean"]),
-                _format_currency(row["P5"]),
-                _format_currency(row["P95"]),
-            ]
+    segment_analyzer = SegmentationAnalyzer(model)
+    segment_data = {}
+    for product, share in model.get("product_mix", {}).items():
+        base_revenue = model.get("revenue", {}).get(start_year, 0) * share
+        base_units = model.get("production_volume", {}).get(start_year, 0) * share
+        segment_data[product] = {
+            "revenue": base_revenue,
+            "cost": base_revenue * cfg.cogs_ratio,
+            "units": max(1, base_units),
+        }
+    segment_df = segment_analyzer.segment_analysis(segment_data) if segment_data else pd.DataFrame()
 
-    st.dataframe(formatted_summary, hide_index=True, use_container_width=True)
+    ts_analyzer = TimeSeriesAnalyzer()
+    revenue_series = {y: model.get("revenue", {}).get(y, 0.0) for y in years}
+    prod_series = {y: model.get("production_volume", {}).get(y, 0.0) for y in years}
+    moving_avg = ts_analyzer.moving_average(revenue_series, window=3)
+    seasonality = ts_analyzer.detect_seasonality(revenue_series)
+    smoothing = ts_analyzer.simple_exponential_smoothing(revenue_series, forecast_periods=3)
 
+    regression = RegressionModeler.simple_linear_regression(
+        list(prod_series.values()), list(revenue_series.values())
+    ) if prod_series and revenue_series else {}
+
+    what_if = WhatIfAnalyzer(cfg)
+    scenario_rows = []
+    sample_adjustments = {
+        "Higher Utilization": {"annual_capacity": cfg.annual_capacity * 1.1},
+        "Lean Manufacturing": {"cogs_ratio": max(0.05, cfg.cogs_ratio * 0.95)},
+        "Marketing Push": {"marketing_budget": {start_year: cfg.marketing_budget.get(start_year, 0) * 1.2}},
+    }
+    for name, adjustment in sample_adjustments.items():
+        scenario_rows.append(what_if.create_scenario(name, adjustment))
+    what_if_df = pd.DataFrame(scenario_rows)
+
+    goal_optimizer = GoalSeekOptimizer(cfg)
+    goal_target = model.get("enterprise_value", 0) * 1.1
+    goal_result = goal_optimizer.find_breakeven_parameter("cogs_ratio", "enterprise_value", goal_target)
+
+    risk_analyzer = RiskAnalyzer()
     ev_distribution = mc_stats.get("enterprise_values", {}).get("distribution", [])
-    if len(ev_distribution) > 0:
-        hist_fig = px.histogram(
-            ev_distribution,
-            nbins=30,
-            title="Enterprise Value Distribution (Monte Carlo)",
-            labels={"value": "Enterprise Value"},
+    var_summary = risk_analyzer.calculate_var(ev_distribution.tolist(), 0.95) if len(ev_distribution) else {}
+    cvar_summary = risk_analyzer.calculate_cvar(ev_distribution.tolist(), 0.95) if len(ev_distribution) else {}
+
+    portfolio_returns = np.random.normal(0.08, 0.15, (250, 4))
+    portfolio_opt = PortfolioOptimizer.optimize_portfolio(portfolio_returns)
+
+    options_value = RealOptionsAnalyzer.expansion_option_value(
+        model.get("enterprise_value", 0),
+        expansion_cost=model.get("enterprise_value", 0) * 0.1,
+        upside_scenario_npv=model.get("enterprise_value", 0) * 1.25,
+        probability=0.5,
+    )
+
+    esg = ESGAnalyzer.carbon_pricing_impact(base_emissions=10_000, carbon_price=40, emission_reduction_rate=0.05, years=5)
+    esg_df = pd.DataFrame.from_dict(esg, orient="index").reset_index().rename(columns={"index": "Year"})
+
+    cov = [[1.0, 0.6], [0.6, 1.0]]
+    correlated = np.random.multivariate_normal([0, 0], cov, size=200)
+    corr_df = pd.DataFrame(correlated, columns=["FX Shock", "Rate Shock"]).corr()
+
+    analytics_tabs = st.tabs([
+        "Sensitivity & Tornado",
+        "Stress & Scenarios",
+        "Trend & Segmentation",
+        "Simulation & Risk",
+        "What-If & Goal Seek",
+        "Optimization & Valuation",
+    ])
+
+    with analytics_tabs[0]:
+        st.markdown("### Sensitivity analysis, tornado & spider views")
+        if sens_df.empty:
+            st.info("No sensitivity results available for the current configuration.")
+        else:
+            display_cols = ["parameter", "base_value", "low_ev", "high_ev", "impact_pct"]
+            sens_view = sens_df[display_cols].rename(
+                columns={
+                    "parameter": "Parameter",
+                    "base_value": "Base",
+                    "low_ev": "Low EV",
+                    "high_ev": "High EV",
+                    "impact_pct": "Impact (%)",
+                }
+            )
+            currency_cols = ["Base", "Low EV", "High EV"]
+            formatted = sens_view.copy()
+            for col in currency_cols:
+                formatted[col] = formatted[col].apply(_format_currency)
+            formatted["Impact (%)"] = formatted["Impact (%)"].apply(lambda v: f"{v:.1f}%")
+            st.dataframe(formatted, hide_index=True, use_container_width=True)
+
+            tornado_rows = []
+            base_ev = model.get("enterprise_value", 0)
+            for _, row in sens_df.iterrows():
+                tornado_rows.append(
+                    {
+                        "Parameter": row["parameter"],
+                        "Downside": _format_currency(row["low_ev"] - base_ev),
+                        "Upside": _format_currency(row["high_ev"] - base_ev),
+                        "Range": _format_currency(row["high_ev"] - row["low_ev"]),
+                    }
+                )
+            st.dataframe(pd.DataFrame(tornado_rows), hide_index=True, use_container_width=True)
+
+    with analytics_tabs[1]:
+        st.markdown("### Scenario stress testing & spider metrics")
+        if stress_df.empty:
+            st.info("No stress scenarios available.")
+        else:
+            currency_cols = ["enterprise_value", "revenue_2030", "net_profit_2030", "final_cash"]
+            stress_view = stress_df.copy()
+            for col in currency_cols:
+                if col in stress_view.columns:
+                    stress_view[col] = stress_view[col].apply(_format_currency)
+            if "recovery_probability" in stress_view.columns:
+                stress_view["recovery_probability"] = stress_view["recovery_probability"].apply(
+                    lambda v: f"{v:.0f}%",
+                )
+            st.dataframe(stress_view, hide_index=True, use_container_width=True)
+
+        classification_rows = []
+        for y in years:
+            debt = model.get("long_term_debt", {}).get(y, 0)
+            equity = model.get("total_equity", {}).get(y, 1)
+            ratio = debt / equity if equity else 0
+            band = "Low" if ratio < 0.5 else ("Medium" if ratio < 1.0 else "High")
+            classification_rows.append({"Year": y, "Debt/Equity": ratio, "Risk Band": band})
+        st.dataframe(pd.DataFrame(classification_rows), hide_index=True, use_container_width=True)
+
+    with analytics_tabs[2]:
+        st.markdown("### Trend, seasonality & segmentation")
+        ma_df = pd.DataFrame(
+            {
+                "Year": moving_avg.get("years", years),
+                "Revenue": list(revenue_series.values()),
+                "3Y Moving Avg": moving_avg.get("moving_average", []),
+            }
         )
-        st.plotly_chart(hist_fig, use_container_width=True)
+        st.dataframe(ma_df, hide_index=True, use_container_width=True)
+        seasonality_msg = "Seasonality detected" if seasonality.get("seasonal") else "No strong seasonality"
+        st.caption(f"Autocorrelation: {seasonality.get('autocorrelation', 0):.2f} — {seasonality_msg}")
+
+        forecast_df = pd.DataFrame(
+            {
+                "Future Year": smoothing.get("future_years", []),
+                "SES Forecast": smoothing.get("future_forecast", []),
+            }
+        )
+        if not forecast_df.empty:
+            st.dataframe(forecast_df, hide_index=True, use_container_width=True)
+
+        if not segment_df.empty:
+            seg_view = segment_df.copy()
+            seg_view["revenue"] = seg_view["revenue"].apply(_format_currency)
+            seg_view["cost"] = seg_view["cost"].apply(_format_currency)
+            st.dataframe(seg_view.rename(columns={"revenue": "Revenue", "cost": "Cost"}), hide_index=True, use_container_width=True)
+
+        if regression:
+            st.caption(
+                f"Regression (volume→revenue): slope={regression.get('slope',0):.2f}, R²={regression.get('r_squared',0):.2f}"
+            )
+
+    with analytics_tabs[3]:
+        st.markdown("### Monte Carlo, VaR/CVaR & probabilistic valuation")
+        formatted_summary = mc_summary_df.copy()
+        for idx, row in formatted_summary.iterrows():
+            if "ROI" in row["Metric"]:
+                formatted_summary.loc[idx, ["Mean", "P5", "P95"]] = [
+                    f"{row['Mean']:.1f}%",
+                    f"{row['P5']:.1f}%",
+                    f"{row['P95']:.1f}%",
+                ]
+            else:
+                formatted_summary.loc[idx, ["Mean", "P5", "P95"]] = [
+                    _format_currency(row["Mean"]),
+                    _format_currency(row["P5"]),
+                    _format_currency(row["P95"]),
+                ]
+        st.dataframe(formatted_summary, hide_index=True, use_container_width=True)
+
+        if var_summary:
+            st.caption(f"95% VaR: {_format_currency(var_summary.get('var',0))}; 95% CVaR: {_format_currency(cvar_summary.get('cvar',0))}")
+        if len(ev_distribution) > 0:
+            hist_fig = px.histogram(
+                ev_distribution,
+                nbins=30,
+                title="Enterprise Value Distribution (Monte Carlo)",
+                labels={"value": "Enterprise Value"},
+            )
+            st.plotly_chart(hist_fig, use_container_width=True)
+
+    with analytics_tabs[4]:
+        st.markdown("### What-if analysis, goal seek & tornado/spider helpers")
+        if not what_if_df.empty:
+            impact_cols = ["enterprise_value", "ev_change", "ev_change_pct", "revenue_2030", "profit_2030"]
+            view = what_if_df.drop(columns=[c for c in what_if_df.columns if c not in impact_cols + ["scenario_name"]]).rename(columns={"scenario_name": "Scenario"})
+            if "ev_change" in view.columns:
+                view["EV Delta"] = view["ev_change"].apply(_format_currency)
+            if "ev_change_pct" in view.columns:
+                view["EV Delta (%)"] = view["ev_change_pct"].apply(lambda v: f"{v:.1f}%")
+            st.dataframe(view, hide_index=True, use_container_width=True)
+        if goal_result.get("success"):
+            st.caption(
+                f"Goal seek: cogs_ratio → {goal_result.get('optimal_value'):.3f} to reach EV {_format_currency(goal_target)}"
+            )
+
+    with analytics_tabs[5]:
+        st.markdown("### Optimization, portfolio, ESG, and real options")
+        opt_view = {
+            "Optimal Weights": ", ".join([f"{w:.2f}" for w in portfolio_opt.get("optimal_weights", [])]),
+            "Expected Return": f"{portfolio_opt.get('expected_return',0):.2%}",
+            "Volatility": f"{portfolio_opt.get('volatility',0):.2%}",
+            "Sharpe Ratio": f"{portfolio_opt.get('sharpe_ratio',0):.2f}",
+        }
+        st.json(opt_view)
+
+        st.caption(
+            f"Real option to expand: option value {_format_currency(options_value.get('option_value',0))} (probability-weighted)."
+        )
+
+        if not esg_df.empty:
+            esg_df["annual_cost"] = esg_df["annual_cost"].apply(_format_currency)
+            esg_df["cumulative_cost"] = esg_df["cumulative_cost"].apply(_format_currency)
+            st.dataframe(esg_df.rename(columns={"annual_cost": "Carbon Cost", "cumulative_cost": "Cumulative"}), hide_index=True, use_container_width=True)
+
+        st.markdown("**Correlated shocks (copula-style view)**")
+        st.dataframe(corr_df, use_container_width=True)
 
 # =====================================================
 # FOOTER

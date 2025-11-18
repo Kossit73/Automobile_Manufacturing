@@ -1473,11 +1473,11 @@ with tab_advanced:
         "Optimization & Valuation",
     ])
 
-    with analytics_tabs[0]:
-        st.markdown("### Sensitivity analysis, tornado & spider views")
-        if sens_df.empty:
-            st.info("No sensitivity results available for the current configuration.")
-        else:
+        with analytics_tabs[0]:
+            st.markdown("### Sensitivity analysis, tornado & spider views")
+            if sens_df.empty:
+                st.info("No sensitivity results available for the current configuration.")
+            else:
             display_cols = ["parameter", "base_value", "low_ev", "high_ev", "impact_pct"]
             sens_view = sens_df[display_cols].rename(
                 columns={
@@ -1508,11 +1508,33 @@ with tab_advanced:
                 )
             st.dataframe(pd.DataFrame(tornado_rows), hide_index=True, use_container_width=True)
 
-    with analytics_tabs[1]:
-        st.markdown("### Scenario stress testing & spider metrics")
-        if stress_df.empty:
-            st.info("No stress scenarios available.")
-        else:
+            # Impact bar chart
+            impact_chart = px.bar(
+                sens_df,
+                x="impact_pct",
+                y="parameter",
+                orientation="h",
+                title="EV Impact by Driver",
+                labels={"impact_pct": "Impact (%)", "parameter": "Driver"},
+            )
+            st.plotly_chart(impact_chart, use_container_width=True)
+
+            # Tornado-style range chart
+            tornado_chart = px.bar(
+                sens_df.assign(range=sens_df["high_ev"] - sens_df["low_ev"]),
+                x="range",
+                y="parameter",
+                orientation="h",
+                title="Tornado View (EV Range)",
+                labels={"range": "EV Range", "parameter": "Driver"},
+            )
+            st.plotly_chart(tornado_chart, use_container_width=True)
+
+        with analytics_tabs[1]:
+            st.markdown("### Scenario stress testing & spider metrics")
+            if stress_df.empty:
+                st.info("No stress scenarios available.")
+            else:
             currency_cols = ["enterprise_value", "revenue_2030", "net_profit_2030", "final_cash"]
             stress_view = stress_df.copy()
             for col in currency_cols:
@@ -1524,6 +1546,22 @@ with tab_advanced:
                 )
             st.dataframe(stress_view, hide_index=True, use_container_width=True)
 
+            ev_cols = [
+                col
+                for col in ["enterprise_value", "revenue_2030", "net_profit_2030", "final_cash"]
+                if col in stress_df.columns
+            ]
+            if ev_cols:
+                stress_chart = px.bar(
+                    stress_df,
+                    x="Scenario",
+                    y=ev_cols,
+                    title="Scenario Outcomes",
+                    barmode="group",
+                    labels={"Scenario": "Scenario", "value": "Amount", "variable": "Metric"},
+                )
+                st.plotly_chart(stress_chart, use_container_width=True)
+
         classification_rows = []
         for y in years:
             debt = model.get("long_term_debt", {}).get(y, 0)
@@ -1533,18 +1571,28 @@ with tab_advanced:
             classification_rows.append({"Year": y, "Debt/Equity": ratio, "Risk Band": band})
         st.dataframe(pd.DataFrame(classification_rows), hide_index=True, use_container_width=True)
 
-    with analytics_tabs[2]:
-        st.markdown("### Trend, seasonality & segmentation")
-        ma_df = pd.DataFrame(
-            {
-                "Year": moving_avg.get("years", years),
-                "Revenue": list(revenue_series.values()),
-                "3Y Moving Avg": moving_avg.get("moving_average", []),
-            }
-        )
-        st.dataframe(ma_df, hide_index=True, use_container_width=True)
-        seasonality_msg = "Seasonality detected" if seasonality.get("seasonal") else "No strong seasonality"
-        st.caption(f"Autocorrelation: {seasonality.get('autocorrelation', 0):.2f} — {seasonality_msg}")
+        with analytics_tabs[2]:
+            st.markdown("### Trend, seasonality & segmentation")
+            ma_df = pd.DataFrame(
+                {
+                    "Year": moving_avg.get("years", years),
+                    "Revenue": list(revenue_series.values()),
+                    "3Y Moving Avg": moving_avg.get("moving_average", []),
+                }
+            )
+            st.dataframe(ma_df, hide_index=True, use_container_width=True)
+            seasonality_msg = "Seasonality detected" if seasonality.get("seasonal") else "No strong seasonality"
+            st.caption(f"Autocorrelation: {seasonality.get('autocorrelation', 0):.2f} — {seasonality_msg}")
+
+            if not ma_df.empty:
+                ma_chart = px.line(
+                    ma_df,
+                    x="Year",
+                    y=[col for col in ma_df.columns if col != "Year"],
+                    title="Revenue Trend & Moving Average",
+                    labels={"value": "Amount", "variable": "Series"},
+                )
+                st.plotly_chart(ma_chart, use_container_width=True)
 
         forecast_df = pd.DataFrame(
             {
@@ -1556,6 +1604,17 @@ with tab_advanced:
             st.dataframe(forecast_df, hide_index=True, use_container_width=True)
         else:
             st.info("SES forecast not available for the current series.")
+
+        if not forecast_df.empty:
+            forecast_chart = px.line(
+                forecast_df,
+                x="Future Year",
+                y="SES Forecast",
+                markers=True,
+                title="Simple Exponential Smoothing Forecast",
+                labels={"SES Forecast": "Forecast", "Future Year": "Year"},
+            )
+            st.plotly_chart(forecast_chart, use_container_width=True)
 
         if not segment_df.empty:
             seg_view = segment_df.copy()
@@ -1569,16 +1628,38 @@ with tab_advanced:
         else:
             st.info("Segmentation results will appear once product mix and revenue are available.")
 
+        if not segment_df.empty:
+            seg_chart = px.bar(
+                segment_df,
+                x="segment",
+                y=[col for col in ["revenue", "cost"] if col in segment_df.columns],
+                barmode="group",
+                title="Segment Revenue and Cost",
+                labels={"segment": "Segment", "value": "Amount", "variable": "Metric"},
+            )
+            st.plotly_chart(seg_chart, use_container_width=True)
+
         if regression:
             st.caption(
                 f"Regression (volume→revenue): slope={regression.get('slope',0):.2f}, R²={regression.get('r_squared',0):.2f}"
             )
+            rev_vals = list(revenue_series.values())
+            prod_vals = list(prod_series.values())
+            if rev_vals and prod_vals and len(rev_vals) == len(prod_vals):
+                reg_chart = px.scatter(
+                    x=prod_vals,
+                    y=rev_vals,
+                    trendline="ols",
+                    title="Volume vs Revenue Regression",
+                    labels={"x": "Production Units", "y": "Revenue"},
+                )
+                st.plotly_chart(reg_chart, use_container_width=True)
         else:
             st.info("Regression insights will display after production and revenue data are populated.")
 
-    with analytics_tabs[3]:
-        st.markdown("### Monte Carlo, VaR/CVaR & probabilistic valuation")
-        formatted_summary = mc_summary_df.copy()
+        with analytics_tabs[3]:
+            st.markdown("### Monte Carlo, VaR/CVaR & probabilistic valuation")
+            formatted_summary = mc_summary_df.copy()
         for idx, row in formatted_summary.iterrows():
             if "ROI" in row["Metric"]:
                 formatted_summary.loc[idx, ["Mean", "P5", "P95"]] = [
@@ -1611,6 +1692,16 @@ with tab_advanced:
         else:
             st.info("Run simulations to view the enterprise value distribution chart.")
 
+        if len(ev_distribution) > 0:
+            ecdf = np.sort(ev_distribution)
+            ecdf_chart = px.line(
+                x=ecdf,
+                y=np.linspace(0, 1, len(ecdf)),
+                title="Enterprise Value Cumulative Distribution",
+                labels={"x": "Enterprise Value", "y": "Cumulative Probability"},
+            )
+            st.plotly_chart(ecdf_chart, use_container_width=True)
+
     with analytics_tabs[4]:
         st.markdown("### What-if analysis, goal seek & tornado/spider helpers")
         if not what_if_df.empty:
@@ -1621,6 +1712,16 @@ with tab_advanced:
             if "ev_change_pct" in view.columns:
                 view["EV Delta (%)"] = view["ev_change_pct"].apply(lambda v: f"{v:.1f}%")
             st.dataframe(view, hide_index=True, use_container_width=True)
+
+            if "ev_change" in view.columns:
+                ev_chart = px.bar(
+                    what_if_df.rename(columns={"scenario_name": "Scenario"}),
+                    x="Scenario",
+                    y="ev_change",
+                    title="What-if Impact on Enterprise Value",
+                    labels={"ev_change": "Change", "Scenario": "Scenario"},
+                )
+                st.plotly_chart(ev_chart, use_container_width=True)
         else:
             st.info("Use the scenario presets to populate what-if results here.")
         if goal_result.get("success"):

@@ -32,7 +32,6 @@ from capex_management import initialize_default_capex, CapexScheduleManager
 
 st.set_page_config(
     page_title="Manufacturing Financial Platform",
-    page_icon="🏭",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -81,30 +80,14 @@ def _format_statement(df: pd.DataFrame, money_cols):
     return formatted
 
 # =====================================================
-# SIDEBAR - NAVIGATION & SETTINGS
+# SIDEBAR - SETTINGS
 # =====================================================
 
 with st.sidebar:
-    st.markdown("# ⚙️ Platform Settings")
-    
-    # Navigation
-    page = st.radio(
-        "Select Module:",
-        [
-            "🏠 Dashboard",
-            "🤖 AI & Machine Learning",
-            "👥 Labor Management",
-            "🏗️ CAPEX Management",
-            "💰 Financial Model",
-            "📈 Reports",
-        ],
-        help="Choose which module to work with"
-    )
-    
-    st.divider()
-    
+    st.markdown("# Platform Settings")
+
     # Global Settings
-    st.markdown("### 📋 Global Parameters")
+    st.markdown("### Global Parameters")
     
     salary_growth = st.slider(
         "Annual Salary Growth Rate (%)",
@@ -116,24 +99,36 @@ with st.sidebar:
     st.session_state.salary_growth_rate = salary_growth / 100
     
     st.divider()
-    
+
     # Platform Info
-    st.markdown("### ℹ️ Platform Info")
+    st.markdown("### Platform Info")
     st.info(
         "**Manufacturing Financial Platform v1.0**\n\n"
         "• Labor management (CRUD)\n"
         "• CAPEX scheduling\n"
         "• Financial modeling\n"
-        "• Advanced reporting\n\n"
-        "*Select module to navigate*"
+        "• Advanced reporting"
     )
+
+# =====================================================
+# MAIN NAVIGATION
+# =====================================================
+
+tab_dashboard, tab_ai, tab_labor, tab_capex, tab_financial, tab_reports = st.tabs([
+    "Dashboard",
+    "AI & Machine Learning",
+    "Labor Management",
+    "CAPEX Management",
+    "Financial Model",
+    "Reports",
+])
 
 # =====================================================
 # PAGE 1: DASHBOARD
 # =====================================================
 
-if page == "🏠 Dashboard":
-    st.markdown("# 📊 Executive Dashboard")
+with tab_dashboard:
+    st.markdown("# Executive Dashboard")
     
     # Run financial model
     cfg = CompanyConfig(
@@ -144,7 +139,7 @@ if page == "🏠 Dashboard":
     st.session_state.financial_model = model
     
     # Key Metrics
-    st.markdown("## 📈 Key Performance Indicators")
+    st.markdown("## Key Performance Indicators")
     
     col1, col2, col3, col4 = st.columns(4)
     
@@ -166,7 +161,7 @@ if page == "🏠 Dashboard":
         st.metric("Enterprise Value", f"${ev/1e6:.1f}M", delta="DCF")
     
     # Financial Overview
-    st.markdown("## 💼 5-Year Financial Forecast")
+    st.markdown("## 5-Year Financial Forecast")
     
     col1, col2 = st.columns(2)
     
@@ -192,7 +187,7 @@ if page == "🏠 Dashboard":
         st.plotly_chart(fig, use_container_width=True)
     
     # Labor & CAPEX Overview
-    st.markdown("## 👥 Workforce & Assets")
+    st.markdown("## Workforce & Assets")
     
     col1, col2, col3 = st.columns(3)
     
@@ -222,8 +217,8 @@ if page == "🏠 Dashboard":
 # PAGE 2: AI & MACHINE LEARNING (RAG)
 # =====================================================
 
-elif page == "🤖 AI & Machine Learning":
-    st.markdown("# 🤖 AI & Machine Learning")
+with tab_ai:
+    st.markdown("# AI & Machine Learning")
     st.info(
         "Store your model provider settings and run the standalone `rag_app.py` service "
         "to generate feasibility studies grounded in your financial snapshots and uploaded documents."
@@ -285,11 +280,11 @@ elif page == "🤖 AI & Machine Learning":
 # PAGE 3: LABOR MANAGEMENT
 # =====================================================
 
-elif page == "👥 Labor Management":
-    st.markdown("# 👥 Labor Position Management")
+with tab_labor:
+    st.markdown("# Labor Position Management")
     
     # Create tabs
-    tab1, tab2, tab3 = st.tabs(["📋 Current Positions", "➕ Add Position", "✏️ Edit Position"])
+    tab1, tab2, tab3 = st.tabs(["Current Positions", "Add Position", "Edit Position"])
     
     # TAB 1: View Positions
     with tab1:
@@ -356,7 +351,7 @@ elif page == "👥 Labor Management":
             overtime_hours = st.number_input("Annual Overtime Hours", min_value=0, value=0, step=50)
             training_cost = st.number_input("Annual Training Cost ($)", min_value=0, value=0, step=500)
         
-        if st.button("✅ Add Position"):
+        if st.button("Add Position"):
             try:
                 position_id = st.session_state.labor_manager.add_position(
                     position_name=position_name,
@@ -370,11 +365,11 @@ elif page == "👥 Labor Management":
                     overtime_hours_annual=overtime_hours,
                     training_cost=training_cost
                 )
-                st.success(f"✅ Position added! ID: {position_id}")
+                st.success(f"Position added. ID: {position_id}")
                 st.session_state.last_update = datetime.now()
                 st.rerun()
             except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
+                st.error(f"Error: {str(e)}")
     
     # TAB 3: Edit Position
     with tab3:
@@ -404,7 +399,7 @@ elif page == "👥 Labor Management":
             col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("✅ Save Changes"):
+                if st.button("Save Changes"):
                     try:
                         st.session_state.labor_manager.edit_position(
                             selected_id,
@@ -415,29 +410,29 @@ elif page == "👥 Labor Management":
                             benefits_percent=new_benefits,
                             training_cost_annual=new_training
                         )
-                        st.success("✅ Position updated!")
+                        st.success("Position updated.")
                         st.session_state.last_update = datetime.now()
                     except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
+                        st.error(f"Error: {str(e)}")
             
             with col2:
-                if st.button("🗑️ Remove Position"):
+                if st.button("Remove Position"):
                     try:
                         st.session_state.labor_manager.remove_position(selected_id)
-                        st.success("✅ Position removed!")
+                        st.success("Position removed.")
                         st.session_state.last_update = datetime.now()
                         st.rerun()
                     except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
+                        st.error(f"Error: {str(e)}")
 
 # =====================================================
 # PAGE 3: CAPEX MANAGEMENT
 # =====================================================
 
-elif page == "🏗️ CAPEX Management":
-    st.markdown("# 🏗️ Capital Expenditure Management")
+with tab_capex:
+    st.markdown("# Capital Expenditure Management")
     
-    tab1, tab2, tab3 = st.tabs(["📋 Current Assets", "➕ Add Asset", "✏️ Edit Asset"])
+    tab1, tab2, tab3 = st.tabs(["Current Assets", "Add Asset", "Edit Asset"])
     
     # TAB 1: View Assets
     with tab1:
@@ -490,7 +485,7 @@ elif page == "🏗️ CAPEX Management":
             start_year = st.number_input("Start Year", min_value=2026, value=2026)
             notes = st.text_area("Notes", value="")
         
-        if st.button("✅ Add Asset"):
+        if st.button("Add Asset"):
             try:
                 asset_id = st.session_state.capex_manager.add_item(
                     name=name,
@@ -501,11 +496,11 @@ elif page == "🏗️ CAPEX Management":
                     category=category,
                     notes=notes
                 )
-                st.success(f"✅ Asset added! ID: {asset_id}")
+                st.success(f"Asset added. ID: {asset_id}")
                 st.session_state.last_update = datetime.now()
                 st.rerun()
             except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
+                st.error(f"Error: {str(e)}")
     
     # TAB 3: Edit Asset
     with tab3:
@@ -535,7 +530,7 @@ elif page == "🏗️ CAPEX Management":
             col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("✅ Save Changes"):
+                if st.button("Save Changes"):
                     try:
                         st.session_state.capex_manager.edit_item(
                             selected_id,
@@ -546,29 +541,29 @@ elif page == "🏗️ CAPEX Management":
                             salvage_value=new_salvage,
                             notes=new_notes
                         )
-                        st.success("✅ Asset updated!")
+                        st.success("Asset updated.")
                         st.session_state.last_update = datetime.now()
                     except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
+                        st.error(f"Error: {str(e)}")
             
             with col2:
-                if st.button("🗑️ Remove Asset"):
+                if st.button("Remove Asset"):
                     try:
                         st.session_state.capex_manager.remove_item(selected_id)
-                        st.success("✅ Asset removed!")
+                        st.success("Asset removed.")
                         st.session_state.last_update = datetime.now()
                         st.rerun()
                     except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
+                        st.error(f"Error: {str(e)}")
 
 # =====================================================
 # PAGE 4: FINANCIAL MODEL
 # =====================================================
 
-elif page == "💰 Financial Model":
-    st.markdown("# 💰 Financial Model & Valuation")
+with tab_financial:
+    st.markdown("# Financial Model & Valuation")
     
-    tab1, tab2 = st.tabs(["🧮 Run Model", "📊 Results"])
+    tab1, tab2 = st.tabs(["Run Model", "Results"])
     
     with tab1:
         st.markdown("## Model Configuration")
@@ -587,7 +582,7 @@ elif page == "💰 Financial Model":
             interest_rate = st.slider("Interest Rate (%)", 0, 15, 5) / 100
             shares_outstanding = st.number_input("Shares Outstanding (M)", min_value=1, value=100) * 1e6
         
-        if st.button("🧮 Run Financial Model"):
+        if st.button("Run Financial Model"):
             try:
                 cfg = CompanyConfig(
                     revenue_cagr=revenue_cagr,
@@ -604,10 +599,10 @@ elif page == "💰 Financial Model":
                 
                 st.session_state.financial_model = run_financial_model(cfg)
                 st.session_state.last_update = datetime.now()
-                st.success("✅ Model executed successfully!")
+                st.success("Model executed successfully.")
                 st.rerun()
             except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
+                st.error(f"Error: {str(e)}")
     
     with tab2:
         if st.session_state.financial_model:
@@ -657,8 +652,8 @@ elif page == "💰 Financial Model":
 # PAGE 5: REPORTS
 # =====================================================
 
-elif page == "📈 Reports":
-    st.markdown("# 📈 Financial Reports & Exports")
+with tab_reports:
+    st.markdown("# Financial Reports & Exports")
     
     if st.session_state.financial_model:
         model = st.session_state.financial_model
@@ -787,7 +782,7 @@ elif page == "📈 Reports":
 
             csv = export_df.to_csv(index=False)
             st.download_button(
-                "📥 Download Financial Forecast (CSV)",
+                "Download Financial Forecast (CSV)",
                 csv,
                 "financial_forecast.csv",
                 "text/csv"
@@ -798,7 +793,7 @@ elif page == "📈 Reports":
 
             csv = labor_schedule.to_csv(index=False)
             st.download_button(
-                "📥 Download Labor Schedule (CSV)",
+                "Download Labor Schedule (CSV)",
                 csv,
                 "labor_schedule.csv",
                 "text/csv"
@@ -815,7 +810,7 @@ st.divider()
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.markdown("### 📱 Quick Links")
+    st.markdown("### Quick Links")
     st.markdown("""
     - [GitHub](https://github.com/Kossit73/Automobile_Manufacturing)
     - [Documentation](https://github.com/Kossit73/Automobile_Manufacturing/blob/main/README.md)
@@ -823,7 +818,7 @@ with col1:
     """)
 
 with col2:
-    st.markdown("### 📚 Features")
+    st.markdown("### Features")
     st.markdown("""
     - ✓ Labor CRUD management
     - ✓ CAPEX scheduling
@@ -833,7 +828,7 @@ with col2:
     """)
 
 with col3:
-    st.markdown("### 🔧 Info")
+    st.markdown("### Info")
     if st.session_state.last_update:
         st.write(f"Last update: {st.session_state.last_update.strftime('%H:%M:%S')}")
     st.write("Platform v1.0")

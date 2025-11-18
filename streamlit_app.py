@@ -20,6 +20,7 @@ from financial_model import (
     generate_financial_statements,
     generate_labor_statement,
 )
+from visualization_tools import FinancialVisualizer
 from labor_management import (
     initialize_default_labor_structure, LaborScheduleManager, LaborCostSchedule,
     ProductionLinkedLabor, LaborType, EmploymentStatus, JobCategory
@@ -301,6 +302,42 @@ with tab_dashboard:
         st.metric("# Assets", f"{len(capex_items)}")
         dep_first = model['depreciation'].get(start_year, model['depreciation']) if isinstance(model['depreciation'], dict) else model['depreciation']
         st.metric("Annual Depreciation", f"${dep_first/1e3:.0f}K")
+
+    st.markdown("## Financial Visualization & Reports")
+    visualizer = FinancialVisualizer(model)
+    viz_tabs = st.tabs([
+        "Executive Summary",
+        "Financial Statements",
+        "Ratio Analysis",
+        "Scenario Report",
+        "Sensitivity Heatmap",
+        "Text Charts",
+    ])
+
+    with viz_tabs[0]:
+        st.code(visualizer.executive_summary())
+
+    with viz_tabs[1]:
+        st.code(visualizer.financial_statement_summary())
+
+    with viz_tabs[2]:
+        st.code(visualizer.ratio_analysis_report())
+
+    with viz_tabs[3]:
+        st.code(visualizer.scenario_report())
+
+    with viz_tabs[4]:
+        st.code(visualizer.sensitivity_heatmap())
+
+    with viz_tabs[5]:
+        chart_cols = st.columns(3)
+        with chart_cols[0]:
+            st.code(visualizer.generate_revenue_chart())
+        with chart_cols[1]:
+            st.code(visualizer.generate_profit_chart())
+        with chart_cols[2]:
+            st.code(visualizer.generate_cash_balance_chart())
+        st.code(visualizer.generate_margin_trend())
 
 # =====================================================
 # PAGE 2: AI & MACHINE LEARNING (RAG)

@@ -1745,7 +1745,6 @@ with tab_advanced:
                 reg_chart = px.scatter(
                     x=prod_vals,
                     y=rev_vals,
-                    trendline="ols",
                     title="Volume vs Revenue Regression",
                     labels={"x": "Production Units", "y": "Revenue"},
                 )

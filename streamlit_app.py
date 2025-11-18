@@ -119,6 +119,60 @@ with tab_platform:
         "• Advanced reporting"
     )
 
+    st.markdown("### Schedules")
+    cfg = CompanyConfig(
+        labor_manager=st.session_state.labor_manager,
+        capex_manager=st.session_state.capex_manager,
+    )
+    model = run_financial_model(cfg)
+    years = list(model["years"])
+    income_df, cashflow_df, balance_df = generate_financial_statements(model)
+    labor_df = generate_labor_statement(model)
+
+    capex_spend = st.session_state.capex_manager.yearly_capex_schedule(years[0], len(years))
+    capex_spend_df = pd.DataFrame({"Year": years, "CAPEX Spend": [capex_spend.get(y, 0.0) for y in years]})
+
+    depreciation_sched = st.session_state.capex_manager.depreciation_schedule(years[0], len(years))
+    depreciation_df = pd.DataFrame({"Year": years, "Depreciation": [depreciation_sched.get(y, 0.0) for y in years]})
+
+    schedule_tabs = st.tabs([
+        "Income Statement",
+        "Cash Flow",
+        "Balance Sheet",
+        "Labor Cost",
+        "CAPEX Spend",
+        "Depreciation",
+    ])
+
+    with schedule_tabs[0]:
+        st.dataframe(_format_statement(income_df, ["Revenue", "COGS", "Opex", "EBITDA", "EBIT", "Tax", "Net Profit"]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[1]:
+        st.dataframe(_format_statement(cashflow_df, ["CFO", "CFI", "CFF", "Net Cash Flow", "Closing Cash"]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[2]:
+        st.dataframe(_format_statement(balance_df, [
+            "Fixed Assets",
+            "Current Assets",
+            "Total Assets",
+            "Current Liabilities",
+            "Long Term Debt",
+            "Total Equity",
+            "Total Liabilities + Equity",
+        ]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[3]:
+        if labor_df.empty:
+            st.info("No labor schedule available. Add positions to view costs and headcount.")
+        else:
+            st.dataframe(labor_df, use_container_width=True, hide_index=True)
+
+    with schedule_tabs[4]:
+        st.dataframe(_format_statement(capex_spend_df, ["CAPEX Spend"]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[5]:
+        st.dataframe(_format_statement(depreciation_df, ["Depreciation"]), use_container_width=True, hide_index=True)
+
 # =====================================================
 # PAGE 1: DASHBOARD
 # =====================================================

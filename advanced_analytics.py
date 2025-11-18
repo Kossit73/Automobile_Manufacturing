@@ -31,7 +31,7 @@ Features:
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Callable, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from scipy import stats, optimize
 from scipy.stats import norm, multivariate_normal
 import warnings
@@ -73,11 +73,8 @@ class AdvancedSensitivityAnalyzer:
             base_value = getattr(self.config, param)
             range_pct = ranges.get(param, 0.25)
             
-            cfg_low = self.config.__class__(**self.config.__dict__)
-            cfg_high = self.config.__class__(**self.config.__dict__)
-            
-            setattr(cfg_low, param, base_value * (1 - range_pct))
-            setattr(cfg_high, param, base_value * (1 + range_pct))
+            cfg_low = replace(self.config, **{param: base_value * (1 - range_pct)})
+            cfg_high = replace(self.config, **{param: base_value * (1 + range_pct)})
             
             model_low = run_financial_model(cfg_low)
             model_high = run_financial_model(cfg_high)
@@ -177,7 +174,7 @@ class StressTestEngine:
         
         results = {}
         for scenario_name, shocks in scenarios.items():
-            cfg = self.config.__class__(**self.config.__dict__)
+            cfg = replace(self.config)
             
             # Apply shocks
             for key, value in shocks.items():
@@ -362,7 +359,7 @@ class MonteCarloSimulator:
         np.random.seed(42)
         
         for _ in range(self.num_simulations):
-            cfg = self.config.__class__(**self.config.__dict__)
+            cfg = replace(self.config)
             
             # Sample parameters from distributions
             for param, (dist_type, param1, param2) in parameter_distributions.items():
@@ -441,7 +438,7 @@ class WhatIfAnalyzer:
         from financial_model import run_financial_model
         
         # Create modified config
-        cfg = self.config.__class__(**self.config.__dict__)
+        cfg = replace(self.config)
         for param, value in adjustments.items():
             if hasattr(cfg, param):
                 setattr(cfg, param, value)
@@ -473,7 +470,7 @@ class WhatIfAnalyzer:
         from financial_model import run_financial_model
         
         steps = [{'step': 'Baseline', 'value': base_ev, 'impact': 0}]
-        current_config = self.config.__class__(**self.config.__dict__)
+        current_config = replace(self.config)
         
         for adj_name, (param, new_value) in adjustments.items():
             if hasattr(current_config, param):
@@ -514,7 +511,7 @@ class GoalSeekOptimizer:
         from financial_model import run_financial_model
         
         def objective(param_value):
-            cfg = self.config.__class__(**self.config.__dict__)
+            cfg = replace(self.config)
             setattr(cfg, parameter, param_value)
             model = run_financial_model(cfg)
             
@@ -527,13 +524,12 @@ class GoalSeekOptimizer:
         # Find initial bounds
         base_value = getattr(self.config, parameter)
         x0 = base_value * 0.5
-        
+
         result = optimize.minimize_scalar(objective, bounds=(0.01, 2 * base_value), method='bounded')
         
         if result.success:
             optimal_value = result.x
-            cfg = self.config.__class__(**self.config.__dict__)
-            setattr(cfg, parameter, optimal_value)
+            cfg = replace(self.config, **{parameter: optimal_value})
             model = run_financial_model(cfg)
             
             return {

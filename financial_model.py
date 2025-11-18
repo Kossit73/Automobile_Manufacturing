@@ -167,28 +167,39 @@ def _get_capacity_for_year(cfg: CompanyConfig, year: int) -> float:
     return list(cfg.capacity_utilization.values())[0]
 
 
-def calculate_opex(years: range, cfg: CompanyConfig) -> Dict:
-    """Calculate operating expenses including marketing and payroll"""
-    opex = {}
-    for y in years:
-        annual_payroll = (cfg.avg_salary * cfg.headcount * 12) * (1 + cfg.annual_salary_growth) ** (y - cfg.start_year)
-        opex[y] = _get_marketing_for_year(cfg, y) + annual_payroll
-    return opex
+def calculate_opex_breakdown(years: range, cfg: CompanyConfig) -> Tuple[Dict[int, float], Dict[int, Dict[str, float]]]:
+    """Calculate operating expenses with a breakdown by cost type.
 
-def calculate_opex_with_labor_manager(years: range, cfg: CompanyConfig) -> Dict:
-    """Calculate operating expenses using labor manager if available"""
-    if cfg.labor_manager is None:
-        return calculate_opex(years, cfg)
-    
-    opex = {}
+    Returns both the total opex mapping and a per-year breakdown containing
+    marketing, labor/payroll, and other operating costs. This allows the
+    income statement to display detailed expense categories instead of a
+    single aggregated opex line.
+    """
+
+    opex: Dict[int, float] = {}
+    breakdown: Dict[int, Dict[str, float]] = {}
+
     for y in years:
-        # Get labor costs from manager
-        direct_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Direct', 0)
-        indirect_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Indirect', 0)
-        labor_cost = direct_cost + indirect_cost
         marketing = _get_marketing_for_year(cfg, y)
-        opex[y] = marketing + labor_cost
-    return opex
+
+        if cfg.labor_manager is None:
+            labor_cost = (cfg.avg_salary * cfg.headcount * 12) * (1 + cfg.annual_salary_growth) ** (y - cfg.start_year)
+        else:
+            direct_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Direct', 0)
+            indirect_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Indirect', 0)
+            labor_cost = direct_cost + indirect_cost
+
+        other_cost = 0.0
+
+        breakdown[y] = {
+            'marketing': marketing,
+            'labor': labor_cost,
+            'other': other_cost,
+        }
+
+        opex[y] = marketing + labor_cost + other_cost
+
+    return opex, breakdown
 
 def get_labor_metrics(cfg: CompanyConfig, years: range) -> Dict:
     """Extract labor metrics from labor manager for reporting"""
@@ -344,7 +355,7 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
     # Calculate components
     production_volume, product_mix, selling_price, revenue = calculate_production_forecast(cfg)
     cogs = calculate_cogs(revenue, cfg)
-    opex = calculate_opex_with_labor_manager(years, cfg)
+    opex, opex_breakdown = calculate_opex_breakdown(years, cfg)
     labor_metrics = get_labor_metrics(cfg, years)
     ebitda, ebit, tax, net_profit, depreciation = calculate_income_statement(years, cfg, production_volume, revenue, cogs, opex)
     fcf, discounted_fcf, enterprise_value = calculate_dcf(years, ebit, cfg, depreciation)
@@ -391,6 +402,7 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         'revenue': revenue,
         'cogs': cogs,
         'opex': opex,
+        'opex_breakdown': opex_breakdown,
         'ebitda': ebitda,
         'ebit': ebit,
         'tax': tax,
@@ -429,13 +441,22 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
 def generate_financial_statements(model_data: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Generate income statement, cash flow, and balance sheet DataFrames"""
     years = model_data['years']
-    
+
+    breakdown = model_data.get('opex_breakdown', {})
+    marketing = [breakdown.get(y, {}).get('marketing', 0.0) for y in years]
+    labor = [breakdown.get(y, {}).get('labor', 0.0) for y in years]
+    other_opex = [breakdown.get(y, {}).get('other', 0.0) for y in years]
+
     income_df = pd.DataFrame({
         "Year": years,
         "Revenue": [model_data['revenue'][y] for y in years],
         "COGS": [model_data['cogs'][y] for y in years],
+        "Marketing": marketing,
+        "Labor / Payroll": labor,
+        "Other Opex": other_opex,
         "Opex": [model_data['opex'][y] for y in years],
         "EBITDA": [model_data['ebitda'][y] for y in years],
+        "Depreciation": [model_data['depreciation'][y] if isinstance(model_data['depreciation'], dict) else model_data['depreciation'] for y in years],
         "EBIT": [model_data['ebit'][y] for y in years],
         "Tax": [model_data['tax'][y] for y in years],
         "Net Profit": [model_data['net_profit'][y] for y in years],

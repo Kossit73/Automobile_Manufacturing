@@ -413,6 +413,35 @@ with tab_platform:
         "Working Capital Change": [model["working_capital_change"].get(y, 0.0) for y in years],
     })
 
+    opex_breakdown_rows = []
+    for y in years:
+        breakdown = model.get("opex_breakdown", {}).get(y, {})
+        opex_breakdown_rows.append(
+            {
+                "Year": y,
+                "Marketing": breakdown.get("marketing", 0.0),
+                "Labor": breakdown.get("labor", 0.0),
+                "Other Operating Cost": breakdown.get("other", 0.0),
+                "Total Opex": model.get("opex", {}).get(y, 0.0),
+                "Override Applied": breakdown.get("override_applied"),
+            }
+        )
+
+    opex_breakdown_df = pd.DataFrame(opex_breakdown_rows)
+
+    wc_positions = model.get("working_capital", {})
+    wc_accrual_df = pd.DataFrame(
+        {
+            "Year": years,
+            "Receivables": [wc_positions.get("receivables", {}).get(y, 0.0) for y in years],
+            "Inventory": [wc_positions.get("inventory", {}).get(y, 0.0) for y in years],
+            "Payables": [wc_positions.get("payables", {}).get(y, 0.0) for y in years],
+            "Accrued Expenses": [wc_positions.get("accrued_expenses", {}).get(y, 0.0) for y in years],
+            "Net Working Capital": [wc_positions.get("net_working_capital", {}).get(y, 0.0) for y in years],
+            "Change in Working Capital": [wc_positions.get("delta_working_capital", {}).get(y, 0.0) for y in years],
+        }
+    )
+
     financing_df = pd.DataFrame({
         "Year": years,
         "Interest": [model["interest_payment"][y] for y in years],
@@ -475,6 +504,8 @@ with tab_platform:
         "Labor Cost",
         "CAPEX",
         "Production Schedule",
+        "Operating Expense Breakdown",
+        "Working Capital Accruals",
         "Working Capital & FCF",
         "Financing",
         "Fixed Cost",
@@ -486,7 +517,24 @@ with tab_platform:
         "Automobile & Assembly",
     ])
 
-    with schedule_tabs[0]:
+    (
+        tab_labor,
+        tab_capex,
+        tab_production,
+        tab_opex_breakdown,
+        tab_wc_accruals,
+        tab_wc_fcf,
+        tab_financing,
+        tab_fixed_cost,
+        tab_variable_cost,
+        tab_other_cost,
+        tab_debt,
+        tab_investment,
+        tab_assets,
+        tab_auto,
+    ) = schedule_tabs
+
+    with tab_labor:
         if labor_df.empty:
             st.info("No labor schedule available. Add positions to view costs and headcount.")
         else:
@@ -498,14 +546,14 @@ with tab_platform:
                 "Edit labor totals inline; add or remove years to reshape the schedule.",
             )
 
-    with schedule_tabs[1]:
+    with tab_capex:
         st.dataframe(
             _format_statement(capex_df, ["CAPEX Spend", "Depreciation"]),
             use_container_width=True,
             hide_index=True,
         )
 
-    with schedule_tabs[2]:
+    with tab_production:
         st.markdown("#### Production Schedule")
 
         production_display = production_schedule_df.copy()
@@ -537,13 +585,45 @@ with tab_platform:
                 hide_index=True,
             )
 
-    with schedule_tabs[3]:
+    with tab_opex_breakdown:
+        st.markdown("#### Operating Expense Breakdown")
+        if opex_breakdown_df.empty:
+            st.info("No operating expense details available. Add costs to view the breakdown.")
+        else:
+            st.dataframe(
+                _format_statement(
+                    opex_breakdown_df,
+                    ["Marketing", "Labor", "Other Operating Cost", "Total Opex"],
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with tab_wc_accruals:
+        st.markdown("#### Working-Capital-Driven Accruals")
+        st.dataframe(
+            _format_statement(
+                wc_accrual_df,
+                [
+                    "Receivables",
+                    "Inventory",
+                    "Payables",
+                    "Accrued Expenses",
+                    "Net Working Capital",
+                    "Change in Working Capital",
+                ],
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with tab_wc_fcf:
         st.dataframe(_format_statement(working_cap_df, ["FCF", "Discounted FCF", "Working Capital Change"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[4]:
+    with tab_financing:
         st.dataframe(_format_statement(financing_df, ["Interest", "Loan Repayment", "Long Term Debt", "Cash Flow from Financing"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[5]:
+    with tab_fixed_cost:
         _editable_schedule(
             "Fixed Cost Schedule",
             fixed_cost_df,
@@ -552,7 +632,7 @@ with tab_platform:
             "Use the + button to add years or delete rows; edits override computed operating expenses.",
         )
 
-    with schedule_tabs[6]:
+    with tab_variable_cost:
         _editable_schedule(
             "Variable Cost Schedule",
             variable_cost_df,
@@ -561,7 +641,7 @@ with tab_platform:
             "Edit COGS by year. Added rows expand the projection horizon automatically.",
         )
 
-    with schedule_tabs[7]:
+    with tab_other_cost:
         _editable_schedule(
             "Other Cost Schedule",
             other_cost_df,
@@ -570,7 +650,7 @@ with tab_platform:
             "Adjust other operating costs by year; use add/remove to reshape the horizon.",
         )
 
-    with schedule_tabs[8]:
+    with tab_debt:
         _editable_schedule(
             "Debt Schedule",
             debt_schedule_df,
@@ -579,7 +659,7 @@ with tab_platform:
             "Edit principal repayments; add/remove years to reshape the debt amortization profile.",
         )
 
-    with schedule_tabs[9]:
+    with tab_investment:
         owner_default = float(st.session_state.owner_equity_pct)
         if st.session_state.investment_overrides:
             owner_default = float(st.session_state.investment_overrides.get(years[0], owner_default))
@@ -611,7 +691,7 @@ with tab_platform:
             "Edit ownership percentages or add equity rows; debt values remain reference-only.",
         )
 
-    with schedule_tabs[10]:
+    with tab_assets:
         _editable_schedule(
             "Asset Schedule",
             assets_df,
@@ -620,7 +700,7 @@ with tab_platform:
             "Update asset balances or add projection years to tailor the asset view.",
         )
 
-    with schedule_tabs[11]:
+    with tab_auto:
         st.markdown("#### Automobile Manufacturing Planner")
         planner = [_normalize_auto_plan(p) for p in st.session_state.auto_planner]
         st.session_state.auto_planner = planner

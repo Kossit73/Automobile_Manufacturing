@@ -88,13 +88,13 @@ def _format_statement(df: pd.DataFrame, money_cols):
 # MAIN NAVIGATION
 # =====================================================
 
-tab_platform, tab_dashboard, tab_ai, tab_labor, tab_capex, tab_financial, tab_reports, tab_advanced = st.tabs([
+tab_platform, tab_dashboard, tab_financial, tab_ai, tab_labor, tab_capex, tab_reports, tab_advanced = st.tabs([
     "Platform Settings",
     "Dashboard",
+    "Financial Model",
     "AI & Machine Learning",
     "Labor Management",
     "CAPEX Management",
-    "Financial Model",
     "Reports",
     "Advanced Analytics",
 ])

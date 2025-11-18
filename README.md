@@ -79,6 +79,7 @@ A comprehensive financial modeling, labor management, and advanced analytics pla
 ├── LABOR_MANAGEMENT_GUIDE.md (520 lines) - Comprehensive user guide
 ├── LABOR_MANAGEMENT_QUICKREF.md (380 lines) - Quick reference & code examples
 ├── LABOR_MANAGEMENT_SUMMARY.md (400 lines) - Implementation details
+├── MODEL_WORKFLOW.md - End-to-end model orchestration overview
 ├── ADVANCED_ANALYTICS_GUIDE.md (600 lines) - Feature documentation
 ├── CAPEX_MANAGEMENT_GUIDE.md (450 lines) - Capital planning guide
 ├── QUICKSTART.md - 30-second intro

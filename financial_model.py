@@ -18,6 +18,7 @@ class CompanyConfig:
     """Configuration class for company parameters"""
     company_name: str = "Volt Rider"
     start_year: int = 2026
+    production_end_year: int = 2030
     facility_size: int = 2000
     
     # CAPEX
@@ -57,10 +58,29 @@ class CompanyConfig:
     terminal_growth: float = 0.03
     
     def __post_init__(self):
+        if self.production_end_year < self.start_year:
+            self.production_end_year = self.start_year
+
+        years = list(range(self.start_year, self.production_end_year + 1))
+
         if self.capacity_utilization is None:
-            self.capacity_utilization = {2026: 0.5, 2027: 0.7, 2028: 0.9, 2029: 1.0, 2030: 1.0}
+            ramp = [0.5, 0.7, 0.9, 1.0, 1.0]
+            self.capacity_utilization = {
+                y: ramp[i] if i < len(ramp) else ramp[-1]
+                for i, y in enumerate(years)
+            }
+        else:
+            sorted_years = sorted(self.capacity_utilization)
+            last_val = self.capacity_utilization.get(sorted_years[0], 0.0) if sorted_years else 0.0
+            filled = {}
+            for y in years:
+                if y in self.capacity_utilization:
+                    last_val = self.capacity_utilization[y]
+                filled[y] = last_val
+            self.capacity_utilization = filled
+
         if self.marketing_budget is None:
-            self.marketing_budget = {y: 72_000 for y in range(self.start_year, self.start_year + 5)}
+            self.marketing_budget = {y: 72_000 for y in years}
 
 # Default Configuration
 config = CompanyConfig()
@@ -70,9 +90,9 @@ config = CompanyConfig()
 # =====================================================
 def calculate_production_forecast(cfg: CompanyConfig):
     """Calculate production volume and revenue forecasts"""
-    years = range(cfg.start_year, cfg.start_year + 5)
-    
-    production_volume = {y: cfg.annual_capacity * cfg.capacity_utilization[y] for y in years}
+    years = range(cfg.start_year, cfg.production_end_year + 1)
+
+    production_volume = {y: cfg.annual_capacity * _get_capacity_for_year(cfg, y) for y in years}
     
     product_mix = {
         "EV_Bikes": 0.30,
@@ -129,6 +149,22 @@ def _get_marketing_for_year(cfg: CompanyConfig, year: int) -> float:
     if earlier:
         return cfg.marketing_budget[earlier[-1]]
     return cfg.marketing_budget[defined_years[0]]
+
+
+def _get_capacity_for_year(cfg: CompanyConfig, year: int) -> float:
+    """Gracefully fetch utilization for production forecasts with forward-fill."""
+
+    if not cfg.capacity_utilization:
+        return 0.0
+
+    if year in cfg.capacity_utilization:
+        return cfg.capacity_utilization[year]
+
+    past_years = [y for y in cfg.capacity_utilization if y <= year]
+    if past_years:
+        return cfg.capacity_utilization[max(past_years)]
+
+    return list(cfg.capacity_utilization.values())[0]
 
 
 def calculate_opex(years: range, cfg: CompanyConfig) -> Dict:
@@ -208,13 +244,15 @@ def calculate_dcf(years: range, ebit, cfg: CompanyConfig, depreciation) -> Tuple
         fcf = {y: ebit[y] * (1 - cfg.tax_rate) + depreciation for y in years}
     discounted_fcf = {y: fcf[y] / ((1 + cfg.wacc) ** (y - cfg.start_year + 1)) for y in years}
     
+    last_year = max(years)
+
     # Avoid division by zero and negative terminal values
-    if cfg.wacc <= cfg.terminal_growth or fcf[cfg.start_year + 4] <= 0:
+    if cfg.wacc <= cfg.terminal_growth or fcf[last_year] <= 0:
         terminal_value = 0
     else:
-        terminal_value = fcf[cfg.start_year + 4] * (1 + cfg.terminal_growth) / (cfg.wacc - cfg.terminal_growth)
-    
-    discounted_terminal = terminal_value / ((1 + cfg.wacc) ** (cfg.start_year + 4 - cfg.start_year + 1))
+        terminal_value = fcf[last_year] * (1 + cfg.terminal_growth) / (cfg.wacc - cfg.terminal_growth)
+
+    discounted_terminal = terminal_value / ((1 + cfg.wacc) ** (last_year - cfg.start_year + 1))
     enterprise_value = sum(discounted_fcf.values()) + discounted_terminal
     
     return fcf, discounted_fcf, enterprise_value
@@ -301,7 +339,7 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
     if cfg is None:
         cfg = config
     
-    years = range(cfg.start_year, cfg.start_year + 5)
+    years = range(cfg.start_year, cfg.production_end_year + 1)
     
     # Calculate components
     production_volume, product_mix, selling_price, revenue = calculate_production_forecast(cfg)

@@ -156,9 +156,15 @@ def initialize_session_state():
     
     if 'financial_model' not in st.session_state:
         st.session_state.financial_model = None
-    
+
     if 'salary_growth_rate' not in st.session_state:
         st.session_state.salary_growth_rate = 0.05
+
+    if 'production_start_year' not in st.session_state:
+        st.session_state.production_start_year = 2026
+
+    if 'production_end_year' not in st.session_state:
+        st.session_state.production_end_year = 2030
     
     if 'last_update' not in st.session_state:
         st.session_state.last_update = None
@@ -214,6 +220,27 @@ with tab_platform:
     st.markdown("# Platform Settings")
 
     st.markdown("### Global Parameters")
+    col_start, col_end = st.columns(2)
+    with col_start:
+        start_year_input = st.number_input(
+            "Production Start Year",
+            min_value=1900,
+            max_value=2100,
+            value=int(st.session_state.production_start_year),
+            step=1,
+        )
+    with col_end:
+        end_year_input = st.number_input(
+            "Production End Year",
+            min_value=int(start_year_input),
+            max_value=2100,
+            value=int(max(st.session_state.production_end_year, start_year_input)),
+            step=1,
+        )
+
+    st.session_state.production_start_year = int(start_year_input)
+    st.session_state.production_end_year = int(end_year_input)
+
     salary_growth = st.slider(
         "Annual Salary Growth Rate (%)",
         min_value=0,
@@ -234,6 +261,8 @@ with tab_platform:
 
     st.markdown("### Schedules")
     cfg = CompanyConfig(
+        start_year=st.session_state.production_start_year,
+        production_end_year=st.session_state.production_end_year,
         labor_manager=st.session_state.labor_manager,
         capex_manager=st.session_state.capex_manager,
     )
@@ -573,6 +602,8 @@ with tab_dashboard:
     
     # Run financial model
     cfg = CompanyConfig(
+        start_year=st.session_state.production_start_year,
+        production_end_year=st.session_state.production_end_year,
         labor_manager=st.session_state.labor_manager,
         capex_manager=st.session_state.capex_manager
     )
@@ -1307,6 +1338,8 @@ with tab_advanced:
     st.markdown("# Advanced Analytics")
 
     cfg = CompanyConfig(
+        start_year=st.session_state.production_start_year,
+        production_end_year=st.session_state.production_end_year,
         labor_manager=st.session_state.labor_manager,
         capex_manager=st.session_state.capex_manager,
     )

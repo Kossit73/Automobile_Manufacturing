@@ -1273,17 +1273,27 @@ with tab_advanced:
         )
         if not forecast_df.empty:
             st.dataframe(forecast_df, hide_index=True, use_container_width=True)
+        else:
+            st.info("SES forecast not available for the current series.")
 
         if not segment_df.empty:
             seg_view = segment_df.copy()
             seg_view["revenue"] = seg_view["revenue"].apply(_format_currency)
             seg_view["cost"] = seg_view["cost"].apply(_format_currency)
-            st.dataframe(seg_view.rename(columns={"revenue": "Revenue", "cost": "Cost"}), hide_index=True, use_container_width=True)
+            st.dataframe(
+                seg_view.rename(columns={"revenue": "Revenue", "cost": "Cost"}),
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.info("Segmentation results will appear once product mix and revenue are available.")
 
         if regression:
             st.caption(
                 f"Regression (volume→revenue): slope={regression.get('slope',0):.2f}, R²={regression.get('r_squared',0):.2f}"
             )
+        else:
+            st.info("Regression insights will display after production and revenue data are populated.")
 
     with analytics_tabs[3]:
         st.markdown("### Monte Carlo, VaR/CVaR & probabilistic valuation")
@@ -1304,7 +1314,11 @@ with tab_advanced:
         st.dataframe(formatted_summary, hide_index=True, use_container_width=True)
 
         if var_summary:
-            st.caption(f"95% VaR: {_format_currency(var_summary.get('var',0))}; 95% CVaR: {_format_currency(cvar_summary.get('cvar',0))}")
+            st.caption(
+                f"95% VaR: {_format_currency(var_summary.get('var',0))}; 95% CVaR: {_format_currency(cvar_summary.get('cvar',0))}"
+            )
+        else:
+            st.info("Monte Carlo risk metrics will display after simulations produce a distribution.")
         if len(ev_distribution) > 0:
             hist_fig = px.histogram(
                 ev_distribution,
@@ -1313,6 +1327,8 @@ with tab_advanced:
                 labels={"value": "Enterprise Value"},
             )
             st.plotly_chart(hist_fig, use_container_width=True)
+        else:
+            st.info("Run simulations to view the enterprise value distribution chart.")
 
     with analytics_tabs[4]:
         st.markdown("### What-if analysis, goal seek & tornado/spider helpers")
@@ -1324,10 +1340,14 @@ with tab_advanced:
             if "ev_change_pct" in view.columns:
                 view["EV Delta (%)"] = view["ev_change_pct"].apply(lambda v: f"{v:.1f}%")
             st.dataframe(view, hide_index=True, use_container_width=True)
+        else:
+            st.info("Use the scenario presets to populate what-if results here.")
         if goal_result.get("success"):
             st.caption(
                 f"Goal seek: cogs_ratio → {goal_result.get('optimal_value'):.3f} to reach EV {_format_currency(goal_target)}"
             )
+        else:
+            st.info("Goal seek will display the target input once a feasible solution is found.")
 
     with analytics_tabs[5]:
         st.markdown("### Optimization, portfolio, ESG, and real options")

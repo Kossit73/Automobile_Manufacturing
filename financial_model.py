@@ -56,6 +56,12 @@ class CompanyConfig:
     tax_rate: float = 0.25
     wacc: float = 0.12
     terminal_growth: float = 0.03
+
+    # Optional per-year overrides
+    opex_overrides: Optional[Dict[int, float]] = None
+    cogs_overrides: Optional[Dict[int, float]] = None
+    loan_repayment_overrides: Optional[Dict[int, float]] = None
+    other_cost_overrides: Optional[Dict[int, float]] = None
     
     def __post_init__(self):
         if self.production_end_year < self.start_year:
@@ -81,6 +87,16 @@ class CompanyConfig:
 
         if self.marketing_budget is None:
             self.marketing_budget = {y: 72_000 for y in years}
+
+        # Normalize override containers for downstream use
+        if self.opex_overrides is None:
+            self.opex_overrides = {}
+        if self.cogs_overrides is None:
+            self.cogs_overrides = {}
+        if self.loan_repayment_overrides is None:
+            self.loan_repayment_overrides = {}
+        if self.other_cost_overrides is None:
+            self.other_cost_overrides = {}
 
 # Default Configuration
 config = CompanyConfig()
@@ -122,7 +138,13 @@ def calculate_production_forecast(cfg: CompanyConfig):
 # =====================================================
 def calculate_cogs(revenue: Dict, cfg: CompanyConfig) -> Dict:
     """Calculate COGS based on revenue"""
-    return {y: revenue[y] * cfg.cogs_ratio for y in revenue}
+    values: Dict[int, float] = {}
+    for y, rev in revenue.items():
+        if cfg.cogs_overrides and y in cfg.cogs_overrides:
+            values[y] = cfg.cogs_overrides[y]
+        else:
+            values[y] = rev * cfg.cogs_ratio
+    return values
 
 # =====================================================
 # 4. OPERATING EXPENSES
@@ -197,7 +219,13 @@ def calculate_opex_breakdown(years: range, cfg: CompanyConfig) -> Tuple[Dict[int
             'other': other_cost,
         }
 
-        opex[y] = marketing + labor_cost + other_cost
+        opex_val = marketing + labor_cost + other_cost
+
+        if cfg.opex_overrides and y in cfg.opex_overrides:
+            opex_val = cfg.opex_overrides[y]
+
+        breakdown[y]['override_applied'] = cfg.opex_overrides.get(y) if cfg.opex_overrides else None
+        opex[y] = opex_val
 
     return opex, breakdown
 
@@ -370,7 +398,11 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
     }
 
     interest_payment = {y: cfg.loan_amount * cfg.loan_interest_rate for y in years}
-    loan_repayment = {y: cfg.loan_amount / cfg.loan_term if y - cfg.start_year < cfg.loan_term else 0 for y in years}
+
+    if cfg.loan_repayment_overrides:
+        loan_repayment = {y: cfg.loan_repayment_overrides.get(y, 0.0) for y in years}
+    else:
+        loan_repayment = {y: cfg.loan_amount / cfg.loan_term if y - cfg.start_year < cfg.loan_term else 0 for y in years}
 
     # Determine CAPEX cash flows and total capex
     if cfg.capex_manager is not None:

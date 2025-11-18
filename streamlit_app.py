@@ -183,6 +183,18 @@ def initialize_session_state():
     if 'auto_planner' not in st.session_state:
         st.session_state.auto_planner = _build_default_auto_planner()
 
+    # Schedule override containers
+    for key in [
+        'fixed_cost_overrides',
+        'variable_cost_overrides',
+        'other_cost_overrides',
+        'loan_repayment_overrides',
+        'investment_overrides',
+        'asset_overrides',
+    ]:
+        if key not in st.session_state:
+            st.session_state[key] = {}
+
 initialize_session_state()
 
 
@@ -196,6 +208,53 @@ def _format_statement(df: pd.DataFrame, money_cols):
         if col in formatted.columns:
             formatted[col] = formatted[col].apply(_format_currency)
     return formatted
+
+
+def _build_company_config() -> CompanyConfig:
+    """Create a CompanyConfig from current session values and overrides."""
+
+    return CompanyConfig(
+        start_year=st.session_state.production_start_year,
+        production_end_year=st.session_state.production_end_year,
+        labor_manager=st.session_state.labor_manager,
+        capex_manager=st.session_state.capex_manager,
+        opex_overrides=st.session_state.get('fixed_cost_overrides', {}),
+        cogs_overrides=st.session_state.get('variable_cost_overrides', {}),
+        loan_repayment_overrides=st.session_state.get('loan_repayment_overrides', {}),
+    )
+
+
+def _editable_schedule(
+    title: str,
+    df: pd.DataFrame,
+    override_key: str,
+    value_column: str,
+    help_text: str,
+):
+    """Render an editable schedule with add/remove/save controls."""
+
+    st.markdown(f"#### {title}")
+    st.caption(help_text)
+
+    edited = st.data_editor(
+        df,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        key=f"{override_key}_editor",
+    )
+
+    if st.button(f"Save {title} Changes", key=f"{override_key}_save"):
+        overrides = {}
+        for _, row in edited.iterrows():
+            try:
+                year = int(row.get("Year"))
+                overrides[year] = float(row.get(value_column, 0.0))
+            except Exception:
+                continue
+
+        st.session_state[override_key] = overrides
+        st.success(f"Saved {title.lower()} updates. Schedules will refresh with the new values.")
 
 # =====================================================
 # MAIN NAVIGATION
@@ -260,12 +319,7 @@ with tab_platform:
     )
 
     st.markdown("### Schedules")
-    cfg = CompanyConfig(
-        start_year=st.session_state.production_start_year,
-        production_end_year=st.session_state.production_end_year,
-        labor_manager=st.session_state.labor_manager,
-        capex_manager=st.session_state.capex_manager,
-    )
+    cfg = _build_company_config()
     model = run_financial_model(cfg)
     years = list(model["years"])
     income_df, cashflow_df, balance_df = generate_financial_statements(model)
@@ -318,6 +372,12 @@ with tab_platform:
     })
     other_cost_df["Other Costs"] = other_cost_df["Tax"] + other_cost_df["Interest"]
 
+    if st.session_state.other_cost_overrides:
+        other_cost_df["Other Costs"] = [
+            st.session_state.other_cost_overrides.get(y, val)
+            for y, val in zip(other_cost_df["Year"], other_cost_df["Other Costs"])
+        ]
+
     debt_outstanding = []
     debt_balance = model["config"].loan_amount
     for y in years:
@@ -336,6 +396,12 @@ with tab_platform:
         "Current Assets": [model["current_assets"][y] for y in years],
         "Total Assets": [model["total_assets"][y] for y in years],
     })
+
+    if st.session_state.asset_overrides:
+        assets_df["Total Assets"] = [
+            st.session_state.asset_overrides.get(y, val)
+            for y, val in zip(assets_df["Year"], assets_df["Total Assets"])
+        ]
 
     assembly_df = pd.DataFrame({
         "Year": years,
@@ -383,19 +449,47 @@ with tab_platform:
         st.dataframe(_format_statement(financing_df, ["Interest", "Loan Repayment", "Long Term Debt", "Cash Flow from Financing"]), use_container_width=True, hide_index=True)
 
     with schedule_tabs[6]:
-        st.dataframe(_format_statement(fixed_cost_df, ["Fixed Operating Costs", "Depreciation"]), use_container_width=True, hide_index=True)
+        _editable_schedule(
+            "Fixed Cost Schedule",
+            fixed_cost_df,
+            "fixed_cost_overrides",
+            "Fixed Operating Costs",
+            "Use the + button to add years or delete rows; edits override computed operating expenses.",
+        )
 
     with schedule_tabs[7]:
-        st.dataframe(_format_statement(variable_cost_df, ["COGS (Variable)"]), use_container_width=True, hide_index=True)
+        _editable_schedule(
+            "Variable Cost Schedule",
+            variable_cost_df,
+            "variable_cost_overrides",
+            "COGS (Variable)",
+            "Edit COGS by year. Added rows expand the projection horizon automatically.",
+        )
 
     with schedule_tabs[8]:
-        st.dataframe(_format_statement(other_cost_df, ["Tax", "Interest", "Other Costs"]), use_container_width=True, hide_index=True)
+        _editable_schedule(
+            "Other Cost Schedule",
+            other_cost_df,
+            "other_cost_overrides",
+            "Other Costs",
+            "Adjust other costs by year; tax and interest columns remain for reference.",
+        )
 
     with schedule_tabs[9]:
-        st.dataframe(_format_statement(debt_schedule_df, ["Interest", "Principal", "Ending Balance"]), use_container_width=True, hide_index=True)
+        _editable_schedule(
+            "Debt Schedule",
+            debt_schedule_df,
+            "loan_repayment_overrides",
+            "Principal",
+            "Edit principal repayments; add/remove years to reshape the debt amortization profile.",
+        )
 
     with schedule_tabs[10]:
-        owner_pct = st.slider("Owner Equity %", 0.0, 100.0, float(st.session_state.owner_equity_pct), key="owner_equity_pct_slider")
+        owner_default = float(st.session_state.owner_equity_pct)
+        if st.session_state.investment_overrides:
+            owner_default = float(st.session_state.investment_overrides.get(years[0], owner_default))
+
+        owner_pct = st.slider("Owner Equity %", 0.0, 100.0, owner_default, key="owner_equity_pct_slider")
         st.session_state.owner_equity_pct = owner_pct
         investor_pct = max(0.0, 100.0 - owner_pct)
         st.info(f"Owner: {owner_pct:.1f}% | Investor: {investor_pct:.1f}%")
@@ -407,14 +501,29 @@ with tab_platform:
             "Investor Equity": [model["config"].equity_investment * (investor_pct / 100.0) if y == years[0] else 0.0 for y in years],
             "Debt Raised": [model["config"].loan_amount if y == years[0] else 0.0 for y in years],
         })
-        st.dataframe(
-            _format_statement(investment_df, ["Owner Equity", "Investor Equity", "Debt Raised"]),
-            use_container_width=True,
-            hide_index=True,
+
+        if st.session_state.investment_overrides:
+            investment_df["Owner %"] = [
+                st.session_state.investment_overrides.get(y, val)
+                for y, val in zip(investment_df["Year"], investment_df["Owner %"])
+            ]
+            investment_df["Investor %"] = [100.0 - pct for pct in investment_df["Owner %"]]
+        _editable_schedule(
+            "Investment Schedule",
+            investment_df,
+            "investment_overrides",
+            "Owner %",
+            "Edit ownership percentages or add equity rows; debt values remain reference-only.",
         )
 
     with schedule_tabs[11]:
-        st.dataframe(_format_statement(assets_df, ["Fixed Assets", "Current Assets", "Total Assets"]), use_container_width=True, hide_index=True)
+        _editable_schedule(
+            "Asset Schedule",
+            assets_df,
+            "asset_overrides",
+            "Total Assets",
+            "Update asset balances or add projection years to tailor the asset view.",
+        )
 
     with schedule_tabs[12]:
         st.markdown("#### Automobile Manufacturing Planner")
@@ -601,12 +710,7 @@ with tab_dashboard:
     st.markdown("# Executive Dashboard")
     
     # Run financial model
-    cfg = CompanyConfig(
-        start_year=st.session_state.production_start_year,
-        production_end_year=st.session_state.production_end_year,
-        labor_manager=st.session_state.labor_manager,
-        capex_manager=st.session_state.capex_manager
-    )
+    cfg = _build_company_config()
     model = run_financial_model(cfg)
     st.session_state.financial_model = model
     years = list(model["years"])
@@ -1337,12 +1441,7 @@ with tab_reports:
 with tab_advanced:
     st.markdown("# Advanced Analytics")
 
-    cfg = CompanyConfig(
-        start_year=st.session_state.production_start_year,
-        production_end_year=st.session_state.production_end_year,
-        labor_manager=st.session_state.labor_manager,
-        capex_manager=st.session_state.capex_manager,
-    )
+    cfg = _build_company_config()
     model = run_financial_model(cfg)
     years = list(model["years"])
     start_year, final_year = years[0], years[-1]

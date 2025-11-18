@@ -133,6 +133,8 @@ with tab_dashboard:
     )
     model = run_financial_model(cfg)
     st.session_state.financial_model = model
+    years = list(model["years"])
+    start_year = years[0]
     
     # Key Metrics
     st.markdown("## Key Performance Indicators")
@@ -140,18 +142,18 @@ with tab_dashboard:
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        revenue_2026 = model['revenue'][0]
-        st.metric("2026 Revenue", f"${revenue_2026/1e6:.1f}M", delta="Year 1")
-    
+        revenue_first = model['revenue'][start_year]
+        st.metric(f"{start_year} Revenue", f"${revenue_first/1e6:.1f}M", delta="Year 1")
+
     with col2:
-        profit_2026 = model['net_profit'][0]
-        margin = (profit_2026/revenue_2026*100) if revenue_2026 > 0 else 0
-        st.metric("2026 Net Profit", f"${profit_2026/1e6:.1f}M", delta=f"{margin:.1f}%")
-    
+        profit_first = model['net_profit'][start_year]
+        margin = (profit_first / revenue_first * 100) if revenue_first > 0 else 0
+        st.metric(f"{start_year} Net Profit", f"${profit_first/1e6:.1f}M", delta=f"{margin:.1f}%")
+
     with col3:
-        headcount = st.session_state.labor_manager.get_total_headcount(2026)
+        headcount = st.session_state.labor_manager.get_total_headcount(start_year)
         st.metric("Total Headcount", f"{headcount} employees", delta="Current")
-    
+
     with col4:
         ev = model['enterprise_value']
         st.metric("Enterprise Value", f"${ev/1e6:.1f}M", delta="DCF")
@@ -163,11 +165,11 @@ with tab_dashboard:
     
     with col1:
         forecast_df = pd.DataFrame({
-            'Year': range(2026, 2031),
-            'Revenue ($M)': [x/1e6 for x in model['revenue']],
-            'EBIT ($M)': [x/1e6 for x in model['ebit']],
-            'Net Profit ($M)': [x/1e6 for x in model['net_profit']],
-            'FCF ($M)': [x/1e6 for x in model['fcf']]
+            'Year': years,
+            'Revenue ($M)': [model['revenue'][y]/1e6 for y in years],
+            'EBIT ($M)': [model['ebit'][y]/1e6 for y in years],
+            'Net Profit ($M)': [model['net_profit'][y]/1e6 for y in years],
+            'FCF ($M)': [model['fcf'][y]/1e6 for y in years]
         })
         st.dataframe(forecast_df, use_container_width=True, hide_index=True)
     
@@ -188,15 +190,15 @@ with tab_dashboard:
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        labor_costs = st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)
-        st.markdown("### Labor Costs (2026)")
+        labor_costs = st.session_state.labor_manager.get_labor_cost_by_type(start_year, st.session_state.salary_growth_rate)
+        st.markdown(f"### Labor Costs ({start_year})")
         st.metric("Direct Labor", f"${labor_costs['Direct']/1e6:.2f}M")
         st.metric("Indirect Labor", f"${labor_costs['Indirect']/1e6:.2f}M")
         st.metric("Total Labor", f"${(labor_costs['Direct'] + labor_costs['Indirect'])/1e6:.2f}M")
-    
+
     with col2:
-        hc_types = st.session_state.labor_manager.get_headcount_by_type(2026)
-        st.markdown("### Headcount (2026)")
+        hc_types = st.session_state.labor_manager.get_headcount_by_type(start_year)
+        st.markdown(f"### Headcount ({start_year})")
         st.metric("Direct Labor HC", f"{hc_types['Direct']} employees")
         st.metric("Indirect Labor HC", f"{hc_types['Indirect']} employees")
         st.metric("Total HC", f"{hc_types['Direct'] + hc_types['Indirect']} employees")
@@ -204,10 +206,11 @@ with tab_dashboard:
     with col3:
         capex_items = st.session_state.capex_manager.list_items()
         total_capex = st.session_state.capex_manager.total_capex()
-        st.markdown("### Capital Assets (2026)")
+        st.markdown(f"### Capital Assets ({start_year})")
         st.metric("Total CAPEX", f"${total_capex/1e6:.2f}M")
         st.metric("# Assets", f"{len(capex_items)}")
-        st.metric("Annual Depreciation", f"${model['depreciation'][0]/1e3:.0f}K")
+        dep_first = model['depreciation'].get(start_year, model['depreciation']) if isinstance(model['depreciation'], dict) else model['depreciation']
+        st.metric("Annual Depreciation", f"${dep_first/1e3:.0f}K")
 
 # =====================================================
 # PAGE 2: AI & MACHINE LEARNING (RAG)
@@ -603,7 +606,8 @@ with tab_financial:
     with tab2:
         if st.session_state.financial_model:
             model = st.session_state.financial_model
-            
+            years = list(model["years"])
+
             st.markdown("## Financial Results")
             
             # Metrics
@@ -612,30 +616,31 @@ with tab_financial:
             with col1:
                 st.metric("Enterprise Value", f"${model['enterprise_value']/1e6:.1f}M")
             with col2:
-                st.metric("5-Year FCF", f"${sum(model['fcf'])/1e6:.1f}M")
+                st.metric("5-Year FCF", f"${sum(model['fcf'].values())/1e6:.1f}M")
             with col3:
-                ev_revenue = model['enterprise_value'] / model['revenue'][0]
+                ev_revenue = model['enterprise_value'] / model['revenue'][years[0]]
                 st.metric("EV/Revenue", f"{ev_revenue:.1f}x")
             with col4:
-                st.metric("Terminal Value", f"${model['revenue'][4]*5/1e6:.1f}M")
+                terminal_revenue = model['revenue'][years[-1]]
+                st.metric("Terminal Value", f"${terminal_revenue*5/1e6:.1f}M")
             
             # Forecast table
             forecast_df = pd.DataFrame({
-                'Year': range(2026, 2031),
-                'Revenue': [f"${x/1e6:.1f}M" for x in model['revenue']],
-                'EBIT': [f"${x/1e6:.1f}M" for x in model['ebit']],
-                'FCF': [f"${x/1e6:.1f}M" for x in model['fcf']],
-                'Cash': [f"${x/1e6:.1f}M" for x in model['cash_balance']]
+                'Year': years,
+                'Revenue': [f"${model['revenue'][y]/1e6:.1f}M" for y in years],
+                'EBIT': [f"${model['ebit'][y]/1e6:.1f}M" for y in years],
+                'FCF': [f"${model['fcf'][y]/1e6:.1f}M" for y in years],
+                'Cash': [f"${model['cash_balance'][y]/1e6:.1f}M" for y in years]
             })
             
             st.dataframe(forecast_df, use_container_width=True, hide_index=True)
             
             # Charts
             chart_df = pd.DataFrame({
-                'Year': range(2026, 2031),
-                'Revenue': model['revenue'],
-                'EBIT': model['ebit'],
-                'FCF': model['fcf']
+                'Year': years,
+                'Revenue': [model['revenue'][y] for y in years],
+                'EBIT': [model['ebit'][y] for y in years],
+                'FCF': [model['fcf'][y] for y in years]
             })
             
             fig = px.line(chart_df, x='Year', y=['Revenue', 'EBIT', 'FCF'], markers=True,
@@ -653,24 +658,25 @@ with tab_reports:
     
     if st.session_state.financial_model:
         model = st.session_state.financial_model
+        years = list(model["years"])
 
         # Summary Report
         st.markdown("## Executive Summary")
 
         summary_text = f"""
-        **2026 Financials:**
-        - Revenue: ${model['revenue'][0]/1e6:.1f}M
-        - EBIT: ${model['ebit'][0]/1e6:.1f}M
-        - Net Profit: ${model['net_profit'][0]/1e6:.1f}M
-        - FCF: ${model['fcf'][0]/1e6:.1f}M
+        **{years[0]} Financials:**
+        - Revenue: ${model['revenue'][years[0]]/1e6:.1f}M
+        - EBIT: ${model['ebit'][years[0]]/1e6:.1f}M
+        - Net Profit: ${model['net_profit'][years[0]]/1e6:.1f}M
+        - FCF: ${model['fcf'][years[0]]/1e6:.1f}M
 
         **Valuation:**
         - Enterprise Value: ${model['enterprise_value']/1e6:.1f}M
-        - 5-Year FCF: ${sum(model['fcf'])/1e6:.1f}M
+        - 5-Year FCF: ${sum(model['fcf'].values())/1e6:.1f}M
 
         **Workforce:**
-        - Headcount: {st.session_state.labor_manager.get_total_headcount(2026)} employees
-        - Labor Cost: ${(st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)['Direct'] + st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)['Indirect'])/1e6:.2f}M
+        - Headcount: {st.session_state.labor_manager.get_total_headcount(years[0])} employees
+        - Labor Cost: {(st.session_state.labor_manager.get_labor_cost_by_type(years[0], st.session_state.salary_growth_rate)['Direct'] + st.session_state.labor_manager.get_labor_cost_by_type(years[0], st.session_state.salary_growth_rate)['Indirect'])/1e6:.2f}M
         """
 
         st.markdown(summary_text)
@@ -680,8 +686,6 @@ with tab_reports:
             "Schedules & Drivers",
             "Exports",
         ])
-
-        years = list(model['years'])
 
         with statements_tab:
             st.markdown("### Income Statement")

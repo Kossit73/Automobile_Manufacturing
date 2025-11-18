@@ -354,10 +354,14 @@ with tab_platform:
         labor_df['Override Applied'] = [overrides.get(y) if y in overrides else None for y in labor_df['Year']]
 
     capex_spend = st.session_state.capex_manager.yearly_capex_schedule(years[0], len(years))
-    capex_spend_df = pd.DataFrame({"Year": years, "CAPEX Spend": [capex_spend.get(y, 0.0) for y in years]})
-
     depreciation_sched = st.session_state.capex_manager.depreciation_schedule(years[0], len(years))
-    depreciation_df = pd.DataFrame({"Year": years, "Depreciation": [depreciation_sched.get(y, 0.0) for y in years]})
+    capex_df = pd.DataFrame(
+        {
+            "Year": years,
+            "CAPEX Spend": [capex_spend.get(y, 0.0) for y in years],
+            "Depreciation": [depreciation_sched.get(y, 0.0) for y in years],
+        }
+    )
 
     production_df = pd.DataFrame({
         "Year": years,
@@ -441,8 +445,7 @@ with tab_platform:
 
     schedule_tabs = st.tabs([
         "Labor Cost",
-        "CAPEX Spend",
-        "Depreciation",
+        "CAPEX",
         "Production",
         "Working Capital & FCF",
         "Financing",
@@ -468,21 +471,22 @@ with tab_platform:
             )
 
     with schedule_tabs[1]:
-        st.dataframe(_format_statement(capex_spend_df, ["CAPEX Spend"]), use_container_width=True, hide_index=True)
+        st.dataframe(
+            _format_statement(capex_df, ["CAPEX Spend", "Depreciation"]),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     with schedule_tabs[2]:
-        st.dataframe(_format_statement(depreciation_df, ["Depreciation"]), use_container_width=True, hide_index=True)
-
-    with schedule_tabs[3]:
         st.dataframe(_format_statement(production_df, ["Revenue", "COGS"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[4]:
+    with schedule_tabs[3]:
         st.dataframe(_format_statement(working_cap_df, ["FCF", "Discounted FCF", "Working Capital Change"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[5]:
+    with schedule_tabs[4]:
         st.dataframe(_format_statement(financing_df, ["Interest", "Loan Repayment", "Long Term Debt", "Cash Flow from Financing"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[6]:
+    with schedule_tabs[5]:
         _editable_schedule(
             "Fixed Cost Schedule",
             fixed_cost_df,
@@ -491,7 +495,7 @@ with tab_platform:
             "Use the + button to add years or delete rows; edits override computed operating expenses.",
         )
 
-    with schedule_tabs[7]:
+    with schedule_tabs[6]:
         _editable_schedule(
             "Variable Cost Schedule",
             variable_cost_df,
@@ -500,7 +504,7 @@ with tab_platform:
             "Edit COGS by year. Added rows expand the projection horizon automatically.",
         )
 
-    with schedule_tabs[8]:
+    with schedule_tabs[7]:
         _editable_schedule(
             "Other Cost Schedule",
             other_cost_df,
@@ -509,7 +513,7 @@ with tab_platform:
             "Adjust other costs by year; tax and interest columns remain for reference.",
         )
 
-    with schedule_tabs[9]:
+    with schedule_tabs[8]:
         _editable_schedule(
             "Debt Schedule",
             debt_schedule_df,
@@ -518,7 +522,7 @@ with tab_platform:
             "Edit principal repayments; add/remove years to reshape the debt amortization profile.",
         )
 
-    with schedule_tabs[10]:
+    with schedule_tabs[9]:
         owner_default = float(st.session_state.owner_equity_pct)
         if st.session_state.investment_overrides:
             owner_default = float(st.session_state.investment_overrides.get(years[0], owner_default))
@@ -550,7 +554,7 @@ with tab_platform:
             "Edit ownership percentages or add equity rows; debt values remain reference-only.",
         )
 
-    with schedule_tabs[11]:
+    with schedule_tabs[10]:
         _editable_schedule(
             "Asset Schedule",
             assets_df,
@@ -559,7 +563,7 @@ with tab_platform:
             "Update asset balances or add projection years to tailor the asset view.",
         )
 
-    with schedule_tabs[12]:
+    with schedule_tabs[11]:
         st.markdown("#### Automobile Manufacturing Planner")
         planner = [_normalize_auto_plan(p) for p in st.session_state.auto_planner]
         st.session_state.auto_planner = planner

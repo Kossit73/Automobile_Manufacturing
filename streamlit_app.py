@@ -482,7 +482,7 @@ with tab_capex:
         with col2:
             salvage_value = st.number_input("Salvage Value ($)", min_value=0, value=0, step=5000)
             start_year = st.number_input("Start Year", min_value=2026, value=2026)
-            notes = st.text_area("Notes", value="")
+            notes = st.text_area("Notes", value="", key="capex_add_notes")
         
         if st.button("Add Asset"):
             try:
@@ -524,7 +524,9 @@ with tab_capex:
             with col2:
                 new_life = st.number_input("Useful Life (years)", min_value=1, value=asset.useful_life)
                 new_salvage = st.number_input("Salvage Value", min_value=0, value=int(asset.salvage_value))
-                new_notes = st.text_area("Notes", value=asset.notes)
+                new_notes = st.text_area(
+                    "Notes", value=asset.notes, key=f"capex_edit_notes_{selected_id}"
+                )
             
             col1, col2 = st.columns(2)
             

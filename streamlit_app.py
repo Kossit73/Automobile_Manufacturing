@@ -223,9 +223,6 @@ with tab_platform:
     })
 
     schedule_tabs = st.tabs([
-        "Income Statement",
-        "Cash Flow",
-        "Balance Sheet",
         "Labor Cost",
         "CAPEX Spend",
         "Depreciation",
@@ -242,56 +239,39 @@ with tab_platform:
     ])
 
     with schedule_tabs[0]:
-        st.dataframe(_format_statement(income_df, ["Revenue", "COGS", "Opex", "EBITDA", "EBIT", "Tax", "Net Profit"]), use_container_width=True, hide_index=True)
-
-    with schedule_tabs[1]:
-        st.dataframe(_format_statement(cashflow_df, ["CFO", "CFI", "CFF", "Net Cash Flow", "Closing Cash"]), use_container_width=True, hide_index=True)
-
-    with schedule_tabs[2]:
-        st.dataframe(_format_statement(balance_df, [
-            "Fixed Assets",
-            "Current Assets",
-            "Total Assets",
-            "Current Liabilities",
-            "Long Term Debt",
-            "Total Equity",
-            "Total Liabilities + Equity",
-        ]), use_container_width=True, hide_index=True)
-
-    with schedule_tabs[3]:
         if labor_df.empty:
             st.info("No labor schedule available. Add positions to view costs and headcount.")
         else:
             st.dataframe(labor_df, use_container_width=True, hide_index=True)
 
-    with schedule_tabs[4]:
+    with schedule_tabs[1]:
         st.dataframe(_format_statement(capex_spend_df, ["CAPEX Spend"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[5]:
+    with schedule_tabs[2]:
         st.dataframe(_format_statement(depreciation_df, ["Depreciation"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[6]:
+    with schedule_tabs[3]:
         st.dataframe(_format_statement(production_df, ["Revenue", "COGS"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[7]:
+    with schedule_tabs[4]:
         st.dataframe(_format_statement(working_cap_df, ["FCF", "Discounted FCF", "Working Capital Change"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[8]:
+    with schedule_tabs[5]:
         st.dataframe(_format_statement(financing_df, ["Interest", "Loan Repayment", "Long Term Debt", "Cash Flow from Financing"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[9]:
+    with schedule_tabs[6]:
         st.dataframe(_format_statement(fixed_cost_df, ["Fixed Operating Costs", "Depreciation"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[10]:
+    with schedule_tabs[7]:
         st.dataframe(_format_statement(variable_cost_df, ["COGS (Variable)"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[11]:
+    with schedule_tabs[8]:
         st.dataframe(_format_statement(other_cost_df, ["Tax", "Interest", "Other Costs"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[12]:
+    with schedule_tabs[9]:
         st.dataframe(_format_statement(debt_schedule_df, ["Interest", "Principal", "Ending Balance"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[13]:
+    with schedule_tabs[10]:
         owner_pct = st.slider("Owner Equity %", 0.0, 100.0, float(st.session_state.owner_equity_pct), key="owner_equity_pct_slider")
         st.session_state.owner_equity_pct = owner_pct
         investor_pct = max(0.0, 100.0 - owner_pct)
@@ -310,10 +290,10 @@ with tab_platform:
             hide_index=True,
         )
 
-    with schedule_tabs[14]:
+    with schedule_tabs[11]:
         st.dataframe(_format_statement(assets_df, ["Fixed Assets", "Current Assets", "Total Assets"]), use_container_width=True, hide_index=True)
 
-    with schedule_tabs[15]:
+    with schedule_tabs[12]:
         st.dataframe(_format_statement(assembly_df, ["Units Produced", "Annual Capacity"]), use_container_width=True, hide_index=True)
 
 # =====================================================

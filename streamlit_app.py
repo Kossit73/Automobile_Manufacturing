@@ -6,6 +6,7 @@ Version: 1.0 (November 2025)
 """
 
 import os
+import copy
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -51,6 +52,96 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Automobile manufacturing planner defaults
+AUTO_STAGES = ["chassis", "paint", "assembly", "quality"]
+AUTO_PLANNER_TEMPLATE = [
+    {
+        "name": "EV-SUV",
+        "defect_rate": 0.03,
+        "scrap_allowance": 0.05,
+        "target_units": 300,
+        "cycle_time": {"chassis": 120, "paint": 90, "assembly": 200, "quality": 60},
+        "stations": {"chassis": 3, "paint": 2, "assembly": 4, "quality": 2},
+        "hours_per_shift": 8,
+        "shifts_per_day": 2,
+    },
+    {
+        "name": "EV-Bikes",
+        "defect_rate": 0.025,
+        "scrap_allowance": 0.04,
+        "target_units": 600,
+        "cycle_time": {"chassis": 95, "paint": 70, "assembly": 160, "quality": 50},
+        "stations": {"chassis": 4, "paint": 3, "assembly": 5, "quality": 2},
+        "hours_per_shift": 8,
+        "shifts_per_day": 2,
+    },
+    {
+        "name": "EV-Scooters",
+        "defect_rate": 0.02,
+        "scrap_allowance": 0.04,
+        "target_units": 500,
+        "cycle_time": {"chassis": 100, "paint": 80, "assembly": 170, "quality": 55},
+        "stations": {"chassis": 3, "paint": 2, "assembly": 4, "quality": 2},
+        "hours_per_shift": 8,
+        "shifts_per_day": 2,
+    },
+    {
+        "name": "EV-Hatchback",
+        "defect_rate": 0.03,
+        "scrap_allowance": 0.05,
+        "target_units": 350,
+        "cycle_time": {"chassis": 110, "paint": 85, "assembly": 190, "quality": 58},
+        "stations": {"chassis": 3, "paint": 2, "assembly": 4, "quality": 2},
+        "hours_per_shift": 8,
+        "shifts_per_day": 2,
+    },
+    {
+        "name": "EV-NanoCar",
+        "defect_rate": 0.025,
+        "scrap_allowance": 0.045,
+        "target_units": 420,
+        "cycle_time": {"chassis": 105, "paint": 78, "assembly": 180, "quality": 52},
+        "stations": {"chassis": 3, "paint": 2, "assembly": 4, "quality": 2},
+        "hours_per_shift": 8,
+        "shifts_per_day": 2,
+    },
+]
+
+
+def _build_default_auto_planner():
+    return copy.deepcopy(AUTO_PLANNER_TEMPLATE)
+
+
+def _normalize_auto_plan(plan: dict) -> dict:
+    normalized = copy.deepcopy(plan)
+    normalized.setdefault("defect_rate", 0.0)
+    normalized.setdefault("scrap_allowance", 0.0)
+    normalized.setdefault("target_units", 0)
+    normalized.setdefault("cycle_time", {})
+    normalized.setdefault("stations", {})
+    normalized.setdefault("hours_per_shift", 8)
+    normalized.setdefault("shifts_per_day", 2)
+    for stage in AUTO_STAGES:
+        normalized["cycle_time"].setdefault(stage, 0)
+        normalized["stations"].setdefault(stage, 1)
+    return normalized
+
+
+def _calculate_planner_capacity(plan: dict, working_days: int) -> tuple[dict, str, float]:
+    plan = _normalize_auto_plan(plan)
+    stage_capacity = {}
+    for stage in AUTO_STAGES:
+        cycle_minutes = plan["cycle_time"].get(stage, 0) or 0
+        stations = plan["stations"].get(stage, 0) or 0
+        effective_minutes = cycle_minutes * (1 + plan["defect_rate"] + plan["scrap_allowance"])
+        available_minutes = stations * plan["hours_per_shift"] * plan["shifts_per_day"] * 60
+        daily_capacity = available_minutes / effective_minutes if effective_minutes > 0 else 0.0
+        stage_capacity[stage] = daily_capacity
+
+    bottleneck = min(stage_capacity, key=stage_capacity.get) if stage_capacity else "chassis"
+    annual_capacity = stage_capacity.get(bottleneck, 0.0) * working_days
+    return stage_capacity, bottleneck, annual_capacity
+
 # =====================================================
 # SESSION STATE INITIALIZATION
 # =====================================================
@@ -82,6 +173,9 @@ def initialize_session_state():
 
     if 'owner_equity_pct' not in st.session_state:
         st.session_state.owner_equity_pct = 70.0
+
+    if 'auto_planner' not in st.session_state:
+        st.session_state.auto_planner = _build_default_auto_planner()
 
 initialize_session_state()
 
@@ -294,7 +388,181 @@ with tab_platform:
         st.dataframe(_format_statement(assets_df, ["Fixed Assets", "Current Assets", "Total Assets"]), use_container_width=True, hide_index=True)
 
     with schedule_tabs[12]:
-        st.dataframe(_format_statement(assembly_df, ["Units Produced", "Annual Capacity"]), use_container_width=True, hide_index=True)
+        st.markdown("#### Automobile Manufacturing Planner")
+        planner = [_normalize_auto_plan(p) for p in st.session_state.auto_planner]
+        st.session_state.auto_planner = planner
+
+        names = [p["name"] for p in planner]
+        selected_idx = st.selectbox(
+            "Select automobile to configure",
+            options=list(range(len(planner))),
+            format_func=lambda i: names[i],
+            key="auto_plan_selector",
+        )
+        selected_plan = planner[selected_idx]
+
+        with st.form(f"auto_plan_form_{selected_idx}"):
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                name = st.text_input("Automobile name", value=selected_plan["name"], key=f"auto_name_{selected_idx}")
+                defect_rate = st.number_input(
+                    "Defect rate (0-1)",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=float(selected_plan["defect_rate"]),
+                    key=f"defect_rate_{selected_idx}",
+                )
+            with col_b:
+                scrap_allowance = st.number_input(
+                    "Scrap allowance (0-1)",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=float(selected_plan["scrap_allowance"]),
+                    key=f"scrap_allowance_{selected_idx}",
+                )
+            with col_c:
+                target_units = st.number_input(
+                    "Target units",
+                    min_value=0,
+                    value=int(selected_plan.get("target_units", 0)),
+                    step=50,
+                    key=f"target_units_{selected_idx}",
+                )
+
+            st.markdown("##### Stage cycle time (minutes per unit)")
+            cycle_cols = st.columns(4)
+            chassis_cycle = cycle_cols[0].number_input(
+                "Chassis",
+                min_value=0,
+                value=int(selected_plan["cycle_time"]["chassis"]),
+                key=f"cycle_chassis_{selected_idx}",
+            )
+            paint_cycle = cycle_cols[1].number_input(
+                "Paint",
+                min_value=0,
+                value=int(selected_plan["cycle_time"]["paint"]),
+                key=f"cycle_paint_{selected_idx}",
+            )
+            assembly_cycle = cycle_cols[2].number_input(
+                "Assembly",
+                min_value=0,
+                value=int(selected_plan["cycle_time"]["assembly"]),
+                key=f"cycle_assembly_{selected_idx}",
+            )
+            quality_cycle = cycle_cols[3].number_input(
+                "Quality",
+                min_value=0,
+                value=int(selected_plan["cycle_time"]["quality"]),
+                key=f"cycle_quality_{selected_idx}",
+            )
+
+            st.markdown("##### Stations and shifts")
+            station_cols = st.columns(4)
+            chassis_stations = station_cols[0].number_input(
+                "Chassis stations",
+                min_value=1,
+                value=int(selected_plan["stations"]["chassis"]),
+                key=f"stations_chassis_{selected_idx}",
+            )
+            paint_stations = station_cols[1].number_input(
+                "Paint stations",
+                min_value=1,
+                value=int(selected_plan["stations"]["paint"]),
+                key=f"stations_paint_{selected_idx}",
+            )
+            assembly_stations = station_cols[2].number_input(
+                "Assembly stations",
+                min_value=1,
+                value=int(selected_plan["stations"]["assembly"]),
+                key=f"stations_assembly_{selected_idx}",
+            )
+            quality_stations = station_cols[3].number_input(
+                "Quality stations",
+                min_value=1,
+                value=int(selected_plan["stations"]["quality"]),
+                key=f"stations_quality_{selected_idx}",
+            )
+
+            shift_col1, shift_col2 = st.columns(2)
+            hours_per_shift = shift_col1.number_input(
+                "Hours per shift",
+                min_value=1,
+                max_value=24,
+                value=int(selected_plan.get("hours_per_shift", 8)),
+                key=f"hours_per_shift_{selected_idx}",
+            )
+            shifts_per_day = shift_col2.number_input(
+                "Shifts per day",
+                min_value=1,
+                max_value=4,
+                value=int(selected_plan.get("shifts_per_day", 2)),
+                key=f"shifts_per_day_{selected_idx}",
+            )
+
+            submitted = st.form_submit_button("Calculate capacity")
+
+        if submitted:
+            planner[selected_idx] = {
+                "name": name.strip() or selected_plan["name"],
+                "defect_rate": defect_rate,
+                "scrap_allowance": scrap_allowance,
+                "target_units": target_units,
+                "cycle_time": {
+                    "chassis": chassis_cycle,
+                    "paint": paint_cycle,
+                    "assembly": assembly_cycle,
+                    "quality": quality_cycle,
+                },
+                "stations": {
+                    "chassis": chassis_stations,
+                    "paint": paint_stations,
+                    "assembly": assembly_stations,
+                    "quality": quality_stations,
+                },
+                "hours_per_shift": hours_per_shift,
+                "shifts_per_day": shifts_per_day,
+            }
+            st.session_state.auto_planner = planner
+            selected_plan = planner[selected_idx]
+            st.success("Planner updated. Capacity recalculated.")
+
+        stage_capacity, bottleneck, annual_capacity = _calculate_planner_capacity(selected_plan, cfg.working_days)
+
+        cap_cols = st.columns(3)
+        cap_cols[0].metric("Annual capacity", f"{annual_capacity:,.0f} units", help="Bottleneck-adjusted capacity")
+        cap_cols[1].metric("Target units", f"{selected_plan.get('target_units', 0):,.0f}")
+        cap_cols[2].metric("Bottleneck stage", bottleneck.title())
+
+        stage_rows = []
+        for stage, daily_cap in stage_capacity.items():
+            stage_rows.append(
+                {
+                    "Stage": stage.title(),
+                    "Cycle Time (min/unit)": selected_plan["cycle_time"].get(stage, 0),
+                    "Stations": selected_plan["stations"].get(stage, 0),
+                    "Daily Capacity": daily_cap,
+                    "Annual Capacity": daily_cap * cfg.working_days,
+                }
+            )
+        stage_df = pd.DataFrame(stage_rows)
+        st.dataframe(stage_df, use_container_width=True, hide_index=True)
+
+        summary_rows = []
+        for plan in planner:
+            capacities, neck, annual_cap = _calculate_planner_capacity(plan, cfg.working_days)
+            summary_rows.append(
+                {
+                    "Automobile": plan["name"],
+                    "Target Units": plan.get("target_units", 0),
+                    "Annual Capacity": annual_cap,
+                    "Bottleneck": neck.title(),
+                    "Utilization vs Target": f"{(annual_cap / plan.get('target_units', 1) * 100):.1f}%" if plan.get("target_units", 0) > 0 else "N/A",
+                }
+            )
+
+        st.markdown("##### Planner overview")
+        summary_df = pd.DataFrame(summary_rows)
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
 # =====================================================
 # PAGE 1: DASHBOARD

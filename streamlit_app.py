@@ -387,6 +387,25 @@ with tab_platform:
         ]
     )
 
+    pricing_rows = []
+    for year in years:
+        total_units = model["production_volume"][year]
+        for product, mix in model["product_mix"].items():
+            unit_price = model["selling_price"].get(product, 0.0)
+            units = total_units * mix
+            pricing_rows.append(
+                {
+                    "Year": year,
+                    "Product": product,
+                    "Mix %": mix * 100,
+                    "Unit Price": unit_price,
+                    "Units": units,
+                    "Revenue": units * unit_price,
+                }
+            )
+
+    pricing_schedule_df = pd.DataFrame(pricing_rows)
+
     working_cap_df = pd.DataFrame({
         "Year": years,
         "FCF": [model["fcf"][y] for y in years],
@@ -505,6 +524,18 @@ with tab_platform:
             use_container_width=True,
             hide_index=True,
         )
+
+        st.markdown("#### Pricing Schedule")
+        if pricing_schedule_df.empty:
+            st.info("No pricing data available.")
+        else:
+            pricing_display = pricing_schedule_df.copy()
+            pricing_display["Mix %"] = pricing_display["Mix %"].apply(lambda v: f"{v:.1f}%")
+            st.dataframe(
+                _format_statement(pricing_display, ["Unit Price", "Revenue"]),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     with schedule_tabs[3]:
         st.dataframe(_format_statement(working_cap_df, ["FCF", "Discounted FCF", "Working Capital Change"]), use_container_width=True, hide_index=True)

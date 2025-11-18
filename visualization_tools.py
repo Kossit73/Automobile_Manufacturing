@@ -8,7 +8,7 @@ import numpy as np
 from financial_model import run_financial_model, generate_financial_statements
 from financial_analytics import FinancialAnalyzer
 import json
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 
 class FinancialVisualizer:
@@ -337,6 +337,142 @@ ${scenarios_df.iloc[base_idx]['Enterprise Value']:,.2f}.
         
         heatmap += "="*80 + "\n"
         return heatmap
+
+    # =====================================================
+    # 6. TABLE-FIRST OUTPUTS FOR STREAMLIT
+    # =====================================================
+
+    def executive_summary_tables(self) -> Dict[str, pd.DataFrame]:
+        """Return executive summary content as dataframes for UI tables."""
+        val = self.analyzer.valuation_summary()
+        cf = self.analyzer.cash_flow_analysis()
+        be = self.analyzer.break_even_analysis()
+
+        overview_rows = [
+            {"Metric": "Company", "Value": self.cfg.company_name},
+            {"Metric": "Planning Period", "Value": f"{self.years[0]}–{self.years[-1]}"},
+            {"Metric": "Initial Investment", "Value": self.cfg.equity_investment + self.cfg.loan_amount},
+            {"Metric": "Equity", "Value": self.cfg.equity_investment},
+            {"Metric": "Debt", "Value": self.cfg.loan_amount},
+        ]
+
+        valuation_rows = [
+            {"Metric": "Enterprise Value", "Value": val["enterprise_value"]},
+            {"Metric": "Final Equity Value", "Value": val["equity_value"]},
+            {"Metric": "ROI (Final Year)", "Value": val["roi_2030"] / 100},
+            {"Metric": "Payback Period (yrs)", "Value": val["payback_period_years"]},
+            {"Metric": "WACC", "Value": val["wacc"]},
+            {"Metric": "Terminal Growth", "Value": val["terminal_growth"]},
+        ]
+
+        performance_rows = [
+            {"Metric": "Cumulative Revenue", "Value": sum(self.model_data["revenue"][y] for y in self.years)},
+            {"Metric": "Cumulative Net Profit", "Value": sum(self.model_data["net_profit"][y] for y in self.years)},
+            {"Metric": "Cumulative FCF", "Value": sum(self.model_data["fcf"][y] for y in self.years)},
+            {"Metric": "Final Cash Balance", "Value": self.model_data["cash_balance"][self.years[-1]]},
+        ]
+
+        cash_flow_rows = [
+            {"Metric": "Total Operating CF", "Value": cf["total_cfo"]},
+            {"Metric": "Total Investing CF", "Value": cf["total_cfi"]},
+            {"Metric": "Total Financing CF", "Value": cf["total_cff"]},
+            {"Metric": "Average Annual FCF", "Value": cf["fcf_avg"]},
+        ]
+
+        breakeven_rows = [
+            {"Metric": "Break-even Volume", "Value": be["break_even_volume"]},
+            {"Metric": "Break-even Revenue", "Value": be["break_even_revenue"]},
+            {"Metric": "Margin of Safety", "Value": be["current_margin_of_safety_pct"] / 100},
+        ]
+
+        growth_df = self.analyzer.calculate_growth_rates()[["Year", "Revenue Growth (%)", "Net Profit Growth (%)"]]
+
+        return {
+            "Overview": pd.DataFrame(overview_rows),
+            "Valuation": pd.DataFrame(valuation_rows),
+            "Performance": pd.DataFrame(performance_rows),
+            "Cash Flow": pd.DataFrame(cash_flow_rows),
+            "Break-even": pd.DataFrame(breakeven_rows),
+            "Growth": growth_df,
+        }
+
+    def financial_statement_tables(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """Return income, cash flow, and balance sheet tables."""
+        return generate_financial_statements(self.model_data)
+
+    def ratio_tables(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Return ratio detail and summary tables."""
+        ratios_df = self.analyzer.calculate_ratios()
+        summary = self.analyzer.ratio_summary()
+
+        summary_rows = []
+        for category, metrics in summary.items():
+            for name, value in metrics.items():
+                summary_rows.append({"Category": category, "Metric": name, "Value": value})
+
+        return ratios_df, pd.DataFrame(summary_rows)
+
+    def scenario_tables(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Return scenario comparison table and deltas."""
+        scenarios_df = self.analyzer.create_standard_scenarios()
+
+        if len(scenarios_df) >= 3:
+            base_idx = 1
+            pessimistic_idx = 0
+            optimistic_idx = 2
+
+            insights = [
+                {
+                    "Insight": "Enterprise Value vs Base (Pessimistic)",
+                    "Change": scenarios_df.iloc[pessimistic_idx]["Enterprise Value"] - scenarios_df.iloc[base_idx]["Enterprise Value"],
+                },
+                {
+                    "Insight": "Enterprise Value vs Base (Optimistic)",
+                    "Change": scenarios_df.iloc[optimistic_idx]["Enterprise Value"] - scenarios_df.iloc[base_idx]["Enterprise Value"],
+                },
+                {
+                    "Insight": "Revenue Range (Final Year)",
+                    "Change": scenarios_df["2030 Revenue"].max() - scenarios_df["2030 Revenue"].min(),
+                },
+                {
+                    "Insight": "Profit Margin Range", "Change": scenarios_df["Avg Profit Margin"].max() - scenarios_df["Avg Profit Margin"].min(),
+                },
+            ]
+            insight_df = pd.DataFrame(insights)
+        else:
+            insight_df = pd.DataFrame()
+
+        return scenarios_df, insight_df
+
+    def sensitivity_table(self, params: List[str] = None) -> pd.DataFrame:
+        """Return combined sensitivity results."""
+        if params is None:
+            params = ['cogs_ratio', 'wacc', 'tax_rate']
+
+        frames = []
+        for param in params:
+            df_param = self.analyzer.sensitivity_analysis(param, range_pct=0.3, steps=7).copy()
+            df_param.insert(0, 'Parameter', param)
+            frames.append(df_param)
+
+        if frames:
+            return pd.concat(frames, ignore_index=True)
+        return pd.DataFrame(columns=['Parameter', 'pct_change', 'ev_change', 'ev_change_pct'])
+
+    def chart_tables(self) -> pd.DataFrame:
+        """Return a consolidated table for revenue, profit, cash, and margins."""
+        data = []
+        for y in self.years:
+            revenue = self.model_data['revenue'][y]
+            margin = (self.model_data['net_profit'][y] / revenue) * 100 if revenue else 0
+            data.append({
+                'Year': y,
+                'Revenue': revenue,
+                'Net Profit': self.model_data['net_profit'][y],
+                'Cash Balance': self.model_data['cash_balance'][y],
+                'Profit Margin (%)': margin,
+            })
+        return pd.DataFrame(data)
 
 
 # =====================================================

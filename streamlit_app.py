@@ -403,34 +403,49 @@ with tab_dashboard:
         "Financial Statements",
         "Ratio Analysis",
         "Scenario Report",
-        "Sensitivity Heatmap",
-        "Text Charts",
+        "Sensitivity",
+        "Trends",
     ])
 
     with viz_tabs[0]:
-        st.code(visualizer.executive_summary())
+        tables = visualizer.executive_summary_tables()
+        for name, df in tables.items():
+            st.subheader(name)
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
     with viz_tabs[1]:
-        st.code(visualizer.financial_statement_summary())
+        income_df, cashflow_df, balance_df = visualizer.financial_statement_tables()
+        st.subheader("Income Statement")
+        st.dataframe(income_df, use_container_width=True, hide_index=True)
+        st.subheader("Cash Flow Statement")
+        st.dataframe(cashflow_df, use_container_width=True, hide_index=True)
+        st.subheader("Balance Sheet")
+        st.dataframe(balance_df, use_container_width=True, hide_index=True)
 
     with viz_tabs[2]:
-        st.code(visualizer.ratio_analysis_report())
+        ratios_df, summary_df = visualizer.ratio_tables()
+        st.subheader("Ratios by Year")
+        st.dataframe(ratios_df, use_container_width=True, hide_index=True)
+        st.subheader("Ratio Highlights")
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
     with viz_tabs[3]:
-        st.code(visualizer.scenario_report())
+        scenarios_df, insights_df = visualizer.scenario_tables()
+        st.subheader("Scenario Comparison")
+        st.dataframe(scenarios_df, use_container_width=True, hide_index=True)
+        if not insights_df.empty:
+            st.subheader("Key Deltas")
+            st.dataframe(insights_df, use_container_width=True, hide_index=True)
 
     with viz_tabs[4]:
-        st.code(visualizer.sensitivity_heatmap())
+        sensitivity_df = visualizer.sensitivity_table()
+        st.subheader("Sensitivity Analysis")
+        st.dataframe(sensitivity_df, use_container_width=True, hide_index=True)
 
     with viz_tabs[5]:
-        chart_cols = st.columns(3)
-        with chart_cols[0]:
-            st.code(visualizer.generate_revenue_chart())
-        with chart_cols[1]:
-            st.code(visualizer.generate_profit_chart())
-        with chart_cols[2]:
-            st.code(visualizer.generate_cash_balance_chart())
-        st.code(visualizer.generate_margin_trend())
+        trend_df = visualizer.chart_tables()
+        st.subheader("Revenue, Profit, Cash & Margin")
+        st.dataframe(trend_df, use_container_width=True, hide_index=True)
 
 # =====================================================
 # PAGE 2: AI & MACHINE LEARNING (RAG)

@@ -25,6 +25,7 @@ from labor_management import (
     ProductionLinkedLabor, LaborType, EmploymentStatus, JobCategory
 )
 from capex_management import initialize_default_capex, CapexScheduleManager
+from advanced_analytics import AdvancedSensitivityAnalyzer, StressTestEngine, MonteCarloSimulator
 
 # =====================================================
 # PAGE CONFIG
@@ -83,7 +84,7 @@ def _format_statement(df: pd.DataFrame, money_cols):
 # MAIN NAVIGATION
 # =====================================================
 
-tab_platform, tab_dashboard, tab_ai, tab_labor, tab_capex, tab_financial, tab_reports = st.tabs([
+tab_platform, tab_dashboard, tab_ai, tab_labor, tab_capex, tab_financial, tab_reports, tab_advanced = st.tabs([
     "Platform Settings",
     "Dashboard",
     "AI & Machine Learning",
@@ -91,6 +92,7 @@ tab_platform, tab_dashboard, tab_ai, tab_labor, tab_capex, tab_financial, tab_re
     "CAPEX Management",
     "Financial Model",
     "Reports",
+    "Advanced Analytics",
 ])
 
 # =====================================================
@@ -856,6 +858,153 @@ with tab_reports:
             )
     else:
         st.info("Run the financial model first to generate reports")
+
+# =====================================================
+# PAGE 6: ADVANCED ANALYTICS
+# =====================================================
+
+with tab_advanced:
+    st.markdown("# Advanced Analytics")
+
+    cfg = CompanyConfig(
+        labor_manager=st.session_state.labor_manager,
+        capex_manager=st.session_state.capex_manager,
+    )
+    model = run_financial_model(cfg)
+    years = list(model["years"])
+    start_year, final_year = years[0], years[-1]
+
+    st.markdown("## Baseline Snapshot")
+    kpi_cols = st.columns(3)
+    with kpi_cols[0]:
+        st.metric("Enterprise Value", _format_currency(model.get("enterprise_value", 0)))
+    with kpi_cols[1]:
+        st.metric(
+            f"Revenue ({start_year})",
+            _format_currency(model.get("revenue", {}).get(start_year, 0)),
+        )
+    with kpi_cols[2]:
+        st.metric(
+            f"Net Profit ({final_year})",
+            _format_currency(model.get("net_profit", {}).get(final_year, 0)),
+        )
+
+    st.markdown("## Sensitivity Analysis")
+    sens_params = ["annual_capacity", "cogs_ratio", "loan_interest_rate", "loan_amount", "wacc"]
+    sens_ranges = {p: 0.2 for p in sens_params}
+    sensitivity = AdvancedSensitivityAnalyzer(model, cfg)
+    sens_df = sensitivity.pareto_sensitivity(sens_params, sens_ranges)
+
+    if sens_df.empty:
+        st.info("No sensitivity results available for the current configuration.")
+    else:
+        display_cols = [
+            "parameter",
+            "base_value",
+            "low_ev",
+            "high_ev",
+            "impact_pct",
+        ]
+        sens_view = sens_df[display_cols].rename(
+            columns={
+                "parameter": "Parameter",
+                "base_value": "Base",
+                "low_ev": "Low EV",
+                "high_ev": "High EV",
+                "impact_pct": "Impact (%)",
+            }
+        )
+        currency_cols = ["Base", "Low EV", "High EV"]
+        formatted = sens_view.copy()
+        for col in currency_cols:
+            formatted[col] = formatted[col].apply(_format_currency)
+        formatted["Impact (%)"] = formatted["Impact (%)"].apply(lambda v: f"{v:.1f}%")
+        st.dataframe(formatted, hide_index=True, use_container_width=True)
+
+    st.markdown("## Stress Testing")
+    stress_engine = StressTestEngine(model, cfg)
+    stress_results = stress_engine.extreme_scenarios()
+    stress_df = (
+        pd.DataFrame.from_dict(stress_results, orient="index")
+        .reset_index()
+        .rename(columns={"index": "Scenario"})
+    )
+
+    if stress_df.empty:
+        st.info("No stress scenarios available.")
+    else:
+        currency_cols = [
+            "enterprise_value",
+            "revenue_2030",
+            "net_profit_2030",
+            "final_cash",
+        ]
+        stress_view = stress_df.copy()
+        for col in currency_cols:
+            if col in stress_view.columns:
+                stress_view[col] = stress_view[col].apply(_format_currency)
+        if "recovery_probability" in stress_view.columns:
+            stress_view["recovery_probability"] = stress_view["recovery_probability"].apply(
+                lambda v: f"{v:.0f}%"
+            )
+        st.dataframe(stress_view, hide_index=True, use_container_width=True)
+
+    st.markdown("## Monte Carlo Simulation")
+    mc_engine = MonteCarloSimulator(model, cfg, num_simulations=400)
+    mc_stats = mc_engine.run_simulation(
+        {
+            "cogs_ratio": ("normal", cfg.cogs_ratio, 0.05),
+            "wacc": ("normal", cfg.wacc, 0.02),
+            "annual_capacity": ("normal", cfg.annual_capacity, cfg.annual_capacity * 0.1),
+        }
+    )
+
+    summary_rows = []
+    labels = {
+        "enterprise_values": "Enterprise Value",
+        "final_profits": f"Net Profit ({final_year})",
+        "final_cash": f"Closing Cash ({final_year})",
+        "roi": "ROI (%)",
+    }
+    for key, label in labels.items():
+        stats = mc_stats.get(key, {})
+        summary_rows.append(
+            {
+                "Metric": label,
+                "Mean": stats.get("mean", 0.0),
+                "P5": stats.get("p5", 0.0),
+                "P95": stats.get("p95", 0.0),
+            }
+        )
+
+    summary_df = pd.DataFrame(summary_rows)
+    currency_cols = [c for c in summary_df.columns if c != "Metric" and "ROI" not in summary_df["Metric"].values]
+    formatted_summary = summary_df.copy()
+    for idx, row in formatted_summary.iterrows():
+        if "ROI" in row["Metric"]:
+            formatted_summary.loc[idx, ["Mean", "P5", "P95"]] = [
+                f"{row['Mean']:.1f}%",
+                f"{row['P5']:.1f}%",
+                f"{row['P95']:.1f}%",
+            ]
+        else:
+            formatted_summary.loc[idx, ["Mean", "P5", "P95"]] = [
+                _format_currency(row["Mean"]),
+                _format_currency(row["P5"]),
+                _format_currency(row["P95"]),
+            ]
+
+    st.dataframe(formatted_summary, hide_index=True, use_container_width=True)
+
+    ev_distribution = mc_stats.get("enterprise_values", {}).get("distribution", [])
+    if len(ev_distribution) > 0:
+        hist_fig = px.histogram(
+            ev_distribution,
+            nbins=30,
+            title="Enterprise Value Distribution (Monte Carlo)",
+            labels={"value": "Enterprise Value"},
+        )
+        st.plotly_chart(hist_fig, use_container_width=True)
 
 # =====================================================
 # FOOTER

@@ -67,6 +67,9 @@ def initialize_session_state():
             "enabled": True,
         }
 
+    if 'owner_equity_pct' not in st.session_state:
+        st.session_state.owner_equity_pct = 70.0
+
 initialize_session_state()
 
 
@@ -160,6 +163,52 @@ with tab_platform:
         "Cash Flow from Financing": [model["cff"][y] for y in years],
     })
 
+    depreciation_values = [model["depreciation"][y] if isinstance(model["depreciation"], dict) else model["depreciation"] for y in years]
+    fixed_cost_df = pd.DataFrame({
+        "Year": years,
+        "Fixed Operating Costs": [model["opex"][y] for y in years],
+        "Depreciation": depreciation_values,
+    })
+
+    variable_cost_df = pd.DataFrame({
+        "Year": years,
+        "COGS (Variable)": [model["cogs"][y] for y in years],
+    })
+
+    other_cost_df = pd.DataFrame({
+        "Year": years,
+        "Tax": [model["tax"][y] for y in years],
+        "Interest": [model["interest_payment"][y] for y in years],
+    })
+    other_cost_df["Other Costs"] = other_cost_df["Tax"] + other_cost_df["Interest"]
+
+    debt_outstanding = []
+    debt_balance = model["config"].loan_amount
+    for y in years:
+        debt_balance = max(0.0, debt_balance - model["loan_repayment"].get(y, 0.0))
+        debt_outstanding.append(debt_balance)
+    debt_schedule_df = pd.DataFrame({
+        "Year": years,
+        "Interest": [model["interest_payment"].get(y, 0.0) for y in years],
+        "Principal": [model["loan_repayment"].get(y, 0.0) for y in years],
+        "Ending Balance": debt_outstanding,
+    })
+
+    assets_df = pd.DataFrame({
+        "Year": years,
+        "Fixed Assets": [model["fixed_assets"][y] for y in years],
+        "Current Assets": [model["current_assets"][y] for y in years],
+        "Total Assets": [model["total_assets"][y] for y in years],
+    })
+
+    assembly_df = pd.DataFrame({
+        "Year": years,
+        "Annual Capacity": [model["config"].annual_capacity for _ in years],
+        "Capacity Utilization": [model["config"].capacity_utilization.get(y, 0.0) for y in years],
+        "Units Produced": [model["production_volume"][y] for y in years],
+        "Working Days": [model["config"].working_days for _ in years],
+    })
+
     schedule_tabs = st.tabs([
         "Income Statement",
         "Cash Flow",
@@ -170,6 +219,13 @@ with tab_platform:
         "Production",
         "Working Capital & FCF",
         "Financing",
+        "Fixed Cost",
+        "Variable Cost",
+        "Other Cost",
+        "Debt",
+        "Investment",
+        "Assets",
+        "Automobile & Assembly",
     ])
 
     with schedule_tabs[0]:
@@ -209,6 +265,43 @@ with tab_platform:
 
     with schedule_tabs[8]:
         st.dataframe(_format_statement(financing_df, ["Interest", "Loan Repayment", "Long Term Debt", "Cash Flow from Financing"]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[9]:
+        st.dataframe(_format_statement(fixed_cost_df, ["Fixed Operating Costs", "Depreciation"]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[10]:
+        st.dataframe(_format_statement(variable_cost_df, ["COGS (Variable)"]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[11]:
+        st.dataframe(_format_statement(other_cost_df, ["Tax", "Interest", "Other Costs"]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[12]:
+        st.dataframe(_format_statement(debt_schedule_df, ["Interest", "Principal", "Ending Balance"]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[13]:
+        owner_pct = st.slider("Owner Equity %", 0.0, 100.0, float(st.session_state.owner_equity_pct), key="owner_equity_pct_slider")
+        st.session_state.owner_equity_pct = owner_pct
+        investor_pct = max(0.0, 100.0 - owner_pct)
+        st.info(f"Owner: {owner_pct:.1f}% | Investor: {investor_pct:.1f}%")
+        investment_df = pd.DataFrame({
+            "Year": years,
+            "Owner %": [owner_pct for _ in years],
+            "Investor %": [investor_pct for _ in years],
+            "Owner Equity": [model["config"].equity_investment * (owner_pct / 100.0) if y == years[0] else 0.0 for y in years],
+            "Investor Equity": [model["config"].equity_investment * (investor_pct / 100.0) if y == years[0] else 0.0 for y in years],
+            "Debt Raised": [model["config"].loan_amount if y == years[0] else 0.0 for y in years],
+        })
+        st.dataframe(
+            _format_statement(investment_df, ["Owner Equity", "Investor Equity", "Debt Raised"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with schedule_tabs[14]:
+        st.dataframe(_format_statement(assets_df, ["Fixed Assets", "Current Assets", "Total Assets"]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[15]:
+        st.dataframe(_format_statement(assembly_df, ["Units Produced", "Annual Capacity"]), use_container_width=True, hide_index=True)
 
 # =====================================================
 # PAGE 1: DASHBOARD

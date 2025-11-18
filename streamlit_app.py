@@ -137,6 +137,28 @@ with tab_platform:
     depreciation_sched = st.session_state.capex_manager.depreciation_schedule(years[0], len(years))
     depreciation_df = pd.DataFrame({"Year": years, "Depreciation": [depreciation_sched.get(y, 0.0) for y in years]})
 
+    production_df = pd.DataFrame({
+        "Year": years,
+        "Units Produced": [model["production_volume"][y] for y in years],
+        "Revenue": [model["revenue"][y] for y in years],
+        "COGS": [model["cogs"][y] for y in years],
+    })
+
+    working_cap_df = pd.DataFrame({
+        "Year": years,
+        "FCF": [model["fcf"][y] for y in years],
+        "Discounted FCF": [model["discounted_fcf"][y] for y in years],
+        "Working Capital Change": [model["working_capital_change"].get(y, 0.0) for y in years],
+    })
+
+    financing_df = pd.DataFrame({
+        "Year": years,
+        "Interest": [model["interest_payment"][y] for y in years],
+        "Loan Repayment": [model["loan_repayment"][y] for y in years],
+        "Long Term Debt": [model["long_term_debt"][y] for y in years],
+        "Cash Flow from Financing": [model["cff"][y] for y in years],
+    })
+
     schedule_tabs = st.tabs([
         "Income Statement",
         "Cash Flow",
@@ -144,6 +166,9 @@ with tab_platform:
         "Labor Cost",
         "CAPEX Spend",
         "Depreciation",
+        "Production",
+        "Working Capital & FCF",
+        "Financing",
     ])
 
     with schedule_tabs[0]:
@@ -174,6 +199,15 @@ with tab_platform:
 
     with schedule_tabs[5]:
         st.dataframe(_format_statement(depreciation_df, ["Depreciation"]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[6]:
+        st.dataframe(_format_statement(production_df, ["Revenue", "COGS"]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[7]:
+        st.dataframe(_format_statement(working_cap_df, ["FCF", "Discounted FCF", "Working Capital Change"]), use_container_width=True, hide_index=True)
+
+    with schedule_tabs[8]:
+        st.dataframe(_format_statement(financing_df, ["Interest", "Loan Repayment", "Long Term Debt", "Cash Flow from Financing"]), use_container_width=True, hide_index=True)
 
 # =====================================================
 # PAGE 1: DASHBOARD

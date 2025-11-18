@@ -20,6 +20,7 @@ from financial_model import (
     CompanyConfig,
     generate_financial_statements,
     generate_labor_statement,
+    _get_capacity_for_year,
 )
 from visualization_tools import FinancialVisualizer
 from labor_management import (
@@ -364,12 +365,27 @@ with tab_platform:
         }
     )
 
-    production_df = pd.DataFrame({
+    production_schedule_df = pd.DataFrame({
         "Year": years,
+        "Annual Capacity": [model["config"].annual_capacity for _ in years],
+        "Capacity Utilization": [_get_capacity_for_year(cfg, y) * 100 for y in years],
         "Units Produced": [model["production_volume"][y] for y in years],
         "Revenue": [model["revenue"][y] for y in years],
-        "COGS": [model["cogs"][y] for y in years],
     })
+
+    start_year = years[0]
+    product_mix_df = pd.DataFrame(
+        [
+            {
+                "Product": product,
+                "Mix %": mix * 100,
+                "Unit Price": model["selling_price"].get(product, 0.0),
+                "Units (Start Year)": model["production_volume"][start_year] * mix,
+                "Revenue (Start Year)": model["production_volume"][start_year] * mix * model["selling_price"].get(product, 0.0),
+            }
+            for product, mix in model["product_mix"].items()
+        ]
+    )
 
     working_cap_df = pd.DataFrame({
         "Year": years,
@@ -439,7 +455,7 @@ with tab_platform:
     schedule_tabs = st.tabs([
         "Labor Cost",
         "CAPEX",
-        "Production",
+        "Production Schedule",
         "Working Capital & FCF",
         "Financing",
         "Fixed Cost",
@@ -471,7 +487,24 @@ with tab_platform:
         )
 
     with schedule_tabs[2]:
-        st.dataframe(_format_statement(production_df, ["Revenue", "COGS"]), use_container_width=True, hide_index=True)
+        st.markdown("#### Production Schedule")
+
+        production_display = production_schedule_df.copy()
+        production_display["Capacity Utilization"] = production_display["Capacity Utilization"].apply(lambda v: f"{v:.1f}%")
+        st.dataframe(
+            _format_statement(production_display, ["Revenue"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.markdown("#### Product Mix & Pricing")
+        mix_display = product_mix_df.copy()
+        mix_display["Mix %"] = mix_display["Mix %"].apply(lambda v: f"{v:.1f}%")
+        st.dataframe(
+            _format_statement(mix_display, ["Unit Price", "Revenue (Start Year)"]),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     with schedule_tabs[3]:
         st.dataframe(_format_statement(working_cap_df, ["FCF", "Discounted FCF", "Working Capital Change"]), use_container_width=True, hide_index=True)

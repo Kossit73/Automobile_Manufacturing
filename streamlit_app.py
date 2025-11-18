@@ -734,7 +734,7 @@ with tab_reports:
             st.markdown("### CAPEX Spend Schedule")
             if st.session_state.capex_manager:
                 capex_schedule = st.session_state.capex_manager.yearly_capex_schedule(
-                    st.session_state.capex_manager.start_year,
+                    years[0],
                     len(years),
                 )
                 capex_df = pd.DataFrame({"Year": years, "CAPEX Spend": [capex_schedule.get(y, 0.0) for y in years]})

@@ -80,27 +80,36 @@ def _format_statement(df: pd.DataFrame, money_cols):
     return formatted
 
 # =====================================================
-# SIDEBAR - SETTINGS
+# MAIN NAVIGATION
 # =====================================================
 
-with st.sidebar:
+tab_platform, tab_dashboard, tab_ai, tab_labor, tab_capex, tab_financial, tab_reports = st.tabs([
+    "Platform Settings",
+    "Dashboard",
+    "AI & Machine Learning",
+    "Labor Management",
+    "CAPEX Management",
+    "Financial Model",
+    "Reports",
+])
+
+# =====================================================
+# PAGE 0: PLATFORM SETTINGS
+# =====================================================
+
+with tab_platform:
     st.markdown("# Platform Settings")
 
-    # Global Settings
     st.markdown("### Global Parameters")
-    
     salary_growth = st.slider(
         "Annual Salary Growth Rate (%)",
         min_value=0,
         max_value=10,
         value=int(st.session_state.salary_growth_rate * 100),
-        help="Applied to all labor cost projections"
+        help="Applied to all labor cost projections",
     )
     st.session_state.salary_growth_rate = salary_growth / 100
-    
-    st.divider()
 
-    # Platform Info
     st.markdown("### Platform Info")
     st.info(
         "**Manufacturing Financial Platform v1.0**\n\n"
@@ -109,19 +118,6 @@ with st.sidebar:
         "• Financial modeling\n"
         "• Advanced reporting"
     )
-
-# =====================================================
-# MAIN NAVIGATION
-# =====================================================
-
-tab_dashboard, tab_ai, tab_labor, tab_capex, tab_financial, tab_reports = st.tabs([
-    "Dashboard",
-    "AI & Machine Learning",
-    "Labor Management",
-    "CAPEX Management",
-    "Financial Model",
-    "Reports",
-])
 
 # =====================================================
 # PAGE 1: DASHBOARD

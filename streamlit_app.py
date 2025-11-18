@@ -263,13 +263,13 @@ def _editable_schedule(
 # MAIN NAVIGATION
 # =====================================================
 
-tab_platform, tab_dashboard, tab_financial, tab_ai, tab_labor, tab_capex, tab_reports, tab_advanced = st.tabs([
+tab_platform, tab_labor, tab_capex, tab_dashboard, tab_financial, tab_ai, tab_reports, tab_advanced = st.tabs([
     "Platform Settings",
+    "Labor Management",
+    "CAPEX Management",
     "Dashboard",
     "Financial Model",
     "AI & Machine Learning",
-    "Labor Management",
-    "CAPEX Management",
     "Reports",
     "Advanced Analytics",
 ])

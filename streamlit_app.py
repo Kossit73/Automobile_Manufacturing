@@ -398,7 +398,7 @@ with tab_labor:
             col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("Save Changes"):
+                if st.button("Save Changes", key="labor_save_changes"):
                     try:
                         st.session_state.labor_manager.edit_position(
                             selected_id,
@@ -415,7 +415,7 @@ with tab_labor:
                         st.error(f"Error: {str(e)}")
             
             with col2:
-                if st.button("Remove Position"):
+                if st.button("Remove Position", key="labor_remove_position"):
                     try:
                         st.session_state.labor_manager.remove_position(selected_id)
                         st.success("Position removed.")
@@ -531,7 +531,7 @@ with tab_capex:
             col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("Save Changes"):
+                if st.button("Save Changes", key="capex_save_changes"):
                     try:
                         st.session_state.capex_manager.edit_item(
                             selected_id,
@@ -548,7 +548,7 @@ with tab_capex:
                         st.error(f"Error: {str(e)}")
             
             with col2:
-                if st.button("Remove Asset"):
+                if st.button("Remove Asset", key="capex_remove_asset"):
                     try:
                         st.session_state.capex_manager.remove_item(selected_id)
                         st.success("Asset removed.")

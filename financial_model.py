@@ -217,7 +217,7 @@ def calculate_opex_breakdown(years: range, cfg: CompanyConfig) -> Tuple[Dict[int
         if cfg.labor_cost_overrides and y in cfg.labor_cost_overrides:
             labor_cost = cfg.labor_cost_overrides[y]
 
-        other_cost = 0.0
+        other_cost = cfg.other_cost_overrides.get(y, 0.0) if cfg.other_cost_overrides else 0.0
 
         breakdown[y] = {
             'marketing': marketing,

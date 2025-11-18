@@ -223,6 +223,7 @@ def _build_company_config() -> CompanyConfig:
         opex_overrides=st.session_state.get('fixed_cost_overrides', {}),
         cogs_overrides=st.session_state.get('variable_cost_overrides', {}),
         loan_repayment_overrides=st.session_state.get('loan_repayment_overrides', {}),
+        other_cost_overrides=st.session_state.get('other_cost_overrides', {}),
     )
 
 
@@ -399,16 +400,8 @@ with tab_platform:
 
     other_cost_df = pd.DataFrame({
         "Year": years,
-        "Tax": [model["tax"][y] for y in years],
-        "Interest": [model["interest_payment"][y] for y in years],
+        "Other Operating Cost": [model["opex_breakdown"].get(y, {}).get("other", 0.0) for y in years],
     })
-    other_cost_df["Other Costs"] = other_cost_df["Tax"] + other_cost_df["Interest"]
-
-    if st.session_state.other_cost_overrides:
-        other_cost_df["Other Costs"] = [
-            st.session_state.other_cost_overrides.get(y, val)
-            for y, val in zip(other_cost_df["Year"], other_cost_df["Other Costs"])
-        ]
 
     debt_outstanding = []
     debt_balance = model["config"].loan_amount
@@ -509,8 +502,8 @@ with tab_platform:
             "Other Cost Schedule",
             other_cost_df,
             "other_cost_overrides",
-            "Other Costs",
-            "Adjust other costs by year; tax and interest columns remain for reference.",
+            "Other Operating Cost",
+            "Adjust other operating costs by year; use add/remove to reshape the horizon.",
         )
 
     with schedule_tabs[8]:

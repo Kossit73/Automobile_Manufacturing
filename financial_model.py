@@ -107,12 +107,36 @@ def calculate_cogs(revenue: Dict, cfg: CompanyConfig) -> Dict:
 # =====================================================
 # 4. OPERATING EXPENSES
 # =====================================================
+def _get_marketing_for_year(cfg: CompanyConfig, year: int) -> float:
+    """Gracefully fetch a marketing budget value even when a year is missing.
+
+    The app frequently extends projection horizons or edits schedules without
+    reseeding every year of ``cfg.marketing_budget``. This helper avoids
+    ``KeyError`` by falling back to the last defined value, or ``0.0`` when no
+    budgets exist.
+    """
+
+    if not cfg.marketing_budget:
+        return 0.0
+
+    if year in cfg.marketing_budget:
+        return cfg.marketing_budget[year]
+
+    # Use the most recent budget defined on or before the requested year; if
+    # none exist, fall back to the earliest available entry.
+    defined_years = sorted(cfg.marketing_budget.keys())
+    earlier = [y for y in defined_years if y <= year]
+    if earlier:
+        return cfg.marketing_budget[earlier[-1]]
+    return cfg.marketing_budget[defined_years[0]]
+
+
 def calculate_opex(years: range, cfg: CompanyConfig) -> Dict:
     """Calculate operating expenses including marketing and payroll"""
     opex = {}
     for y in years:
         annual_payroll = (cfg.avg_salary * cfg.headcount * 12) * (1 + cfg.annual_salary_growth) ** (y - cfg.start_year)
-        opex[y] = cfg.marketing_budget[y] + annual_payroll
+        opex[y] = _get_marketing_for_year(cfg, y) + annual_payroll
     return opex
 
 def calculate_opex_with_labor_manager(years: range, cfg: CompanyConfig) -> Dict:
@@ -126,7 +150,7 @@ def calculate_opex_with_labor_manager(years: range, cfg: CompanyConfig) -> Dict:
         direct_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Direct', 0)
         indirect_cost = cfg.labor_manager.get_labor_cost_by_type(y, cfg.annual_salary_growth).get('Indirect', 0)
         labor_cost = direct_cost + indirect_cost
-        marketing = cfg.marketing_budget[y]
+        marketing = _get_marketing_for_year(cfg, y)
         opex[y] = marketing + labor_cost
     return opex
 

@@ -189,6 +189,9 @@ def initialize_session_state():
         st.session_state.marketing_budget_schedule = base_cfg.marketing_budget.copy()
         st.session_state.marketing_budget_defaults = base_cfg.marketing_budget.copy()
 
+    if 'financing_metadata' not in st.session_state:
+        st.session_state.financing_metadata = {}
+
     # Schedule override containers
     for key in [
         'labor_cost_overrides',
@@ -335,7 +338,31 @@ FINANCING_COMPONENT_MAP = {
 }
 
 
-def _update_financing_entry(year: int, component: str, amount: float):
+def _financing_meta_key(year: int, component: str) -> str:
+    return f"{component}:{year}"
+
+
+def _get_financing_metadata(year: int, component: str) -> dict:
+    key = _financing_meta_key(year, component)
+    metadata = st.session_state.get('financing_metadata', {}).get(key, {})
+    return copy.deepcopy(metadata)
+
+
+def _persist_financing_metadata(year: int, component: str, metadata: dict):
+    if metadata is None:
+        return
+    store = st.session_state.setdefault('financing_metadata', {})
+    store[_financing_meta_key(year, component)] = copy.deepcopy(metadata)
+
+
+def _remove_financing_metadata(year: int, component: str):
+    store = st.session_state.get('financing_metadata')
+    if not store:
+        return
+    store.pop(_financing_meta_key(year, component), None)
+
+
+def _update_financing_entry(year: int, component: str, amount: float, metadata: dict | None = None):
     """Persist a financing override for the selected component."""
 
     key = FINANCING_COMPONENT_MAP.get(component)
@@ -343,6 +370,8 @@ def _update_financing_entry(year: int, component: str, amount: float):
         return
     overrides = st.session_state.setdefault(key, {})
     overrides[year] = amount
+    if metadata is not None:
+        _persist_financing_metadata(year, component, metadata)
 
 
 def _remove_financing_entry(year: int, component: str):
@@ -353,6 +382,7 @@ def _remove_financing_entry(year: int, component: str):
         return
     if key in st.session_state:
         st.session_state[key].pop(year, None)
+    _remove_financing_metadata(year, component)
 
 
 def _build_company_config() -> CompanyConfig:
@@ -1382,6 +1412,39 @@ with tab_platform:
                     use_container_width=True,
                     hide_index=True,
                 )
+                financing_metadata_store = st.session_state.get('financing_metadata', {})
+                if financing_metadata_store:
+                    meta_rows = []
+                    for key, meta in financing_metadata_store.items():
+                        try:
+                            component, year_str = key.split(":")
+                            year_val = int(year_str)
+                        except ValueError:
+                            component = key
+                            year_val = None
+                        meta_rows.append(
+                            {
+                                "Year": year_val,
+                                "Component": component,
+                                "Debt Name": meta.get("debt_name", ""),
+                                "Debt Amount": meta.get("debt_amount", 0.0),
+                                "Interest Rate (%)": meta.get("interest_rate", 0.0),
+                                "Start Date": meta.get("start_date"),
+                                "Period of Validity (years)": meta.get("validity_period"),
+                                "Grace Period (years)": meta.get("grace_period"),
+                            }
+                        )
+
+                    meta_df = pd.DataFrame(meta_rows)
+                    st.markdown("##### Debt Instrument Details")
+                    st.dataframe(
+                        _format_statement(
+                            meta_df,
+                            ["Debt Amount"],
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
             with fin_tabs[1]:
                 st.markdown("## Add Financing Entry")
@@ -1396,6 +1459,7 @@ with tab_platform:
                         financing_df["Year"] == year_choice, component_choice
                     ]
                     default_amount = float(default_val.iloc[0]) if not default_val.empty else 0.0
+                    metadata_defaults = _get_financing_metadata(int(year_choice), component_choice)
                     amount_value = st.number_input(
                         "Amount ($)",
                         min_value=-100_000_000.0,
@@ -1403,10 +1467,62 @@ with tab_platform:
                         step=10_000.0,
                         key="add_fin_amount",
                     )
+                    debt_name = st.text_input(
+                        "Debt Name",
+                        value=metadata_defaults.get("debt_name", ""),
+                        key="add_fin_debt_name",
+                    )
+                    debt_amount = st.number_input(
+                        "Debt Amount ($)",
+                        min_value=0.0,
+                        value=float(metadata_defaults.get("debt_amount", amount_value if amount_value > 0 else 0.0)),
+                        step=10_000.0,
+                        key="add_fin_debt_amount",
+                    )
+                    interest_rate = st.number_input(
+                        "Interest Rate (%)",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=float(metadata_defaults.get("interest_rate", 8.0)),
+                        step=0.1,
+                        key="add_fin_interest_rate",
+                    )
+                    start_date = st.number_input(
+                        "Start Date",
+                        min_value=int(years[0]),
+                        max_value=int(years[-1]),
+                        value=int(metadata_defaults.get("start_date", year_choice)),
+                        step=1,
+                        key="add_fin_start_date",
+                    )
+                    validity_period = st.number_input(
+                        "Period of Validity (years)",
+                        min_value=0,
+                        value=int(metadata_defaults.get("validity_period", 5)),
+                        step=1,
+                        key="add_fin_validity",
+                    )
+                    grace_period = st.number_input(
+                        "Grace Period (years)",
+                        min_value=0,
+                        value=int(metadata_defaults.get("grace_period", 0)),
+                        step=1,
+                        key="add_fin_grace",
+                    )
                     add_fin_submitted = st.form_submit_button("Add Financing Entry")
 
                 if add_fin_submitted:
-                    _update_financing_entry(int(year_choice), component_choice, float(amount_value))
+                    metadata_payload = {
+                        "debt_name": debt_name.strip(),
+                        "debt_amount": float(debt_amount),
+                        "interest_rate": float(interest_rate),
+                        "start_date": int(start_date),
+                        "validity_period": int(validity_period),
+                        "grace_period": int(grace_period),
+                    }
+                    _update_financing_entry(
+                        int(year_choice), component_choice, float(amount_value), metadata_payload
+                    )
                     st.success("Financing entry saved.")
                     st.rerun()
 
@@ -1441,11 +1557,64 @@ with tab_platform:
                         step=10_000.0,
                         key=edit_key,
                     )
+                    entry_metadata = _get_financing_metadata(int(entry['year']), entry['component'])
+                    debt_name_edit = st.text_input(
+                        "Debt Name",
+                        value=entry_metadata.get("debt_name", ""),
+                        key=f"edit_fin_debt_name_{entry['year']}_{entry['component']}",
+                    )
+                    debt_amount_edit = st.number_input(
+                        "Debt Amount ($)",
+                        min_value=0.0,
+                        value=float(entry_metadata.get("debt_amount", entry['amount'] if entry['amount'] > 0 else 0.0)),
+                        step=10_000.0,
+                        key=f"edit_fin_debt_amt_{entry['year']}_{entry['component']}",
+                    )
+                    interest_rate_edit = st.number_input(
+                        "Interest Rate (%)",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=float(entry_metadata.get("interest_rate", 8.0)),
+                        step=0.1,
+                        key=f"edit_fin_int_rate_{entry['year']}_{entry['component']}",
+                    )
+                    start_date_edit = st.number_input(
+                        "Start Date",
+                        min_value=int(years[0]),
+                        max_value=int(years[-1]),
+                        value=int(entry_metadata.get("start_date", entry['year'])),
+                        step=1,
+                        key=f"edit_fin_start_{entry['year']}_{entry['component']}",
+                    )
+                    validity_edit = st.number_input(
+                        "Period of Validity (years)",
+                        min_value=0,
+                        value=int(entry_metadata.get("validity_period", 5)),
+                        step=1,
+                        key=f"edit_fin_validity_{entry['year']}_{entry['component']}",
+                    )
+                    grace_edit = st.number_input(
+                        "Grace Period (years)",
+                        min_value=0,
+                        value=int(entry_metadata.get("grace_period", 0)),
+                        step=1,
+                        key=f"edit_fin_grace_{entry['year']}_{entry['component']}",
+                    )
 
                     col_save, col_remove = st.columns(2)
                     with col_save:
                         if st.button("Save Financing Entry", key=f"save_fin_{entry['year']}_{entry['component']}"):
-                            _update_financing_entry(int(entry['year']), entry['component'], float(new_amount))
+                            metadata_payload = {
+                                "debt_name": debt_name_edit.strip(),
+                                "debt_amount": float(debt_amount_edit),
+                                "interest_rate": float(interest_rate_edit),
+                                "start_date": int(start_date_edit),
+                                "validity_period": int(validity_edit),
+                                "grace_period": int(grace_edit),
+                            }
+                            _update_financing_entry(
+                                int(entry['year']), entry['component'], float(new_amount), metadata_payload
+                            )
                             st.success("Financing entry updated.")
                             st.rerun()
                     with col_remove:

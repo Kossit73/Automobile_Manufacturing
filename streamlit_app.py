@@ -661,7 +661,11 @@ def _render_capex_management_section():
                 "Acquisition Cost ($)", min_value=10000, value=100000, step=10000
             )
             asset_additions = st.number_input(
-                "Asset Additions ($)", min_value=0.0, value=0.0, step=5000.0
+                "Asset Additions ($)",
+                min_value=0.0,
+                value=0.0,
+                step=5000.0,
+                key="capex_add_asset_additions",
             )
             depreciation_rate_pct = st.number_input(
                 "Depreciation Rate (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.5
@@ -723,6 +727,7 @@ def _render_capex_management_section():
                 min_value=0.0,
                 value=float(asset.asset_additions),
                 step=5000.0,
+                key=f"capex_edit_asset_additions_{selected_id}",
             )
             new_dep_rate = st.number_input(
                 "Depreciation Rate (%)",

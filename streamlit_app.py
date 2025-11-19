@@ -421,6 +421,19 @@ def _wc_category_key(label: str) -> str:
     return WC_CATEGORY_KEY_MAP.get(label, label.lower().replace(" ", "_"))
 
 
+OPEX_CATEGORY_OPTIONS = [
+    "Marketing",
+    "Labor",
+    "Other Operating Cost",
+]
+
+OPEX_CATEGORY_KEY_MAP = {
+    "Marketing": "marketing",
+    "Labor": "labor",
+    "Other Operating Cost": "other",
+}
+
+
 def _update_working_capital_entry(year: int, category: str, amount: float):
     """Persist a working-capital override for the selected category."""
 
@@ -1626,11 +1639,34 @@ with tab_platform:
         if opex_breakdown_df.empty:
             st.info("No operating expense details available. Add costs to view the breakdown.")
         else:
-            curr_tab, add_tab, edit_tab = st.tabs([
-                "Current Operating Expense",
-                "Add Operating Expense",
-                "Edit Operating Expense",
-            ])
+            (
+                curr_tab,
+                add_tab,
+                edit_tab,
+                remove_tab,
+                increment_tab,
+            ) = st.tabs(
+                [
+                    "Current Operating Expense",
+                    "Add Operating Expense",
+                    "Edit Operating Expense",
+                    "Remove Operating Expense",
+                    "Yearly Increment",
+                ]
+            )
+
+            opex_entries = []
+            for _, row in opex_breakdown_df.iterrows():
+                year_val = int(row["Year"])
+                for category in OPEX_CATEGORY_OPTIONS:
+                    opex_entries.append(
+                        {
+                            "label": f"{year_val} • {category}",
+                            "year": year_val,
+                            "category": category,
+                            "amount": float(row.get(category, 0.0)),
+                        }
+                    )
 
             with curr_tab:
                 st.dataframe(
@@ -1648,7 +1684,7 @@ with tab_platform:
                     year_choice = st.selectbox("Year", years, key="add_opex_year")
                     category_choice = st.selectbox(
                         "Expense Type",
-                        ["Marketing", "Labor", "Other Operating Cost"],
+                        OPEX_CATEGORY_OPTIONS,
                         key="add_opex_category",
                     )
                     amount_value = st.number_input(
@@ -1667,29 +1703,16 @@ with tab_platform:
 
             with edit_tab:
                 st.markdown("## Edit Operating Expense")
-                entries = []
-                for _, row in opex_breakdown_df.iterrows():
-                    year_val = int(row["Year"])
-                    entries.append({
-                        'label': f"{year_val} • Marketing", 'year': year_val, 'category': 'Marketing', 'amount': float(row["Marketing"])
-                    })
-                    entries.append({
-                        'label': f"{year_val} • Labor", 'year': year_val, 'category': 'Labor', 'amount': float(row["Labor"])
-                    })
-                    entries.append({
-                        'label': f"{year_val} • Other Operating Cost", 'year': year_val, 'category': 'Other Operating Cost', 'amount': float(row["Other Operating Cost"])
-                    })
-
-                if not entries:
+                if not opex_entries:
                     st.info("No operating expense entries available.")
                 else:
                     option = st.selectbox(
                         "Select expense to edit",
-                        options=list(range(len(entries))),
-                        format_func=lambda idx: f"{entries[idx]['label']} (${entries[idx]['amount']:,.0f})",
+                        options=list(range(len(opex_entries))),
+                        format_func=lambda idx: f"{opex_entries[idx]['label']} (${opex_entries[idx]['amount']:,.0f})",
                         key="edit_opex_selector",
                     )
-                    selected_entry = entries[option]
+                    selected_entry = opex_entries[option]
                     amount_key = f"edit_opex_amount_{selected_entry['year']}_{selected_entry['category']}"
                     new_amount = st.number_input(
                         "Amount ($)",
@@ -1698,23 +1721,69 @@ with tab_platform:
                         step=5000.0,
                         key=amount_key,
                     )
-                    col_save, col_remove = st.columns(2)
                     save_key = f"save_opex_{selected_entry['year']}_{selected_entry['category']}"
-                    remove_key = f"remove_opex_{selected_entry['year']}_{selected_entry['category']}"
-                    with col_save:
-                        if st.button("Save Operating Expense", key=save_key):
-                            _update_operating_expense_entry(
-                                int(selected_entry['year']), selected_entry['category'], float(new_amount)
-                            )
-                            st.success("Operating expense updated.")
-                            st.rerun()
-                    with col_remove:
-                        if st.button("Remove Operating Expense", key=remove_key):
-                            _remove_operating_expense_entry(
-                                int(selected_entry['year']), selected_entry['category']
-                            )
-                            st.success("Operating expense removed.")
-                            st.rerun()
+                    if st.button("Save Operating Expense", key=save_key):
+                        _update_operating_expense_entry(
+                            int(selected_entry['year']), selected_entry['category'], float(new_amount)
+                        )
+                        st.success("Operating expense updated.")
+                        st.rerun()
+
+            with remove_tab:
+                st.markdown("## Remove Operating Expense")
+                if not opex_entries:
+                    st.info("No operating expense entries available to remove.")
+                else:
+                    labels = [f"{entry['label']} (${entry['amount']:,.0f})" for entry in opex_entries]
+                    selections = st.multiselect(
+                        "Select expenses to remove",
+                        options=labels,
+                        key="remove_opex_selector",
+                    )
+                    if st.button("Remove Selected Expenses", key="remove_opex_btn") and selections:
+                        for label in selections:
+                            idx = labels.index(label)
+                            entry = opex_entries[idx]
+                            _remove_operating_expense_entry(int(entry['year']), entry['category'])
+                        st.success("Selected operating expenses removed.")
+                        st.rerun()
+
+            with increment_tab:
+                st.markdown("## Yearly Increment Helper")
+                with st.form("opex_increment_form"):
+                    selected_categories = st.multiselect(
+                        "Expense Categories",
+                        OPEX_CATEGORY_OPTIONS,
+                        default=OPEX_CATEGORY_OPTIONS,
+                        key="opex_increment_categories",
+                    )
+                    selected_years = st.multiselect(
+                        "Years",
+                        years,
+                        default=years,
+                        key="opex_increment_years",
+                    )
+                    increment_pct = st.number_input(
+                        "Increment (%)",
+                        min_value=-100.0,
+                        max_value=200.0,
+                        value=5.0,
+                        step=1.0,
+                        key="opex_increment_pct",
+                    )
+                    increment_submitted = st.form_submit_button("Apply Increment")
+
+                if increment_submitted and selected_categories and selected_years:
+                    multiplier = 1 + (increment_pct / 100.0)
+                    for year_value in selected_years:
+                        breakdown = model.get("opex_breakdown", {}).get(int(year_value), {})
+                        for category in selected_categories:
+                            key = OPEX_CATEGORY_KEY_MAP.get(category)
+                            base_amount = float(breakdown.get(key, 0.0))
+                            new_amount = max(0.0, base_amount * multiplier)
+                            _update_operating_expense_entry(int(year_value), category, new_amount)
+                    st.success("Operating expense schedule updated with the incremented values.")
+                    st.rerun()
 
     with tab_wc_accruals:
         st.markdown("#### Working-Capital-Driven Accruals")

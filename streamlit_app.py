@@ -230,6 +230,8 @@ def initialize_session_state():
         'interest_overrides',
         'financing_cash_flow_overrides',
         'investment_overrides',
+        'investment_amounts',
+        'investment_default_amounts',
         'asset_overrides',
         'working_capital_overrides',
     ]:
@@ -384,12 +386,69 @@ def _remove_investment_entry(year: int):
         st.session_state['investment_overrides'] = overrides
 
 
-def _increment_investment_entries(years: List[int], increment_pct: float):
+def _increment_investment_entries(
+    years: List[int],
+    increment_pct: float,
+    owner_amount_increment: float = 0.0,
+    investor_amount_increment: float = 0.0,
+    debt_amount_increment: float = 0.0,
+):
     if not years:
         return
     for year in years:
         updated = _get_owner_pct_for_year(year) + increment_pct
         _set_owner_pct_for_year(year, updated)
+    _increment_investment_amounts(years, owner_amount_increment, investor_amount_increment, debt_amount_increment)
+
+
+def _get_investment_amount_defaults() -> Dict[int, Dict[str, float]]:
+    return st.session_state.get('investment_default_amounts', {})
+
+
+def _get_investment_amount_record(year: int) -> Dict[str, float]:
+    defaults = _get_investment_amount_defaults()
+    base = defaults.get(year, {"owner_equity": 0.0, "investor_equity": 0.0, "debt_raised": 0.0})
+    overrides = st.session_state.get('investment_amounts', {})
+    record = overrides.get(year)
+    if record:
+        return {
+            "owner_equity": float(record.get('owner_equity', base['owner_equity'])),
+            "investor_equity": float(record.get('investor_equity', base['investor_equity'])),
+            "debt_raised": float(record.get('debt_raised', base['debt_raised'])),
+        }
+    return base
+
+
+def _set_investment_amount_record(year: int, owner_amount: float, investor_amount: float, debt_amount: float):
+    amounts = st.session_state.setdefault('investment_amounts', {})
+    amounts[year] = {
+        'owner_equity': max(0.0, float(owner_amount)),
+        'investor_equity': max(0.0, float(investor_amount)),
+        'debt_raised': max(0.0, float(debt_amount)),
+    }
+    st.session_state['investment_amounts'] = dict(sorted(amounts.items()))
+
+
+def _remove_investment_amount_record(year: int):
+    amounts = st.session_state.get('investment_amounts', {})
+    if year in amounts:
+        amounts.pop(year, None)
+        st.session_state['investment_amounts'] = dict(sorted(amounts.items()))
+
+
+def _increment_investment_amounts(
+    years: List[int], owner_increment: float, investor_increment: float, debt_increment: float
+):
+    if not years:
+        return
+    for year in years:
+        record = _get_investment_amount_record(year)
+        _set_investment_amount_record(
+            year,
+            record['owner_equity'] + owner_increment,
+            record['investor_equity'] + investor_increment,
+            record['debt_raised'] + debt_increment,
+        )
 
 
 def _normalize_product_mix():
@@ -2283,18 +2342,37 @@ with tab_platform:
         model_start_year = years[0] if years else (investment_years[0] if investment_years else st.session_state.production_start_year)
         owner_values = [_get_owner_pct_for_year(y) for y in investment_years]
         investor_values = [100.0 - pct for pct in owner_values]
-        owner_equity_values = [
-            model["config"].equity_investment * (pct / 100.0) if y == model_start_year else 0.0
-            for y, pct in zip(investment_years, owner_values)
-        ]
-        investor_equity_values = [
-            model["config"].equity_investment * (inv_pct / 100.0) if y == model_start_year else 0.0
-            for y, inv_pct in zip(investment_years, investor_values)
-        ]
-        debt_values = [
-            model["config"].loan_amount if y == model_start_year else 0.0
-            for y in investment_years
-        ]
+        default_amount_map: Dict[int, Dict[str, float]] = {}
+        amount_overrides = st.session_state.get('investment_amounts', {})
+        owner_equity_values: List[float] = []
+        investor_equity_values: List[float] = []
+        debt_values: List[float] = []
+
+        for year, owner_pct, investor_pct in zip(investment_years, owner_values, investor_values):
+            base_owner_amt = (
+                model["config"].equity_investment * (owner_pct / 100.0)
+                if year == model_start_year
+                else 0.0
+            )
+            base_investor_amt = (
+                model["config"].equity_investment * (investor_pct / 100.0)
+                if year == model_start_year
+                else 0.0
+            )
+            base_debt_amt = model["config"].loan_amount if year == model_start_year else 0.0
+
+            default_amount_map[year] = {
+                "owner_equity": base_owner_amt,
+                "investor_equity": base_investor_amt,
+                "debt_raised": base_debt_amt,
+            }
+
+            override = amount_overrides.get(year)
+            owner_equity_values.append(float(override.get('owner_equity', base_owner_amt)) if override else base_owner_amt)
+            investor_equity_values.append(float(override.get('investor_equity', base_investor_amt)) if override else base_investor_amt)
+            debt_values.append(float(override.get('debt_raised', base_debt_amt)) if override else base_debt_amt)
+
+        st.session_state['investment_default_amounts'] = default_amount_map
 
         investment_df = pd.DataFrame(
             {
@@ -2340,9 +2418,32 @@ with tab_platform:
                     value=int(_get_owner_pct_for_year(int(year_value))),
                     key="investment_add_owner_pct",
                 )
+                default_amounts = _get_investment_amount_record(int(year_value))
+                owner_amount = st.number_input(
+                    "Owner Equity Amount ($)",
+                    min_value=0.0,
+                    value=float(default_amounts.get("owner_equity", 0.0)),
+                    step=50000.0,
+                    key="investment_add_owner_amount",
+                )
+                investor_amount = st.number_input(
+                    "Investor Equity Amount ($)",
+                    min_value=0.0,
+                    value=float(default_amounts.get("investor_equity", 0.0)),
+                    step=50000.0,
+                    key="investment_add_investor_amount",
+                )
+                debt_amount = st.number_input(
+                    "Debt Raised ($)",
+                    min_value=0.0,
+                    value=float(default_amounts.get("debt_raised", 0.0)),
+                    step=50000.0,
+                    key="investment_add_debt_amount",
+                )
                 add_submitted = st.form_submit_button("Add Investment Entry")
             if add_submitted:
                 _set_owner_pct_for_year(int(year_value), float(owner_value))
+                _set_investment_amount_record(int(year_value), owner_amount, investor_amount, debt_amount)
                 st.success("Investment entry added. Rerunning the model with updated ownership splits.")
                 st.rerun()
 
@@ -2356,6 +2457,7 @@ with tab_platform:
                     key="investment_edit_year",
                 )
                 current_pct = _get_owner_pct_for_year(int(edit_year))
+                current_amounts = _get_investment_amount_record(int(edit_year))
                 with st.form("investment_edit_form"):
                     updated_pct = st.slider(
                         "Owner Equity %",
@@ -2364,9 +2466,31 @@ with tab_platform:
                         value=int(current_pct),
                         key="investment_edit_owner_pct",
                     )
+                    owner_amount = st.number_input(
+                        "Owner Equity Amount ($)",
+                        min_value=0.0,
+                        value=float(current_amounts.get("owner_equity", 0.0)),
+                        step=50000.0,
+                        key=f"investment_edit_owner_amount_{edit_year}",
+                    )
+                    investor_amount = st.number_input(
+                        "Investor Equity Amount ($)",
+                        min_value=0.0,
+                        value=float(current_amounts.get("investor_equity", 0.0)),
+                        step=50000.0,
+                        key=f"investment_edit_investor_amount_{edit_year}",
+                    )
+                    debt_amount = st.number_input(
+                        "Debt Raised ($)",
+                        min_value=0.0,
+                        value=float(current_amounts.get("debt_raised", 0.0)),
+                        step=50000.0,
+                        key=f"investment_edit_debt_amount_{edit_year}",
+                    )
                     edit_submitted = st.form_submit_button("Save Investment Changes")
                 if edit_submitted:
                     _set_owner_pct_for_year(int(edit_year), float(updated_pct))
+                    _set_investment_amount_record(int(edit_year), owner_amount, investor_amount, debt_amount)
                     st.success("Investment entry updated. Rerunning the model to reflect the change.")
                     st.rerun()
 
@@ -2381,6 +2505,7 @@ with tab_platform:
                 )
                 if st.button("Remove Investment Entry", key="investment_remove_btn"):
                     _remove_investment_entry(int(remove_year))
+                    _remove_investment_amount_record(int(remove_year))
                     st.success("Investment entry removed. Default ownership percentages now apply.")
                     st.rerun()
 
@@ -2401,8 +2526,32 @@ with tab_platform:
                     value=1.0,
                     step=0.5,
                 )
+                owner_amount_increment = st.number_input(
+                    "Owner Equity Amount Increment ($)",
+                    value=0.0,
+                    step=10000.0,
+                    key="investment_increment_owner_amount",
+                )
+                investor_amount_increment = st.number_input(
+                    "Investor Equity Amount Increment ($)",
+                    value=0.0,
+                    step=10000.0,
+                    key="investment_increment_investor_amount",
+                )
+                debt_amount_increment = st.number_input(
+                    "Debt Raised Increment ($)",
+                    value=0.0,
+                    step=10000.0,
+                    key="investment_increment_debt_amount",
+                )
                 if st.button("Apply Increment", key="investment_increment_btn"):
-                    _increment_investment_entries([int(y) for y in increment_years], float(increment_value))
+                    _increment_investment_entries(
+                        [int(y) for y in increment_years],
+                        float(increment_value),
+                        float(owner_amount_increment),
+                        float(investor_amount_increment),
+                        float(debt_amount_increment),
+                    )
                     st.success("Investment percentages updated. Rerunning the model with the new values.")
                     st.rerun()
 

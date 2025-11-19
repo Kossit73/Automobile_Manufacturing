@@ -9,6 +9,24 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
+
+DEFAULT_PRODUCT_MIX = {
+    "EV_Bikes": 0.30,
+    "EV_Scooters": 0.25,
+    "EV_SUV": 0.25,
+    "EV_Hatchback": 0.10,
+    "EV_NanoCar": 0.10,
+}
+
+
+DEFAULT_PRODUCT_PRICES = {
+    "EV_Bikes": 4000,
+    "EV_Scooters": 3500,
+    "EV_SUV": 15000,
+    "EV_Hatchback": 12000,
+    "EV_NanoCar": 9000,
+}
+
 # =====================================================
 # 1. INPUT PARAMETERS (CONFIGURABLE)
 # =====================================================
@@ -41,6 +59,9 @@ class CompanyConfig:
     annual_capacity: float = 20_000
     capacity_utilization: Dict[int, float] = None
     working_days: int = 300
+    product_mix: Optional[Dict[str, float]] = None
+    selling_price: Optional[Dict[str, float]] = None
+    product_price_overrides: Optional[Dict[str, Dict[int, float]]] = None
 
     # Working capital drivers (days outstanding/held)
     receivable_days: int = 45
@@ -98,6 +119,25 @@ class CompanyConfig:
         if self.marketing_budget is None:
             self.marketing_budget = {y: 72_000 for y in years}
 
+        if self.product_mix is None:
+            self.product_mix = DEFAULT_PRODUCT_MIX.copy()
+        else:
+            normalized = {k: max(0.0, v) for k, v in self.product_mix.items()}
+            total = sum(normalized.values())
+            if total <= 0:
+                normalized = DEFAULT_PRODUCT_MIX.copy()
+                total = sum(normalized.values())
+            self.product_mix = {k: v / total for k, v in normalized.items()}
+
+        if self.selling_price is None:
+            self.selling_price = DEFAULT_PRODUCT_PRICES.copy()
+        else:
+            for product, default_price in DEFAULT_PRODUCT_PRICES.items():
+                self.selling_price.setdefault(product, default_price)
+
+        if self.product_price_overrides is None:
+            self.product_price_overrides = {}
+
         # Normalize override containers for downstream use
         if self.opex_overrides is None:
             self.opex_overrides = {}
@@ -122,34 +162,39 @@ config = CompanyConfig()
 # =====================================================
 # 2. PRODUCTION & SALES FORECAST
 # =====================================================
+def _get_price_for_product(cfg: CompanyConfig, product: str, year: int) -> float:
+    """Return the unit price for a product in a given year."""
+
+    overrides = cfg.product_price_overrides or {}
+    product_overrides = overrides.get(product, {})
+    if year in product_overrides:
+        return product_overrides[year]
+    return cfg.selling_price.get(product, DEFAULT_PRODUCT_PRICES.get(product, 0.0))
+
+
 def calculate_production_forecast(cfg: CompanyConfig):
     """Calculate production volume and revenue forecasts"""
     years = range(cfg.start_year, cfg.production_end_year + 1)
 
-    production_volume = {y: cfg.annual_capacity * _get_capacity_for_year(cfg, y) for y in years}
-    
-    product_mix = {
-        "EV_Bikes": 0.30,
-        "EV_Scooters": 0.25,
-        "EV_SUV": 0.25,
-        "EV_Hatchback": 0.10,
-        "EV_NanoCar": 0.10
-    }
-    
-    selling_price = {
-        "EV_Bikes": 4000,
-        "EV_Scooters": 3500,
-        "EV_SUV": 15000,
-        "EV_Hatchback": 12000,
-        "EV_NanoCar": 9000
-    }
-    
-    revenue = {
-        y: sum(production_volume[y] * product_mix[p] * selling_price[p] for p in product_mix)
-        for y in years
-    }
-    
-    return production_volume, product_mix, selling_price, revenue
+    production_volume: Dict[int, float] = {}
+    revenue: Dict[int, float] = {}
+    product_mix = cfg.product_mix.copy()
+    selling_price_snapshot: Dict[str, float] = {}
+
+    for idx, year in enumerate(years):
+        total_units = cfg.annual_capacity * _get_capacity_for_year(cfg, year)
+        production_volume[year] = total_units
+
+        year_revenue = 0.0
+        for product, mix in product_mix.items():
+            unit_price = _get_price_for_product(cfg, product, year)
+            units = total_units * mix
+            year_revenue += units * unit_price
+            if idx == 0:
+                selling_price_snapshot[product] = unit_price
+        revenue[year] = year_revenue
+
+    return production_volume, product_mix, selling_price_snapshot, revenue
 
 # =====================================================
 # 3. COST OF GOODS SOLD

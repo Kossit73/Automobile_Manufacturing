@@ -163,6 +163,7 @@ def _parse_capex_start_date(value: str, fallback_year: int) -> date:
 
 def initialize_session_state():
     """Initialize or restore session state"""
+    default_cfg = CompanyConfig()
     if 'labor_manager' not in st.session_state:
         st.session_state.labor_manager = initialize_default_labor_structure()
     
@@ -199,9 +200,20 @@ def initialize_session_state():
         st.session_state.auto_planner = _build_default_auto_planner()
 
     if 'marketing_budget_schedule' not in st.session_state or 'marketing_budget_defaults' not in st.session_state:
-        base_cfg = CompanyConfig()
-        st.session_state.marketing_budget_schedule = base_cfg.marketing_budget.copy()
-        st.session_state.marketing_budget_defaults = base_cfg.marketing_budget.copy()
+        st.session_state.marketing_budget_schedule = default_cfg.marketing_budget.copy()
+        st.session_state.marketing_budget_defaults = default_cfg.marketing_budget.copy()
+
+    if 'capacity_schedule' not in st.session_state:
+        st.session_state.capacity_schedule = default_cfg.capacity_utilization.copy()
+
+    if 'product_mix' not in st.session_state:
+        st.session_state.product_mix = default_cfg.product_mix.copy()
+
+    if 'product_base_prices' not in st.session_state:
+        st.session_state.product_base_prices = default_cfg.selling_price.copy()
+
+    if 'product_price_overrides' not in st.session_state:
+        st.session_state.product_price_overrides = {}
 
     if 'financing_metadata' not in st.session_state:
         st.session_state.financing_metadata = {}
@@ -283,6 +295,109 @@ def _ensure_marketing_schedule() -> dict:
     st.session_state.marketing_budget_defaults.update(aligned_defaults)
 
     return aligned_schedule
+
+
+def _ensure_capacity_schedule() -> dict:
+    """Ensure the capacity utilization schedule matches the active horizon."""
+
+    start_year = st.session_state.production_start_year
+    end_year = st.session_state.production_end_year
+    schedule = (st.session_state.get('capacity_schedule') or {}).copy()
+
+    if not schedule:
+        base_cfg = CompanyConfig(start_year=start_year, production_end_year=end_year)
+        schedule = base_cfg.capacity_utilization.copy()
+
+    aligned = {}
+    last_val = None
+    for year in range(start_year, end_year + 1):
+        if year in schedule:
+            last_val = schedule[year]
+        if last_val is None:
+            last_val = 0.5
+        aligned[year] = max(0.0, min(last_val, 2.0))
+
+    st.session_state.capacity_schedule = aligned
+    return aligned
+
+
+def _capacity_years() -> List[int]:
+    schedule = _ensure_capacity_schedule()
+    return sorted(schedule.keys())
+
+
+def _set_capacity_value(year: int, utilization_pct: float):
+    schedule = st.session_state.setdefault('capacity_schedule', {})
+    schedule[year] = max(0.0, min(utilization_pct / 100.0, 2.0))
+    st.session_state.capacity_schedule = dict(sorted(schedule.items()))
+    _ensure_capacity_schedule()
+
+
+def _remove_capacity_year(year: int):
+    schedule = st.session_state.get('capacity_schedule', {})
+    schedule.pop(year, None)
+    st.session_state.capacity_schedule = schedule
+    _ensure_capacity_schedule()
+
+
+def _increment_capacity_years(years: List[int], increment_pct: float):
+    schedule = st.session_state.setdefault('capacity_schedule', {})
+    multiplier = 1 + (increment_pct / 100.0)
+    for year in years:
+        value = schedule.get(year)
+        if value is None:
+            continue
+        schedule[year] = max(0.0, min(value * multiplier, 2.0))
+    st.session_state.capacity_schedule = schedule
+    _ensure_capacity_schedule()
+
+
+def _normalize_product_mix():
+    mix = st.session_state.setdefault('product_mix', {})
+    total = sum(max(0.0, val) for val in mix.values())
+    if total <= 0:
+        defaults = CompanyConfig().product_mix.copy()
+        st.session_state.product_mix = defaults
+        return
+    for product in list(mix.keys()):
+        mix[product] = max(0.0, mix[product]) / total
+
+
+def _get_product_base_price(product: str) -> float:
+    prices = st.session_state.get('product_base_prices') or {}
+    if product in prices:
+        return prices[product]
+    defaults = CompanyConfig().selling_price.copy()
+    return defaults.get(product, 0.0)
+
+
+def _set_product_base_price(product: str, price: float):
+    prices = st.session_state.setdefault('product_base_prices', {})
+    prices[product] = max(0.0, price)
+
+
+def _get_product_price(product: str, year: int) -> float:
+    overrides = st.session_state.get('product_price_overrides', {})
+    product_overrides = overrides.get(product, {})
+    if year in product_overrides:
+        return product_overrides[year]
+    return _get_product_base_price(product)
+
+
+def _apply_price_override(product: str, year: int, price: float):
+    overrides = st.session_state.setdefault('product_price_overrides', {})
+    product_overrides = overrides.setdefault(product, {})
+    product_overrides[year] = max(0.0, price)
+
+
+def _remove_price_override(product: str, year: int):
+    overrides = st.session_state.get('product_price_overrides', {})
+    product_overrides = overrides.get(product)
+    if not product_overrides:
+        return
+    product_overrides.pop(year, None)
+    if not product_overrides:
+        overrides.pop(product, None)
 
 
 WC_CATEGORY_OPTIONS = [
@@ -403,10 +518,16 @@ def _build_company_config() -> CompanyConfig:
     """Create a CompanyConfig from current session values and overrides."""
 
     marketing_budget = _ensure_marketing_schedule()
+    capacity_schedule = _ensure_capacity_schedule()
+    _normalize_product_mix()
+    product_mix = copy.deepcopy(st.session_state.get('product_mix', {}))
+    base_prices = copy.deepcopy(st.session_state.get('product_base_prices', {}))
+    price_overrides = copy.deepcopy(st.session_state.get('product_price_overrides', {}))
 
     return CompanyConfig(
         start_year=st.session_state.production_start_year,
         production_end_year=st.session_state.production_end_year,
+        capacity_utilization=capacity_schedule,
         labor_manager=st.session_state.labor_manager,
         capex_manager=st.session_state.capex_manager,
         labor_cost_overrides=st.session_state.get('labor_cost_overrides', {}),
@@ -418,6 +539,9 @@ def _build_company_config() -> CompanyConfig:
         other_cost_overrides=st.session_state.get('other_cost_overrides', {}),
         working_capital_overrides=st.session_state.get('working_capital_overrides', {}),
         marketing_budget=marketing_budget,
+        product_mix=product_mix,
+        selling_price=base_prices,
+        product_price_overrides=price_overrides,
     )
 
 
@@ -972,10 +1096,11 @@ with tab_platform:
         }
     )
 
+    capacity_schedule = _ensure_capacity_schedule()
     production_schedule_df = pd.DataFrame({
         "Year": years,
         "Annual Capacity": [model["config"].annual_capacity for _ in years],
-        "Capacity Utilization": [_get_capacity_for_year(cfg, y) * 100 for y in years],
+        "Capacity Utilization": [capacity_schedule.get(y, _get_capacity_for_year(cfg, y)) * 100 for y in years],
         "Units Produced": [model["production_volume"][y] for y in years],
         "Revenue": [model["revenue"][y] for y in years],
     })
@@ -986,9 +1111,9 @@ with tab_platform:
             {
                 "Product": product,
                 "Mix %": mix * 100,
-                "Unit Price": model["selling_price"].get(product, 0.0),
+                "Unit Price": _get_product_price(product, start_year),
                 "Units (Start Year)": model["production_volume"][start_year] * mix,
-                "Revenue (Start Year)": model["production_volume"][start_year] * mix * model["selling_price"].get(product, 0.0),
+                "Revenue (Start Year)": model["production_volume"][start_year] * mix * _get_product_price(product, start_year),
             }
             for product, mix in model["product_mix"].items()
         ]
@@ -998,7 +1123,7 @@ with tab_platform:
     for year in years:
         total_units = model["production_volume"][year]
         for product, mix in model["product_mix"].items():
-            unit_price = model["selling_price"].get(product, 0.0)
+            unit_price = _get_product_price(product, year)
             units = total_units * mix
             pricing_rows.append(
                 {
@@ -1175,35 +1300,324 @@ with tab_platform:
 
     with tab_production:
         st.markdown("#### Production Schedule")
-
         production_display = production_schedule_df.copy()
         production_display["Capacity Utilization"] = production_display["Capacity Utilization"].apply(lambda v: f"{v:.1f}%")
-        st.dataframe(
-            _format_statement(production_display, ["Revenue"]),
-            use_container_width=True,
-            hide_index=True,
-        )
+        prod_tabs = st.tabs([
+            "Current Schedule",
+            "Add Year",
+            "Edit Year",
+            "Remove Year",
+            "Yearly Increment",
+        ])
+        prod_years = _capacity_years()
+
+        with prod_tabs[0]:
+            st.dataframe(
+                _format_statement(production_display, ["Revenue"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        with prod_tabs[1]:
+            with st.form("production_add_year_form"):
+                year_value = st.number_input(
+                    "Production Year",
+                    min_value=int(years[0]),
+                    max_value=int(years[-1]),
+                    value=int(years[-1]),
+                    step=1,
+                )
+                util_value = st.slider("Capacity Utilization (%)", 0, 200, 100)
+                submitted = st.form_submit_button("Add Production Year")
+            if submitted:
+                _set_capacity_value(int(year_value), float(util_value))
+                st.success("Production year saved. Rerunning model with the updated schedule.")
+                st.rerun()
+
+        with prod_tabs[2]:
+            if not prod_years:
+                st.info("No production years available to edit.")
+            else:
+                selected_year = st.selectbox("Select Year", prod_years, key="edit_capacity_year")
+                current_pct = int(capacity_schedule.get(selected_year, 0.0) * 100)
+                with st.form("production_edit_year_form"):
+                    updated_pct = st.slider(
+                        "Capacity Utilization (%)",
+                        0,
+                        200,
+                        current_pct,
+                        key="edit_capacity_slider",
+                    )
+                    edit_submitted = st.form_submit_button("Save Changes")
+                if edit_submitted:
+                    _set_capacity_value(int(selected_year), float(updated_pct))
+                    st.success("Production year updated. Rerunning model with the new utilization.")
+                    st.rerun()
+
+        with prod_tabs[3]:
+            if not prod_years:
+                st.info("No production years available to remove.")
+            else:
+                remove_year = st.selectbox("Select Year to Remove", prod_years, key="remove_capacity_year_select")
+                if st.button("Remove Year", key="remove_capacity_year_btn"):
+                    _remove_capacity_year(int(remove_year))
+                    st.success("Production year removed. Rerunning model with the revised schedule.")
+                    st.rerun()
+
+        with prod_tabs[4]:
+            if not prod_years:
+                st.info("No production years available for increments.")
+            else:
+                with st.form("production_increment_form"):
+                    selected_years = st.multiselect(
+                        "Select Years",
+                        prod_years,
+                        default=prod_years,
+                        key="increment_capacity_years",
+                    )
+                    increment_pct = st.number_input(
+                        "Increment (%)",
+                        min_value=-100.0,
+                        max_value=300.0,
+                        value=5.0,
+                        step=1.0,
+                    )
+                    increment_submitted = st.form_submit_button("Apply Increment")
+                if increment_submitted and selected_years:
+                    _increment_capacity_years([int(y) for y in selected_years], float(increment_pct))
+                    st.success("Capacity schedule updated. Rerunning model with the incremented values.")
+                    st.rerun()
 
         st.markdown("#### Product Mix & Pricing")
         mix_display = product_mix_df.copy()
         mix_display["Mix %"] = mix_display["Mix %"].apply(lambda v: f"{v:.1f}%")
-        st.dataframe(
-            _format_statement(mix_display, ["Unit Price", "Revenue (Start Year)"]),
-            use_container_width=True,
-            hide_index=True,
-        )
+        mix_tabs = st.tabs([
+            "Current Mix",
+            "Add Product",
+            "Edit Product",
+            "Remove Product",
+            "Yearly Increment",
+        ])
+        product_names = sorted(st.session_state.product_mix.keys())
 
-        st.markdown("#### Pricing Schedule")
-        if pricing_schedule_df.empty:
-            st.info("No pricing data available.")
-        else:
-            pricing_display = pricing_schedule_df.copy()
-            pricing_display["Mix %"] = pricing_display["Mix %"].apply(lambda v: f"{v:.1f}%")
+        with mix_tabs[0]:
             st.dataframe(
-                _format_statement(pricing_display, ["Unit Price", "Revenue"]),
+                _format_statement(mix_display, ["Unit Price", "Revenue (Start Year)"]),
                 use_container_width=True,
                 hide_index=True,
             )
+
+        with mix_tabs[1]:
+            with st.form("add_product_mix_form"):
+                product_name = st.text_input("Product Name", value="New Product")
+                mix_pct = st.number_input("Mix %", min_value=0.0, max_value=100.0, value=10.0, step=1.0)
+                unit_price = st.number_input("Unit Price ($)", min_value=0.0, value=10_000.0, step=500.0)
+                add_product_submitted = st.form_submit_button("Add Product")
+            if add_product_submitted:
+                key = product_name.strip() or "New Product"
+                st.session_state.product_mix[key] = mix_pct / 100.0
+                _set_product_base_price(key, unit_price)
+                st.session_state.product_price_overrides.setdefault(key, {})
+                _normalize_product_mix()
+                st.success("Product mix updated. Rerunning model with the new product line.")
+                st.rerun()
+
+        with mix_tabs[2]:
+            if not product_names:
+                st.info("No products available to edit.")
+            else:
+                selected_product = st.selectbox("Select Product", product_names, key="edit_product_mix_select")
+                with st.form("edit_product_mix_form"):
+                    new_name = st.text_input("Product Name", value=selected_product)
+                    mix_pct = st.number_input(
+                        "Mix %",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=float(st.session_state.product_mix.get(selected_product, 0.0) * 100),
+                        step=1.0,
+                    )
+                    unit_price = st.number_input(
+                        "Unit Price ($)",
+                        min_value=0.0,
+                        value=float(_get_product_base_price(selected_product)),
+                        step=500.0,
+                    )
+                    edit_product_submitted = st.form_submit_button("Save Product Changes")
+                if edit_product_submitted:
+                    target_name = new_name.strip() or selected_product
+                    existing_overrides = st.session_state.product_price_overrides.pop(selected_product, {})
+                    base_price = st.session_state.product_base_prices.pop(selected_product, unit_price)
+                    st.session_state.product_mix.pop(selected_product, None)
+                    st.session_state.product_mix[target_name] = mix_pct / 100.0
+                    _set_product_base_price(target_name, unit_price)
+                    overrides = st.session_state.product_price_overrides.setdefault(target_name, {})
+                    overrides.update(existing_overrides)
+                    if target_name not in st.session_state.product_base_prices:
+                        st.session_state.product_base_prices[target_name] = base_price
+                    _normalize_product_mix()
+                    st.success("Product mix updated. Rerunning model with the edited product.")
+                    st.rerun()
+
+        with mix_tabs[3]:
+            if not product_names:
+                st.info("No products available to remove.")
+            else:
+                remove_product = st.selectbox("Select Product to Remove", product_names, key="remove_product_mix_select")
+                if st.button("Remove Product", key="remove_product_mix_btn"):
+                    st.session_state.product_mix.pop(remove_product, None)
+                    st.session_state.product_base_prices.pop(remove_product, None)
+                    st.session_state.product_price_overrides.pop(remove_product, None)
+                    _normalize_product_mix()
+                    st.success("Product removed from the mix. Rerunning model with the updated configuration.")
+                    st.rerun()
+
+        with mix_tabs[4]:
+            if not product_names:
+                st.info("No products available for price increments.")
+            else:
+                with st.form("product_price_increment_form"):
+                    selected_products = st.multiselect(
+                        "Select Products",
+                        product_names,
+                        default=product_names,
+                        key="price_increment_products",
+                    )
+                    increment_pct = st.number_input(
+                        "Increment (%)",
+                        min_value=-50.0,
+                        max_value=200.0,
+                        value=5.0,
+                        step=1.0,
+                    )
+                    increment_prices_submitted = st.form_submit_button("Apply Price Increment")
+                if increment_prices_submitted and selected_products:
+                    multiplier = 1 + (increment_pct / 100.0)
+                    for product in selected_products:
+                        _set_product_base_price(product, _get_product_base_price(product) * multiplier)
+                        overrides = st.session_state.product_price_overrides.get(product, {})
+                        for year_key in list(overrides.keys()):
+                            overrides[year_key] = max(0.0, overrides[year_key] * multiplier)
+                    st.success("Product pricing updated. Rerunning model with the incremented prices.")
+                    st.rerun()
+
+        st.markdown("#### Pricing Schedule")
+        price_tabs = st.tabs([
+            "Current Pricing",
+            "Add Price",
+            "Edit Price",
+            "Remove Price",
+            "Yearly Increment",
+        ])
+
+        pricing_display = pricing_schedule_df.copy()
+        if not pricing_display.empty:
+            pricing_display["Mix %"] = pricing_display["Mix %"].apply(lambda v: f"{v:.1f}%")
+
+        with price_tabs[0]:
+            if pricing_display.empty:
+                st.info("No pricing data available.")
+            else:
+                st.dataframe(
+                    _format_statement(pricing_display, ["Unit Price", "Revenue"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        with price_tabs[1]:
+            if not product_names:
+                st.info("Add at least one product before configuring prices.")
+            else:
+                with st.form("add_price_override_form"):
+                    product_choice = st.selectbox("Product", product_names, key="pricing_add_product")
+                    year_choice = st.selectbox("Year", years, key="pricing_add_year")
+                    current_price = _get_product_price(product_choice, int(year_choice))
+                    unit_price = st.number_input(
+                        "Unit Price ($)",
+                        min_value=0.0,
+                        value=float(current_price),
+                        step=500.0,
+                    )
+                    price_add_submitted = st.form_submit_button("Save Price")
+                if price_add_submitted:
+                    _apply_price_override(product_choice, int(year_choice), float(unit_price))
+                    st.success("Pricing override saved. Rerunning model with the updated prices.")
+                    st.rerun()
+
+        with price_tabs[2]:
+            override_entries = []
+            for product, entries in st.session_state.get('product_price_overrides', {}).items():
+                for year_key in sorted(entries.keys()):
+                    override_entries.append((product, year_key))
+            if not override_entries:
+                st.info("No price overrides available to edit.")
+            else:
+                labels = [f"{prod} - {yr}" for prod, yr in override_entries]
+                selection = st.selectbox("Select Price Override", labels, key="edit_price_override_select")
+                sel_index = labels.index(selection)
+                sel_product, sel_year = override_entries[sel_index]
+                with st.form("edit_price_override_form"):
+                    unit_price = st.number_input(
+                        "Unit Price ($)",
+                        min_value=0.0,
+                        value=float(_get_product_price(sel_product, sel_year)),
+                        step=500.0,
+                    )
+                    edit_override_submitted = st.form_submit_button("Update Price")
+                if edit_override_submitted:
+                    _apply_price_override(sel_product, int(sel_year), float(unit_price))
+                    st.success("Pricing override updated. Rerunning model with the new value.")
+                    st.rerun()
+
+        with price_tabs[3]:
+            override_entries = []
+            for product, entries in st.session_state.get('product_price_overrides', {}).items():
+                for year_key in sorted(entries.keys()):
+                    override_entries.append((product, year_key))
+            if not override_entries:
+                st.info("No price overrides available to remove.")
+            else:
+                labels = [f"{prod} - {yr}" for prod, yr in override_entries]
+                selection = st.selectbox("Select Override to Remove", labels, key="remove_price_override_select")
+                sel_index = labels.index(selection)
+                sel_product, sel_year = override_entries[sel_index]
+                if st.button("Remove Price Override", key="remove_price_override_btn"):
+                    _remove_price_override(sel_product, int(sel_year))
+                    st.success("Price override removed. Rerunning model with the base pricing.")
+                    st.rerun()
+
+        with price_tabs[4]:
+            if not product_names:
+                st.info("Add at least one product before applying increments.")
+            else:
+                with st.form("pricing_increment_form"):
+                    selected_products = st.multiselect(
+                        "Select Products",
+                        product_names,
+                        default=product_names,
+                        key="pricing_increment_products",
+                    )
+                    selected_years = st.multiselect(
+                        "Select Years",
+                        years,
+                        default=years,
+                        key="pricing_increment_years",
+                    )
+                    increment_pct = st.number_input(
+                        "Increment (%)",
+                        min_value=-50.0,
+                        max_value=200.0,
+                        value=3.0,
+                        step=1.0,
+                    )
+                    pricing_increment_submitted = st.form_submit_button("Apply Increment")
+                if pricing_increment_submitted and selected_products and selected_years:
+                    multiplier = 1 + (increment_pct / 100.0)
+                    for product in selected_products:
+                        for year_value in selected_years:
+                            current_price = _get_product_price(product, int(year_value))
+                            _apply_price_override(product, int(year_value), max(0.0, current_price * multiplier))
+                    st.success("Pricing schedule updated. Rerunning model with the incremented schedule.")
+                    st.rerun()
 
     with tab_opex_breakdown:
         st.markdown("#### Operating Expense Breakdown")

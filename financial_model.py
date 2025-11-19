@@ -68,6 +68,8 @@ class CompanyConfig:
     labor_cost_overrides: Optional[Dict[int, float]] = None
     cogs_overrides: Optional[Dict[int, float]] = None
     loan_repayment_overrides: Optional[Dict[int, float]] = None
+    interest_overrides: Optional[Dict[int, float]] = None
+    financing_cash_flow_overrides: Optional[Dict[int, float]] = None
     other_cost_overrides: Optional[Dict[int, float]] = None
     working_capital_overrides: Optional[Dict[str, Dict[int, float]]] = None
     
@@ -105,6 +107,10 @@ class CompanyConfig:
             self.cogs_overrides = {}
         if self.loan_repayment_overrides is None:
             self.loan_repayment_overrides = {}
+        if self.interest_overrides is None:
+            self.interest_overrides = {}
+        if self.financing_cash_flow_overrides is None:
+            self.financing_cash_flow_overrides = {}
         if self.other_cost_overrides is None:
             self.other_cost_overrides = {}
         if self.working_capital_overrides is None:
@@ -478,7 +484,13 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
     ebitda, ebit, tax, net_profit, depreciation = calculate_income_statement(years, cfg, production_volume, revenue, cogs, opex)
     fcf, discounted_fcf, enterprise_value = calculate_dcf(years, ebit, cfg, depreciation)
 
-    interest_payment = {y: cfg.loan_amount * cfg.loan_interest_rate for y in years}
+    interest_payment = {}
+    for y in years:
+        base_interest = cfg.loan_amount * cfg.loan_interest_rate
+        if cfg.interest_overrides and y in cfg.interest_overrides:
+            interest_payment[y] = cfg.interest_overrides[y]
+        else:
+            interest_payment[y] = base_interest
 
     if cfg.loan_repayment_overrides:
         loan_repayment = {y: cfg.loan_repayment_overrides.get(y, 0.0) for y in years}
@@ -501,7 +513,17 @@ def run_financial_model(cfg: CompanyConfig = None) -> dict:
         delta_wc = working_capital["delta_working_capital"].get(y, 0.0)
         cfo[y] = net_profit[y] + dep_y - delta_wc
 
-    cff = {y: (cfg.equity_investment + cfg.loan_amount) if y == cfg.start_year else -loan_repayment[y] - interest_payment[y] for y in years}
+    cff = {}
+    for y in years:
+        default_val = (
+            (cfg.equity_investment + cfg.loan_amount)
+            if y == cfg.start_year
+            else -loan_repayment[y] - interest_payment[y]
+        )
+        if cfg.financing_cash_flow_overrides and y in cfg.financing_cash_flow_overrides:
+            cff[y] = cfg.financing_cash_flow_overrides[y]
+        else:
+            cff[y] = default_val
     cash_balance = calculate_cash_flow(years, cfg, net_profit, depreciation, cfo, cfi, cff)
 
     # Balance sheet

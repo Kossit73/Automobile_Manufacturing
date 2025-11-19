@@ -196,6 +196,8 @@ def initialize_session_state():
         'variable_cost_overrides',
         'other_cost_overrides',
         'loan_repayment_overrides',
+        'interest_overrides',
+        'financing_cash_flow_overrides',
         'investment_overrides',
         'asset_overrides',
         'working_capital_overrides',
@@ -326,6 +328,33 @@ def _remove_operating_expense_entry(year: int, category: str):
         st.session_state.other_cost_overrides.pop(year, None)
 
 
+FINANCING_COMPONENT_MAP = {
+    "Interest": "interest_overrides",
+    "Loan Repayment": "loan_repayment_overrides",
+    "Cash Flow from Financing": "financing_cash_flow_overrides",
+}
+
+
+def _update_financing_entry(year: int, component: str, amount: float):
+    """Persist a financing override for the selected component."""
+
+    key = FINANCING_COMPONENT_MAP.get(component)
+    if not key:
+        return
+    overrides = st.session_state.setdefault(key, {})
+    overrides[year] = amount
+
+
+def _remove_financing_entry(year: int, component: str):
+    """Remove a financing override entry for the specified component."""
+
+    key = FINANCING_COMPONENT_MAP.get(component)
+    if not key:
+        return
+    if key in st.session_state:
+        st.session_state[key].pop(year, None)
+
+
 def _build_company_config() -> CompanyConfig:
     """Create a CompanyConfig from current session values and overrides."""
 
@@ -340,6 +369,8 @@ def _build_company_config() -> CompanyConfig:
         opex_overrides=st.session_state.get('fixed_cost_overrides', {}),
         cogs_overrides=st.session_state.get('variable_cost_overrides', {}),
         loan_repayment_overrides=st.session_state.get('loan_repayment_overrides', {}),
+        interest_overrides=st.session_state.get('interest_overrides', {}),
+        financing_cash_flow_overrides=st.session_state.get('financing_cash_flow_overrides', {}),
         other_cost_overrides=st.session_state.get('other_cost_overrides', {}),
         working_capital_overrides=st.session_state.get('working_capital_overrides', {}),
         marketing_budget=marketing_budget,
@@ -1332,7 +1363,96 @@ with tab_platform:
         st.dataframe(_format_statement(working_cap_df, ["FCF", "Discounted FCF", "Working Capital Change"]), use_container_width=True, hide_index=True)
 
     with tab_financing:
-        st.dataframe(_format_statement(financing_df, ["Interest", "Loan Repayment", "Long Term Debt", "Cash Flow from Financing"]), use_container_width=True, hide_index=True)
+        st.markdown("#### Financing Schedule")
+        if financing_df.empty:
+            st.info("Financing data will appear after running the model.")
+        else:
+            fin_tabs = st.tabs([
+                "Current Financing",
+                "Add Financing",
+                "Edit Financing",
+            ])
+
+            with fin_tabs[0]:
+                st.dataframe(
+                    _format_statement(
+                        financing_df,
+                        ["Interest", "Loan Repayment", "Long Term Debt", "Cash Flow from Financing"],
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            with fin_tabs[1]:
+                st.markdown("## Add Financing Entry")
+                with st.form("add_financing_entry_form"):
+                    year_choice = st.selectbox("Year", years, key="add_fin_year")
+                    component_choice = st.selectbox(
+                        "Component",
+                        list(FINANCING_COMPONENT_MAP.keys()),
+                        key="add_fin_component",
+                    )
+                    default_val = financing_df.loc[
+                        financing_df["Year"] == year_choice, component_choice
+                    ]
+                    default_amount = float(default_val.iloc[0]) if not default_val.empty else 0.0
+                    amount_value = st.number_input(
+                        "Amount ($)",
+                        min_value=-100_000_000.0,
+                        value=default_amount,
+                        step=10_000.0,
+                        key="add_fin_amount",
+                    )
+                    add_fin_submitted = st.form_submit_button("Add Financing Entry")
+
+                if add_fin_submitted:
+                    _update_financing_entry(int(year_choice), component_choice, float(amount_value))
+                    st.success("Financing entry saved.")
+                    st.rerun()
+
+            with fin_tabs[2]:
+                st.markdown("## Edit Financing Entry")
+                entries = []
+                for _, row in financing_df.iterrows():
+                    year_val = int(row["Year"])
+                    for component in FINANCING_COMPONENT_MAP.keys():
+                        entries.append(
+                            {
+                                "label": f"{year_val} • {component}",
+                                "year": year_val,
+                                "component": component,
+                                "amount": float(row.get(component, 0.0)),
+                            }
+                        )
+
+                if not entries:
+                    st.info("No financing entries available to edit.")
+                else:
+                    selection = st.selectbox(
+                        "Select financing line", options=list(range(len(entries))),
+                        format_func=lambda idx: f"{entries[idx]['label']} (${entries[idx]['amount']:,.0f})",
+                        key="edit_fin_selector",
+                    )
+                    entry = entries[selection]
+                    edit_key = f"edit_fin_amount_{entry['year']}_{entry['component']}"
+                    new_amount = st.number_input(
+                        "Amount ($)",
+                        value=float(entry["amount"]),
+                        step=10_000.0,
+                        key=edit_key,
+                    )
+
+                    col_save, col_remove = st.columns(2)
+                    with col_save:
+                        if st.button("Save Financing Entry", key=f"save_fin_{entry['year']}_{entry['component']}"):
+                            _update_financing_entry(int(entry['year']), entry['component'], float(new_amount))
+                            st.success("Financing entry updated.")
+                            st.rerun()
+                    with col_remove:
+                        if st.button("Remove Financing Entry", key=f"remove_fin_{entry['year']}_{entry['component']}"):
+                            _remove_financing_entry(int(entry['year']), entry['component'])
+                            st.success("Financing entry removed.")
+                            st.rerun()
 
     with tab_fixed_cost:
         _editable_schedule(

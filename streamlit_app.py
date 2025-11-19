@@ -668,7 +668,12 @@ def _render_capex_management_section():
                 key="capex_add_asset_additions",
             )
             depreciation_rate_pct = st.number_input(
-                "Depreciation Rate (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.5
+                "Depreciation Rate (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=0.0,
+                step=0.5,
+                key="capex_add_dep_rate",
             )
             useful_life = st.number_input("Asset Useful Life (years)", min_value=1, value=10)
 
@@ -735,6 +740,7 @@ def _render_capex_management_section():
                 max_value=100.0,
                 value=float(asset.depreciation_rate * 100),
                 step=0.5,
+                key=f"capex_edit_dep_rate_{selected_id}",
             )
 
         with col2:

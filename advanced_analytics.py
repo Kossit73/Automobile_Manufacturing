@@ -38,6 +38,12 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+def clone_config(config: 'CompanyConfig', **updates: Any) -> 'CompanyConfig':
+    """Return a defensive copy of ``config`` with optional field overrides."""
+
+    return replace(config, **updates) if updates else replace(config)
+
+
 # =====================================================
 # 1. ADVANCED SENSITIVITY ANALYSIS - KEY DRIVERS
 # =====================================================
@@ -73,8 +79,8 @@ class AdvancedSensitivityAnalyzer:
             base_value = getattr(self.config, param)
             range_pct = ranges.get(param, 0.25)
             
-            cfg_low = replace(self.config, **{param: base_value * (1 - range_pct)})
-            cfg_high = replace(self.config, **{param: base_value * (1 + range_pct)})
+            cfg_low = clone_config(self.config, **{param: base_value * (1 - range_pct)})
+            cfg_high = clone_config(self.config, **{param: base_value * (1 + range_pct)})
             
             model_low = run_financial_model(cfg_low)
             model_high = run_financial_model(cfg_high)
@@ -174,7 +180,7 @@ class StressTestEngine:
         
         results = {}
         for scenario_name, shocks in scenarios.items():
-            cfg = replace(self.config)
+            cfg = clone_config(self.config)
             
             # Apply shocks
             for key, value in shocks.items():
@@ -359,7 +365,7 @@ class MonteCarloSimulator:
         np.random.seed(42)
         
         for _ in range(self.num_simulations):
-            cfg = replace(self.config)
+            cfg = clone_config(self.config)
             
             # Sample parameters from distributions
             for param, (dist_type, param1, param2) in parameter_distributions.items():
@@ -438,7 +444,7 @@ class WhatIfAnalyzer:
         from financial_model import run_financial_model
         
         # Create modified config
-        cfg = replace(self.config)
+        cfg = clone_config(self.config)
         for param, value in adjustments.items():
             if hasattr(cfg, param):
                 setattr(cfg, param, value)
@@ -470,7 +476,7 @@ class WhatIfAnalyzer:
         from financial_model import run_financial_model
         
         steps = [{'step': 'Baseline', 'value': base_ev, 'impact': 0}]
-        current_config = replace(self.config)
+        current_config = clone_config(self.config)
         
         for adj_name, (param, new_value) in adjustments.items():
             if hasattr(current_config, param):
@@ -511,7 +517,7 @@ class GoalSeekOptimizer:
         from financial_model import run_financial_model
         
         def objective(param_value):
-            cfg = replace(self.config)
+            cfg = clone_config(self.config)
             setattr(cfg, parameter, param_value)
             model = run_financial_model(cfg)
             
@@ -529,7 +535,7 @@ class GoalSeekOptimizer:
         
         if result.success:
             optimal_value = result.x
-            cfg = replace(self.config, **{parameter: optimal_value})
+            cfg = clone_config(self.config, **{parameter: optimal_value})
             model = run_financial_model(cfg)
             
             return {

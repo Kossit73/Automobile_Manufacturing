@@ -69,6 +69,7 @@ class CompanyConfig:
     cogs_overrides: Optional[Dict[int, float]] = None
     loan_repayment_overrides: Optional[Dict[int, float]] = None
     other_cost_overrides: Optional[Dict[int, float]] = None
+    working_capital_overrides: Optional[Dict[str, Dict[int, float]]] = None
     
     def __post_init__(self):
         if self.production_end_year < self.start_year:
@@ -106,6 +107,8 @@ class CompanyConfig:
             self.loan_repayment_overrides = {}
         if self.other_cost_overrides is None:
             self.other_cost_overrides = {}
+        if self.working_capital_overrides is None:
+            self.working_capital_overrides = {}
 
 # Default Configuration
 config = CompanyConfig()
@@ -266,6 +269,21 @@ def calculate_working_capital_positions(
         opex_total = sum(opex_breakdown[y].get(k, 0.0) for k in ("marketing", "labor", "other"))
         accrued[y] = opex_total * (cfg.accrued_expense_days / 365)
 
+    overrides = cfg.working_capital_overrides or {}
+    component_map = {
+        'receivables': receivables,
+        'inventory': inventory,
+        'payables': payables,
+        'accrued_expenses': accrued,
+    }
+
+    for comp, values in component_map.items():
+        if comp in overrides:
+            for year, override_value in overrides[comp].items():
+                if year in values:
+                    values[year] = override_value
+
+    for i, y in enumerate(years):
         net_wc[y] = receivables[y] + inventory[y] - payables[y] - accrued[y]
 
         if i == 0:

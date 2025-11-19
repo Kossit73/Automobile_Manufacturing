@@ -198,6 +198,7 @@ def initialize_session_state():
         'loan_repayment_overrides',
         'investment_overrides',
         'asset_overrides',
+        'working_capital_overrides',
     ]:
         if key not in st.session_state:
             st.session_state[key] = {}
@@ -265,6 +266,43 @@ def _ensure_marketing_schedule() -> dict:
     return aligned_schedule
 
 
+WC_CATEGORY_OPTIONS = [
+    "Receivables",
+    "Inventory",
+    "Payables",
+    "Accrued Expenses",
+]
+
+WC_CATEGORY_KEY_MAP = {
+    "Receivables": "receivables",
+    "Inventory": "inventory",
+    "Payables": "payables",
+    "Accrued Expenses": "accrued_expenses",
+}
+
+
+def _wc_category_key(label: str) -> str:
+    return WC_CATEGORY_KEY_MAP.get(label, label.lower().replace(" ", "_"))
+
+
+def _update_working_capital_entry(year: int, category: str, amount: float):
+    """Persist a working-capital override for the selected category."""
+
+    key = _wc_category_key(category)
+    overrides = st.session_state.working_capital_overrides.setdefault(key, {})
+    overrides[year] = amount
+
+
+def _remove_working_capital_entry(year: int, category: str):
+    """Remove a working-capital override entry."""
+
+    key = _wc_category_key(category)
+    if key in st.session_state.working_capital_overrides:
+        st.session_state.working_capital_overrides[key].pop(year, None)
+        if not st.session_state.working_capital_overrides[key]:
+            st.session_state.working_capital_overrides.pop(key, None)
+
+
 def _update_operating_expense_entry(year: int, category: str, amount: float):
     """Persist an operating expense override based on the selected category."""
 
@@ -303,6 +341,7 @@ def _build_company_config() -> CompanyConfig:
         cogs_overrides=st.session_state.get('variable_cost_overrides', {}),
         loan_repayment_overrides=st.session_state.get('loan_repayment_overrides', {}),
         other_cost_overrides=st.session_state.get('other_cost_overrides', {}),
+        working_capital_overrides=st.session_state.get('working_capital_overrides', {}),
         marketing_budget=marketing_budget,
     )
 
@@ -867,6 +906,19 @@ with tab_platform:
         }
     )
 
+    wc_override_labels = {}
+    label_lookup = {v: k for k, v in WC_CATEGORY_KEY_MAP.items()}
+    for category_key, overrides in st.session_state.working_capital_overrides.items():
+        label = label_lookup.get(category_key, category_key.replace('_', ' ').title())
+        for year, _ in overrides.items():
+            wc_override_labels.setdefault(year, []).append(label)
+
+    if wc_override_labels:
+        wc_accrual_df["Override Categories"] = [
+            ", ".join(wc_override_labels.get(y, [])) if wc_override_labels.get(y) else ""
+            for y in wc_accrual_df["Year"]
+        ]
+
     financing_df = pd.DataFrame({
         "Year": years,
         "Interest": [model["interest_payment"][y] for y in years],
@@ -1107,21 +1159,105 @@ with tab_platform:
 
     with tab_wc_accruals:
         st.markdown("#### Working-Capital-Driven Accruals")
-        st.dataframe(
-            _format_statement(
-                wc_accrual_df,
-                [
-                    "Receivables",
-                    "Inventory",
-                    "Payables",
-                    "Accrued Expenses",
-                    "Net Working Capital",
-                    "Change in Working Capital",
-                ],
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+        if wc_accrual_df.empty:
+            st.info("No working-capital data available. Run the model to populate balances.")
+        else:
+            current_tab, add_tab, edit_tab = st.tabs([
+                "Current Working Capital Accruals",
+                "Add Working Capital Accruals",
+                "Edit Working Capital Accruals",
+            ])
+
+            money_columns = [
+                "Receivables",
+                "Inventory",
+                "Payables",
+                "Accrued Expenses",
+                "Net Working Capital",
+                "Change in Working Capital",
+            ]
+
+            with current_tab:
+                st.dataframe(
+                    _format_statement(wc_accrual_df, money_columns),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            with add_tab:
+                st.markdown("## Add Working Capital Accrual")
+                with st.form("add_wc_accrual_form"):
+                    year_choice = st.selectbox("Year", years, key="add_wc_year")
+                    category_choice = st.selectbox(
+                        "Component",
+                        WC_CATEGORY_OPTIONS,
+                        key="add_wc_category",
+                    )
+                    amount_value = st.number_input(
+                        "Amount ($)",
+                        value=0.0,
+                        step=10_000.0,
+                        key="add_wc_amount",
+                    )
+                    add_wc_submitted = st.form_submit_button("Add Working Capital Accrual")
+
+                if add_wc_submitted:
+                    _update_working_capital_entry(int(year_choice), category_choice, float(amount_value))
+                    st.success("Working-capital accrual saved.")
+                    st.rerun()
+
+            with edit_tab:
+                st.markdown("## Edit Working Capital Accrual")
+                entries = []
+                for _, row in wc_accrual_df.iterrows():
+                    year_val = int(row["Year"])
+                    for col in WC_CATEGORY_OPTIONS:
+                        entries.append(
+                            {
+                                "label": f"{year_val} • {col}",
+                                "year": year_val,
+                                "category": col,
+                                "amount": float(row[col]),
+                            }
+                        )
+
+                if not entries:
+                    st.info("No working-capital entries available to edit.")
+                else:
+                    option = st.selectbox(
+                        "Select entry",
+                        options=list(range(len(entries))),
+                        format_func=lambda idx: f"{entries[idx]['label']} (${entries[idx]['amount']:,.0f})",
+                        key="edit_wc_selector",
+                    )
+                    selected_entry = entries[option]
+                    amount_key = f"edit_wc_amount_{selected_entry['year']}_{selected_entry['category']}"
+                    new_amount = st.number_input(
+                        "Amount ($)",
+                        value=float(selected_entry["amount"]),
+                        step=10_000.0,
+                        key=amount_key,
+                    )
+
+                    col_save, col_remove = st.columns(2)
+                    save_key = f"save_wc_{selected_entry['year']}_{selected_entry['category']}"
+                    remove_key = f"remove_wc_{selected_entry['year']}_{selected_entry['category']}"
+
+                    with col_save:
+                        if st.button("Save Working Capital Accrual", key=save_key):
+                            _update_working_capital_entry(
+                                int(selected_entry['year']), selected_entry['category'], float(new_amount)
+                            )
+                            st.success("Working-capital accrual updated.")
+                            st.rerun()
+
+                    with col_remove:
+                        if st.button("Remove Working Capital Accrual", key=remove_key):
+                            _remove_working_capital_entry(
+                                int(selected_entry['year']), selected_entry['category']
+                            )
+                            st.success("Working-capital accrual removed.")
+                            st.rerun()
 
     with tab_wc_fcf:
         st.dataframe(_format_statement(working_cap_df, ["FCF", "Discounted FCF", "Working Capital Change"]), use_container_width=True, hide_index=True)

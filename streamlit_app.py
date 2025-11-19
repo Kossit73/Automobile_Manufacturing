@@ -260,14 +260,283 @@ def _editable_schedule(
         st.session_state[override_key] = overrides
         st.success(f"Saved {title.lower()} updates. Schedules will refresh with the new values.")
 
+
+def _render_labor_management_section():
+    """Render labor CRUD tools inside the Platform Settings page."""
+
+    st.markdown("#### Labor Position Management")
+
+    tab1, tab2, tab3 = st.tabs(["Current Positions", "Add Position", "Edit Position"])
+
+    with tab1:
+        st.markdown("## Current Labor Schedule")
+
+        positions_df = st.session_state.labor_manager.get_position_summary()
+        st.dataframe(positions_df, use_container_width=True, hide_index=True)
+
+        col1, col2, col3 = st.columns(3)
+
+        labor_costs = st.session_state.labor_manager.get_labor_cost_by_type(
+            2026, st.session_state.salary_growth_rate
+        )
+        total_cost = labor_costs['Direct'] + labor_costs['Indirect']
+        hc = st.session_state.labor_manager.get_total_headcount(2026)
+
+        with col1:
+            st.metric("Total Headcount", hc)
+        with col2:
+            st.metric("Total Annual Cost", f"${total_cost/1e6:.2f}M")
+        with col3:
+            st.metric("Cost per Employee", f"${total_cost/hc:,.0f}" if hc > 0 else "N/A")
+
+        st.markdown("## 5-Year Labor Cost Schedule")
+        cost_schedule = LaborCostSchedule(st.session_state.labor_manager)
+        schedule_df = cost_schedule.generate_5year_schedule(
+            salary_growth=st.session_state.salary_growth_rate
+        )
+
+        display_df = schedule_df.copy()
+        for col in ['Direct Labor Cost', 'Indirect Labor Cost', 'Total Labor Cost']:
+            display_df[col] = display_df[col].apply(lambda x: f"${x/1e6:.2f}M")
+
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        fig = px.line(
+            schedule_df,
+            x='Year',
+            y=['Direct Labor Cost', 'Indirect Labor Cost'],
+            markers=True,
+            title="Labor Cost Forecast (2026-2030)",
+            labels={'value': 'Cost ($)', 'variable': 'Labor Type'},
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with tab2:
+        st.markdown("## Add New Labor Position")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            position_name = st.text_input("Position Name", value="New Position")
+            labor_type = st.selectbox("Labor Type", [LaborType.DIRECT, LaborType.INDIRECT])
+            job_category = st.selectbox("Job Category", list(JobCategory))
+            headcount = st.number_input("Headcount", min_value=1, value=1, step=1)
+            annual_salary = st.number_input("Annual Salary ($)", min_value=20000, value=40000, step=5000)
+
+        with col2:
+            status = st.selectbox("Employment Status", list(EmploymentStatus))
+            start_year = st.number_input("Start Year", min_value=2026, value=2026, step=1)
+            benefits_percent = st.slider("Benefits % of Salary", 0.0, 1.0, 0.25, step=0.05)
+            overtime_hours = st.number_input("Annual Overtime Hours", min_value=0, value=0, step=50)
+            training_cost = st.number_input("Annual Training Cost ($)", min_value=0, value=0, step=500)
+
+        if st.button("Add Position"):
+            try:
+                position_id = st.session_state.labor_manager.add_position(
+                    position_name=position_name,
+                    labor_type=labor_type,
+                    job_category=job_category,
+                    headcount=headcount,
+                    annual_salary=annual_salary,
+                    status=status,
+                    start_year=start_year,
+                    benefits_percent=benefits_percent,
+                    overtime_hours_annual=overtime_hours,
+                    training_cost=training_cost,
+                )
+                st.success(f"Position added. ID: {position_id}")
+                st.session_state.last_update = datetime.now()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+
+    with tab3:
+        st.markdown("## Edit Labor Position")
+
+        positions = st.session_state.labor_manager.get_all_positions()
+        if not positions:
+            st.warning("No positions to edit")
+            return
+
+        pos_display = {f"{p.position_id} - {p.position_name}": p.position_id for p in positions}
+        selected_display = st.selectbox("Select Position", list(pos_display.keys()))
+        selected_id = pos_display[selected_display]
+        pos = st.session_state.labor_manager.get_position(selected_id)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            new_name = st.text_input("Position Name", value=pos.position_name)
+            new_headcount = st.number_input("Headcount", min_value=0, value=pos.headcount)
+            new_salary = st.number_input("Annual Salary", min_value=0, value=int(pos.annual_salary))
+
+        with col2:
+            new_status = st.selectbox(
+                "Status", list(EmploymentStatus), index=list(EmploymentStatus).index(pos.status)
+            )
+            new_benefits = st.slider("Benefits %", 0.0, 1.0, pos.benefits_percent)
+            new_training = st.number_input("Training Cost", min_value=0, value=int(pos.training_cost_annual))
+
+        action_cols = st.columns(2)
+        with action_cols[0]:
+            if st.button("Save Changes", key="labor_save_changes"):
+                try:
+                    st.session_state.labor_manager.edit_position(
+                        selected_id,
+                        position_name=new_name,
+                        headcount=new_headcount,
+                        annual_salary=new_salary,
+                        status=new_status,
+                        benefits_percent=new_benefits,
+                        training_cost_annual=new_training,
+                    )
+                    st.success("Position updated.")
+                    st.session_state.last_update = datetime.now()
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+
+        with action_cols[1]:
+            if st.button("Remove Position", key="labor_remove_position"):
+                try:
+                    st.session_state.labor_manager.remove_position(selected_id)
+                    st.success("Position removed.")
+                    st.session_state.last_update = datetime.now()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+
+
+def _render_capex_management_section():
+    """Render CAPEX CRUD tools within Platform Settings."""
+
+    st.markdown("#### Capital Expenditure Management")
+
+    tab1, tab2, tab3 = st.tabs(["Current Assets", "Add Asset", "Edit Asset"])
+
+    with tab1:
+        st.markdown("## Current CAPEX Schedule")
+
+        assets = st.session_state.capex_manager.list_items()
+        items_data = []
+        for item in assets:
+            items_data.append({
+                'ID': item.item_id,
+                'Name': item.name,
+                'Category': item.category,
+                'Amount ($M)': f"${item.amount/1e6:.2f}",
+                'Life (years)': item.useful_life,
+                'Start Year': item.start_year,
+            })
+
+        if items_data:
+            items_df = pd.DataFrame(items_data)
+            st.dataframe(items_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No capital assets configured")
+
+        col1, col2, col3 = st.columns(3)
+        total_capex = st.session_state.capex_manager.total_capex()
+
+        with col1:
+            st.metric("Total CAPEX", f"${total_capex/1e6:.2f}M")
+        with col2:
+            st.metric("# Assets", len(assets))
+        with col3:
+            deprec_schedule = st.session_state.capex_manager.depreciation_schedule(2026, 5)
+            st.metric("2026 Depreciation", f"${deprec_schedule.get(2026, 0)/1e3:.0f}K")
+
+    with tab2:
+        st.markdown("## Add New Capital Asset")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            name = st.text_input("Asset Name", value="New Asset")
+            category = st.text_input("Asset Category", value="Equipment")
+            amount = st.number_input("Acquisition Cost ($)", min_value=10000, value=100000, step=10000)
+            useful_life = st.number_input("Useful Life (years)", min_value=1, value=10)
+
+        with col2:
+            salvage_value = st.number_input("Salvage Value ($)", min_value=0, value=0, step=5000)
+            start_year = st.number_input("Start Year", min_value=2026, value=2026)
+            notes = st.text_area("Notes", value="", key="capex_add_notes")
+
+        if st.button("Add Asset"):
+            try:
+                asset_id = st.session_state.capex_manager.add_item(
+                    name=name,
+                    amount=amount,
+                    start_year=int(start_year),
+                    useful_life=int(useful_life),
+                    salvage_value=salvage_value,
+                    category=category,
+                    notes=notes,
+                )
+                st.success(f"Asset added. ID: {asset_id}")
+                st.session_state.last_update = datetime.now()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+
+    with tab3:
+        st.markdown("## Edit Capital Asset")
+
+        assets = st.session_state.capex_manager.list_items()
+        if not assets:
+            st.warning("No assets to edit")
+            return
+
+        asset_display = {f"{item.item_id} - {item.name}": item.item_id for item in assets}
+        selected_display = st.selectbox("Select Asset", list(asset_display.keys()))
+        selected_id = asset_display[selected_display]
+        asset = st.session_state.capex_manager.get_item(selected_id)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            new_name = st.text_input("Name", value=asset.name)
+            new_category = st.text_input("Category", value=asset.category)
+            new_amount = st.number_input("Amount ($)", min_value=0, value=int(asset.amount))
+
+        with col2:
+            new_life = st.number_input("Useful Life (years)", min_value=1, value=asset.useful_life)
+            new_salvage = st.number_input("Salvage Value", min_value=0, value=int(asset.salvage_value))
+            new_notes = st.text_area("Notes", value=asset.notes, key=f"capex_edit_notes_{selected_id}")
+
+        action_cols = st.columns(2)
+        with action_cols[0]:
+            if st.button("Save Changes", key="capex_save_changes"):
+                try:
+                    st.session_state.capex_manager.edit_item(
+                        selected_id,
+                        name=new_name,
+                        category=new_category,
+                        amount=new_amount,
+                        useful_life=new_life,
+                        salvage_value=new_salvage,
+                        notes=new_notes,
+                    )
+                    st.success("Asset updated.")
+                    st.session_state.last_update = datetime.now()
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+
+        with action_cols[1]:
+            if st.button("Remove Asset", key="capex_remove_asset"):
+                try:
+                    st.session_state.capex_manager.remove_item(selected_id)
+                    st.success("Asset removed.")
+                    st.session_state.last_update = datetime.now()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+
 # =====================================================
 # MAIN NAVIGATION
 # =====================================================
 
-tab_platform, tab_labor, tab_capex, tab_dashboard, tab_financial, tab_ai, tab_reports, tab_advanced = st.tabs([
+tab_platform, tab_dashboard, tab_financial, tab_ai, tab_reports, tab_advanced = st.tabs([
     "Platform Settings",
-    "Labor Management",
-    "CAPEX Management",
     "Dashboard",
     "Financial Model",
     "AI & Machine Learning",
@@ -877,6 +1146,12 @@ with tab_platform:
         summary_df = pd.DataFrame(summary_rows)
         st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
+    st.markdown("### Labor Management")
+    _render_labor_management_section()
+
+    st.markdown("### CAPEX Management")
+    _render_capex_management_section()
+
 # =====================================================
 # PAGE 1: DASHBOARD
 # =====================================================
@@ -1080,288 +1355,6 @@ with tab_ai:
             "enabled": st.session_state.ai_settings.get("enabled", True),
         }
     )
-
-# =====================================================
-# PAGE 3: LABOR MANAGEMENT
-# =====================================================
-
-with tab_labor:
-    st.markdown("# Labor Position Management")
-    
-    # Create tabs
-    tab1, tab2, tab3 = st.tabs(["Current Positions", "Add Position", "Edit Position"])
-    
-    # TAB 1: View Positions
-    with tab1:
-        st.markdown("## Current Labor Schedule")
-        
-        positions_df = st.session_state.labor_manager.get_position_summary()
-        st.dataframe(positions_df, use_container_width=True, hide_index=True)
-        
-        # Summary statistics
-        col1, col2, col3 = st.columns(3)
-        
-        labor_costs = st.session_state.labor_manager.get_labor_cost_by_type(2026, st.session_state.salary_growth_rate)
-        total_cost = labor_costs['Direct'] + labor_costs['Indirect']
-        hc = st.session_state.labor_manager.get_total_headcount(2026)
-        
-        with col1:
-            st.metric("Total Headcount", hc)
-        with col2:
-            st.metric("Total Annual Cost", f"${total_cost/1e6:.2f}M")
-        with col3:
-            st.metric("Cost per Employee", f"${total_cost/hc:,.0f}" if hc > 0 else "N/A")
-        
-        # Labor Cost Schedule
-        st.markdown("## 5-Year Labor Cost Schedule")
-        
-        cost_schedule = LaborCostSchedule(st.session_state.labor_manager)
-        schedule_df = cost_schedule.generate_5year_schedule(salary_growth=st.session_state.salary_growth_rate)
-        
-        # Format for display
-        display_df = schedule_df.copy()
-        for col in ['Direct Labor Cost', 'Indirect Labor Cost', 'Total Labor Cost']:
-            display_df[col] = display_df[col].apply(lambda x: f"${x/1e6:.2f}M")
-        
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-        
-        # Visualization
-        fig = px.line(
-            schedule_df,
-            x='Year',
-            y=['Direct Labor Cost', 'Indirect Labor Cost'],
-            markers=True,
-            title="Labor Cost Forecast (2026-2030)",
-            labels={'value': 'Cost ($)', 'variable': 'Labor Type'}
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # TAB 2: Add Position
-    with tab2:
-        st.markdown("## Add New Labor Position")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            position_name = st.text_input("Position Name", value="New Position")
-            labor_type = st.selectbox("Labor Type", [LaborType.DIRECT, LaborType.INDIRECT])
-            job_category = st.selectbox("Job Category", list(JobCategory))
-            headcount = st.number_input("Headcount", min_value=1, value=1, step=1)
-            annual_salary = st.number_input("Annual Salary ($)", min_value=20000, value=40000, step=5000)
-        
-        with col2:
-            status = st.selectbox("Employment Status", list(EmploymentStatus))
-            start_year = st.number_input("Start Year", min_value=2026, value=2026, step=1)
-            benefits_percent = st.slider("Benefits % of Salary", 0.0, 1.0, 0.25, step=0.05)
-            overtime_hours = st.number_input("Annual Overtime Hours", min_value=0, value=0, step=50)
-            training_cost = st.number_input("Annual Training Cost ($)", min_value=0, value=0, step=500)
-        
-        if st.button("Add Position"):
-            try:
-                position_id = st.session_state.labor_manager.add_position(
-                    position_name=position_name,
-                    labor_type=labor_type,
-                    job_category=job_category,
-                    headcount=headcount,
-                    annual_salary=annual_salary,
-                    status=status,
-                    start_year=start_year,
-                    benefits_percent=benefits_percent,
-                    overtime_hours_annual=overtime_hours,
-                    training_cost=training_cost
-                )
-                st.success(f"Position added. ID: {position_id}")
-                st.session_state.last_update = datetime.now()
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
-    
-    # TAB 3: Edit Position
-    with tab3:
-        st.markdown("## Edit Labor Position")
-        
-        positions = st.session_state.labor_manager.get_all_positions()
-        if not positions:
-            st.warning("No positions to edit")
-        else:
-            pos_display = {f"{p.position_id} - {p.position_name}": p.position_id for p in positions}
-            selected_display = st.selectbox("Select Position", list(pos_display.keys()))
-            selected_id = pos_display[selected_display]
-            pos = st.session_state.labor_manager.get_position(selected_id)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                new_name = st.text_input("Position Name", value=pos.position_name)
-                new_headcount = st.number_input("Headcount", min_value=0, value=pos.headcount)
-                new_salary = st.number_input("Annual Salary", min_value=0, value=int(pos.annual_salary))
-            
-            with col2:
-                new_status = st.selectbox("Status", list(EmploymentStatus), index=list(EmploymentStatus).index(pos.status))
-                new_benefits = st.slider("Benefits %", 0.0, 1.0, pos.benefits_percent)
-                new_training = st.number_input("Training Cost", min_value=0, value=int(pos.training_cost_annual))
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("Save Changes", key="labor_save_changes"):
-                    try:
-                        st.session_state.labor_manager.edit_position(
-                            selected_id,
-                            position_name=new_name,
-                            headcount=new_headcount,
-                            annual_salary=new_salary,
-                            status=new_status,
-                            benefits_percent=new_benefits,
-                            training_cost_annual=new_training
-                        )
-                        st.success("Position updated.")
-                        st.session_state.last_update = datetime.now()
-                    except Exception as e:
-                        st.error(f"Error: {str(e)}")
-            
-            with col2:
-                if st.button("Remove Position", key="labor_remove_position"):
-                    try:
-                        st.session_state.labor_manager.remove_position(selected_id)
-                        st.success("Position removed.")
-                        st.session_state.last_update = datetime.now()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error: {str(e)}")
-
-# =====================================================
-# PAGE 3: CAPEX MANAGEMENT
-# =====================================================
-
-with tab_capex:
-    st.markdown("# Capital Expenditure Management")
-    
-    tab1, tab2, tab3 = st.tabs(["Current Assets", "Add Asset", "Edit Asset"])
-    
-    # TAB 1: View Assets
-    with tab1:
-        st.markdown("## Current CAPEX Schedule")
-        
-        assets = st.session_state.capex_manager.list_items()
-        items_data = []
-        for item in assets:
-            items_data.append({
-                'ID': item.item_id,
-                'Name': item.name,
-                'Category': item.category,
-                'Amount ($M)': f"${item.amount/1e6:.2f}",
-                'Life (years)': item.useful_life,
-                'Start Year': item.start_year
-            })
-        
-        if items_data:
-            items_df = pd.DataFrame(items_data)
-            st.dataframe(items_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No capital assets configured")
-        
-        # Summary
-        col1, col2, col3 = st.columns(3)
-        total_capex = st.session_state.capex_manager.total_capex()
-        
-        with col1:
-            st.metric("Total CAPEX", f"${total_capex/1e6:.2f}M")
-        with col2:
-            st.metric("# Assets", len(assets))
-        with col3:
-            deprec_schedule = st.session_state.capex_manager.depreciation_schedule(2026, 5)
-            st.metric("2026 Depreciation", f"${deprec_schedule.get(2026, 0)/1e3:.0f}K")
-    
-    # TAB 2: Add Asset
-    with tab2:
-        st.markdown("## Add New Capital Asset")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            name = st.text_input("Asset Name", value="New Asset")
-            category = st.text_input("Asset Category", value="Equipment")
-            amount = st.number_input("Acquisition Cost ($)", min_value=10000, value=100000, step=10000)
-            useful_life = st.number_input("Useful Life (years)", min_value=1, value=10)
-        
-        with col2:
-            salvage_value = st.number_input("Salvage Value ($)", min_value=0, value=0, step=5000)
-            start_year = st.number_input("Start Year", min_value=2026, value=2026)
-            notes = st.text_area("Notes", value="", key="capex_add_notes")
-        
-        if st.button("Add Asset"):
-            try:
-                asset_id = st.session_state.capex_manager.add_item(
-                    name=name,
-                    amount=amount,
-                    start_year=int(start_year),
-                    useful_life=int(useful_life),
-                    salvage_value=salvage_value,
-                    category=category,
-                    notes=notes
-                )
-                st.success(f"Asset added. ID: {asset_id}")
-                st.session_state.last_update = datetime.now()
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
-    
-    # TAB 3: Edit Asset
-    with tab3:
-        st.markdown("## Edit Capital Asset")
-        
-        assets = st.session_state.capex_manager.list_items()
-        if not assets:
-            st.warning("No assets to edit")
-        else:
-            asset_display = {f"{item.item_id} - {item.name}": item.item_id for item in assets}
-            selected_display = st.selectbox("Select Asset", list(asset_display.keys()))
-            selected_id = asset_display[selected_display]
-            asset = st.session_state.capex_manager.get_item(selected_id)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                new_name = st.text_input("Name", value=asset.name)
-                new_category = st.text_input("Category", value=asset.category)
-                new_amount = st.number_input("Amount ($)", min_value=0, value=int(asset.amount))
-            
-            with col2:
-                new_life = st.number_input("Useful Life (years)", min_value=1, value=asset.useful_life)
-                new_salvage = st.number_input("Salvage Value", min_value=0, value=int(asset.salvage_value))
-                new_notes = st.text_area(
-                    "Notes", value=asset.notes, key=f"capex_edit_notes_{selected_id}"
-                )
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("Save Changes", key="capex_save_changes"):
-                    try:
-                        st.session_state.capex_manager.edit_item(
-                            selected_id,
-                            name=new_name,
-                            category=new_category,
-                            amount=new_amount,
-                            useful_life=new_life,
-                            salvage_value=new_salvage,
-                            notes=new_notes
-                        )
-                        st.success("Asset updated.")
-                        st.session_state.last_update = datetime.now()
-                    except Exception as e:
-                        st.error(f"Error: {str(e)}")
-            
-            with col2:
-                if st.button("Remove Asset", key="capex_remove_asset"):
-                    try:
-                        st.session_state.capex_manager.remove_item(selected_id)
-                        st.success("Asset removed.")
-                        st.session_state.last_update = datetime.now()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error: {str(e)}")
 
 # =====================================================
 # PAGE 4: FINANCIAL MODEL

@@ -535,10 +535,9 @@ def _render_capex_management_section():
 # MAIN NAVIGATION
 # =====================================================
 
-tab_platform, tab_dashboard, tab_financial, tab_ai, tab_reports, tab_advanced = st.tabs([
+tab_platform, tab_dashboard, tab_ai, tab_reports, tab_advanced = st.tabs([
     "Platform Settings",
     "Dashboard",
-    "Financial Model",
     "AI & Machine Learning",
     "Reports",
     "Advanced Analytics",
@@ -590,6 +589,84 @@ with tab_platform:
         "• Financial modeling\n"
         "• Advanced reporting"
     )
+
+    st.markdown("### Financial Model & Valuation")
+    fm_run_tab, fm_results_tab = st.tabs(["Run Model", "Results"])
+
+    with fm_run_tab:
+        st.markdown("Configure valuation drivers and execute the financial engine. The results will refresh in the sections below and on the Reports page.")
+
+        default_cfg = CompanyConfig()
+        col1, col2 = st.columns(2)
+
+        with col1:
+            wacc = st.slider("WACC (%)", 0, 20, int(default_cfg.wacc * 100)) / 100
+            terminal_growth = st.slider("Terminal Growth Rate (%)", 0, 5, int(default_cfg.terminal_growth * 100)) / 100
+            cogs_percent = st.slider("COGS % of Revenue", 0, 100, int(default_cfg.cogs_ratio * 100)) / 100
+
+        with col2:
+            tax_rate = st.slider("Tax Rate (%)", 0, 50, int(default_cfg.tax_rate * 100)) / 100
+            debt_amount = st.number_input("Debt ($M)", min_value=0, value=int(default_cfg.loan_amount / 1e6)) * 1e6
+            interest_rate = st.slider("Interest Rate (%)", 0, 15, int(default_cfg.loan_interest_rate * 100)) / 100
+
+        if st.button("Run Financial Model", key="platform_run_financial_model"):
+            try:
+                cfg_override = CompanyConfig(
+                    start_year=st.session_state.production_start_year,
+                    production_end_year=st.session_state.production_end_year,
+                    cogs_ratio=cogs_percent,
+                    tax_rate=tax_rate,
+                    wacc=wacc,
+                    terminal_growth=terminal_growth,
+                    loan_amount=debt_amount,
+                    loan_interest_rate=interest_rate,
+                    labor_manager=st.session_state.labor_manager,
+                    capex_manager=st.session_state.capex_manager,
+                )
+
+                st.session_state.financial_model = run_financial_model(cfg_override)
+                st.session_state.last_update = datetime.now()
+                st.success("Model executed successfully. Results have been refreshed.")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+
+    with fm_results_tab:
+        if st.session_state.financial_model:
+            model = st.session_state.financial_model
+            years = list(model["years"])
+
+            st.markdown("#### Financial Highlights")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Enterprise Value", f"${model['enterprise_value']/1e6:.1f}M")
+            with col2:
+                st.metric("5-Year FCF", f"${sum(model['fcf'].values())/1e6:.1f}M")
+            with col3:
+                ev_revenue = model['enterprise_value'] / model['revenue'][years[0]] if model['revenue'][years[0]] else 0
+                st.metric("EV/Revenue", f"{ev_revenue:.1f}x")
+            with col4:
+                terminal_revenue = model['revenue'][years[-1]]
+                st.metric("Terminal Value", f"${terminal_revenue*5/1e6:.1f}M")
+
+            forecast_df = pd.DataFrame({
+                'Year': years,
+                'Revenue': [f"${model['revenue'][y]/1e6:.1f}M" for y in years],
+                'EBIT': [f"${model['ebit'][y]/1e6:.1f}M" for y in years],
+                'FCF': [f"${model['fcf'][y]/1e6:.1f}M" for y in years],
+                'Cash': [f"${model['cash_balance'][y]/1e6:.1f}M" for y in years],
+            })
+            st.dataframe(forecast_df, use_container_width=True, hide_index=True)
+
+            chart_df = pd.DataFrame({
+                'Year': years,
+                'Revenue': [model['revenue'][y] for y in years],
+                'EBIT': [model['ebit'][y] for y in years],
+                'FCF': [model['fcf'][y] for y in years],
+            })
+            fig = px.line(chart_df, x='Year', y=['Revenue', 'EBIT', 'FCF'], markers=True, title="5-Year Forecast")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Run the financial model to view forecasts and valuation metrics.")
 
     st.markdown("### Schedules")
     cfg = _build_company_config()
@@ -1355,100 +1432,6 @@ with tab_ai:
             "enabled": st.session_state.ai_settings.get("enabled", True),
         }
     )
-
-# =====================================================
-# PAGE 4: FINANCIAL MODEL
-# =====================================================
-
-with tab_financial:
-    st.markdown("# Financial Model & Valuation")
-    
-    tab1, tab2 = st.tabs(["Run Model", "Results"])
-    
-    with tab1:
-        st.markdown("## Model Configuration")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            wacc = st.slider("WACC (%)", 0, 20, 8) / 100
-            terminal_growth = st.slider("Terminal Growth Rate (%)", 0, 5, 2) / 100
-            revenue_cagr = st.slider("Revenue CAGR (%)", 0, 30, 15) / 100
-            cogs_percent = st.slider("COGS % of Revenue", 0, 100, 65) / 100
-        
-        with col2:
-            tax_rate = st.slider("Tax Rate (%)", 0, 50, 21) / 100
-            debt_amount = st.number_input("Debt ($M)", min_value=0, value=50) * 1e6
-            interest_rate = st.slider("Interest Rate (%)", 0, 15, 5) / 100
-            shares_outstanding = st.number_input("Shares Outstanding (M)", min_value=1, value=100) * 1e6
-        
-        if st.button("Run Financial Model"):
-            try:
-                cfg = CompanyConfig(
-                    revenue_cagr=revenue_cagr,
-                    cogs_percent=cogs_percent,
-                    tax_rate=tax_rate,
-                    wacc=wacc,
-                    terminal_growth_rate=terminal_growth,
-                    debt_amount=debt_amount,
-                    interest_rate=interest_rate,
-                    shares_outstanding=shares_outstanding,
-                    labor_manager=st.session_state.labor_manager,
-                    capex_manager=st.session_state.capex_manager
-                )
-                
-                st.session_state.financial_model = run_financial_model(cfg)
-                st.session_state.last_update = datetime.now()
-                st.success("Model executed successfully.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
-    
-    with tab2:
-        if st.session_state.financial_model:
-            model = st.session_state.financial_model
-            years = list(model["years"])
-
-            st.markdown("## Financial Results")
-            
-            # Metrics
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Enterprise Value", f"${model['enterprise_value']/1e6:.1f}M")
-            with col2:
-                st.metric("5-Year FCF", f"${sum(model['fcf'].values())/1e6:.1f}M")
-            with col3:
-                ev_revenue = model['enterprise_value'] / model['revenue'][years[0]]
-                st.metric("EV/Revenue", f"{ev_revenue:.1f}x")
-            with col4:
-                terminal_revenue = model['revenue'][years[-1]]
-                st.metric("Terminal Value", f"${terminal_revenue*5/1e6:.1f}M")
-            
-            # Forecast table
-            forecast_df = pd.DataFrame({
-                'Year': years,
-                'Revenue': [f"${model['revenue'][y]/1e6:.1f}M" for y in years],
-                'EBIT': [f"${model['ebit'][y]/1e6:.1f}M" for y in years],
-                'FCF': [f"${model['fcf'][y]/1e6:.1f}M" for y in years],
-                'Cash': [f"${model['cash_balance'][y]/1e6:.1f}M" for y in years]
-            })
-            
-            st.dataframe(forecast_df, use_container_width=True, hide_index=True)
-            
-            # Charts
-            chart_df = pd.DataFrame({
-                'Year': years,
-                'Revenue': [model['revenue'][y] for y in years],
-                'EBIT': [model['ebit'][y] for y in years],
-                'FCF': [model['fcf'][y] for y in years]
-            })
-            
-            fig = px.line(chart_df, x='Year', y=['Revenue', 'EBIT', 'FCF'], markers=True,
-                         title="5-Year Forecast")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Run the model to see results")
 
 # =====================================================
 # PAGE 5: REPORTS

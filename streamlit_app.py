@@ -184,6 +184,11 @@ def initialize_session_state():
     if 'auto_planner' not in st.session_state:
         st.session_state.auto_planner = _build_default_auto_planner()
 
+    if 'marketing_budget_schedule' not in st.session_state or 'marketing_budget_defaults' not in st.session_state:
+        base_cfg = CompanyConfig()
+        st.session_state.marketing_budget_schedule = base_cfg.marketing_budget.copy()
+        st.session_state.marketing_budget_defaults = base_cfg.marketing_budget.copy()
+
     # Schedule override containers
     for key in [
         'labor_cost_overrides',
@@ -212,8 +217,81 @@ def _format_statement(df: pd.DataFrame, money_cols):
     return formatted
 
 
+def _ensure_marketing_schedule() -> dict:
+    """Ensure the marketing budget schedule covers the active horizon."""
+
+    start_year = st.session_state.production_start_year
+    end_year = st.session_state.production_end_year
+    schedule = (st.session_state.get('marketing_budget_schedule') or {}).copy()
+    defaults = (st.session_state.get('marketing_budget_defaults') or {}).copy()
+
+    if not schedule:
+        base_cfg = CompanyConfig(start_year=start_year, production_end_year=end_year)
+        schedule = base_cfg.marketing_budget.copy()
+        defaults = base_cfg.marketing_budget.copy()
+
+    aligned_schedule = {}
+    aligned_defaults = {}
+
+    last_schedule_val = None
+    last_default_val = None
+
+    if schedule:
+        first_year = min(schedule)
+        last_schedule_val = schedule.get(first_year)
+    if defaults:
+        first_default_year = min(defaults)
+        last_default_val = defaults.get(first_default_year)
+
+    fallback_value = last_schedule_val if last_schedule_val is not None else 72_000.0
+    fallback_default = last_default_val if last_default_val is not None else 72_000.0
+
+    for year in range(start_year, end_year + 1):
+        if year in schedule:
+            last_schedule_val = schedule[year]
+        if last_schedule_val is None:
+            last_schedule_val = fallback_value
+        aligned_schedule[year] = last_schedule_val
+
+        if year in defaults:
+            last_default_val = defaults[year]
+        if last_default_val is None:
+            last_default_val = fallback_default
+        aligned_defaults[year] = last_default_val
+
+    st.session_state.marketing_budget_schedule.update(aligned_schedule)
+    st.session_state.marketing_budget_defaults.update(aligned_defaults)
+
+    return aligned_schedule
+
+
+def _update_operating_expense_entry(year: int, category: str, amount: float):
+    """Persist an operating expense override based on the selected category."""
+
+    if category == 'Marketing':
+        st.session_state.marketing_budget_schedule[year] = amount
+    elif category == 'Labor':
+        st.session_state.labor_cost_overrides[year] = amount
+    else:
+        st.session_state.other_cost_overrides[year] = amount
+
+
+def _remove_operating_expense_entry(year: int, category: str):
+    """Remove an override entry for the specified operating expense."""
+
+    if category == 'Marketing':
+        default_value = st.session_state.marketing_budget_defaults.get(year, 72_000.0)
+        st.session_state.marketing_budget_schedule[year] = default_value
+    elif category == 'Labor':
+        st.session_state.labor_cost_overrides.pop(year, None)
+    else:
+        st.session_state.other_cost_overrides.pop(year, None)
+
+
 def _build_company_config() -> CompanyConfig:
     """Create a CompanyConfig from current session values and overrides."""
+
+    marketing_budget = _ensure_marketing_schedule()
 
     return CompanyConfig(
         start_year=st.session_state.production_start_year,
@@ -225,6 +303,7 @@ def _build_company_config() -> CompanyConfig:
         cogs_overrides=st.session_state.get('variable_cost_overrides', {}),
         loan_repayment_overrides=st.session_state.get('loan_repayment_overrides', {}),
         other_cost_overrides=st.session_state.get('other_cost_overrides', {}),
+        marketing_budget=marketing_budget,
     )
 
 
@@ -936,14 +1015,95 @@ with tab_platform:
         if opex_breakdown_df.empty:
             st.info("No operating expense details available. Add costs to view the breakdown.")
         else:
-            st.dataframe(
-                _format_statement(
-                    opex_breakdown_df,
-                    ["Marketing", "Labor", "Other Operating Cost", "Total Opex"],
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
+            curr_tab, add_tab, edit_tab = st.tabs([
+                "Current Operating Expense",
+                "Add Operating Expense",
+                "Edit Operating Expense",
+            ])
+
+            with curr_tab:
+                st.dataframe(
+                    _format_statement(
+                        opex_breakdown_df,
+                        ["Marketing", "Labor", "Other Operating Cost", "Total Opex"],
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            with add_tab:
+                st.markdown("## Add Operating Expense")
+                with st.form("add_operating_expense_form"):
+                    year_choice = st.selectbox("Year", years, key="add_opex_year")
+                    category_choice = st.selectbox(
+                        "Expense Type",
+                        ["Marketing", "Labor", "Other Operating Cost"],
+                        key="add_opex_category",
+                    )
+                    amount_value = st.number_input(
+                        "Amount ($)",
+                        min_value=0.0,
+                        value=50000.0,
+                        step=5000.0,
+                        key="add_opex_amount",
+                    )
+                    add_submitted = st.form_submit_button("Add Operating Expense")
+
+                if add_submitted:
+                    _update_operating_expense_entry(int(year_choice), category_choice, float(amount_value))
+                    st.success("Operating expense saved.")
+                    st.rerun()
+
+            with edit_tab:
+                st.markdown("## Edit Operating Expense")
+                entries = []
+                for _, row in opex_breakdown_df.iterrows():
+                    year_val = int(row["Year"])
+                    entries.append({
+                        'label': f"{year_val} • Marketing", 'year': year_val, 'category': 'Marketing', 'amount': float(row["Marketing"])
+                    })
+                    entries.append({
+                        'label': f"{year_val} • Labor", 'year': year_val, 'category': 'Labor', 'amount': float(row["Labor"])
+                    })
+                    entries.append({
+                        'label': f"{year_val} • Other Operating Cost", 'year': year_val, 'category': 'Other Operating Cost', 'amount': float(row["Other Operating Cost"])
+                    })
+
+                if not entries:
+                    st.info("No operating expense entries available.")
+                else:
+                    option = st.selectbox(
+                        "Select expense to edit",
+                        options=list(range(len(entries))),
+                        format_func=lambda idx: f"{entries[idx]['label']} (${entries[idx]['amount']:,.0f})",
+                        key="edit_opex_selector",
+                    )
+                    selected_entry = entries[option]
+                    amount_key = f"edit_opex_amount_{selected_entry['year']}_{selected_entry['category']}"
+                    new_amount = st.number_input(
+                        "Amount ($)",
+                        min_value=0.0,
+                        value=float(selected_entry['amount']),
+                        step=5000.0,
+                        key=amount_key,
+                    )
+                    col_save, col_remove = st.columns(2)
+                    save_key = f"save_opex_{selected_entry['year']}_{selected_entry['category']}"
+                    remove_key = f"remove_opex_{selected_entry['year']}_{selected_entry['category']}"
+                    with col_save:
+                        if st.button("Save Operating Expense", key=save_key):
+                            _update_operating_expense_entry(
+                                int(selected_entry['year']), selected_entry['category'], float(new_amount)
+                            )
+                            st.success("Operating expense updated.")
+                            st.rerun()
+                    with col_remove:
+                        if st.button("Remove Operating Expense", key=remove_key):
+                            _remove_operating_expense_entry(
+                                int(selected_entry['year']), selected_entry['category']
+                            )
+                            st.success("Operating expense removed.")
+                            st.rerun()
 
     with tab_wc_accruals:
         st.markdown("#### Working-Capital-Driven Accruals")

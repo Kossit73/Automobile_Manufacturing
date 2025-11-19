@@ -20,25 +20,50 @@ class CapexItem:
     useful_life: int = 10
     salvage_value: float = 0.0
     category: str = "General"
+    depreciation_rate: float = 0.0
+    asset_additions: float = 0.0
+    start_date: str = ""
     notes: str = ""
     created_date: str = field(default_factory=lambda: datetime.now().isoformat())
     last_modified: str = field(default_factory=lambda: datetime.now().isoformat())
 
+    def __post_init__(self):
+        if not self.start_date:
+            self.start_date = f"{self.start_year}-01-01"
+        # Guard against negative rates
+        if self.depreciation_rate < 0:
+            self.depreciation_rate = 0.0
+        if self.asset_additions < 0:
+            self.asset_additions = 0.0
+
+    def capitalized_cost(self) -> float:
+        """Total capitalized amount including asset additions."""
+        return self.amount + self.asset_additions
+
     def depreciation_schedule(self, years: List[int]) -> Dict[int, float]:
         """Return straight-line depreciation per year for the provided years list."""
         schedule = {}
-        if self.useful_life <= 0:
-            # Treat as immediate expensing
+        cost_basis = max(self.capitalized_cost() - self.salvage_value, 0.0)
+        if self.useful_life <= 0 or cost_basis <= 0:
             for y in years:
                 schedule[y] = 0.0
             return schedule
 
-        # Annual depreciation = (amount - salvage) / useful_life
-        annual_dep = (self.amount - self.salvage_value) / self.useful_life
+        if self.depreciation_rate > 0:
+            annual_dep = cost_basis * self.depreciation_rate
+        else:
+            annual_dep = cost_basis / self.useful_life
+
+        remaining = cost_basis
+        life_end = self.start_year + self.useful_life - 1
         for y in years:
-            # If year is within asset life
-            if self.start_year <= y < self.start_year + self.useful_life:
-                schedule[y] = annual_dep
+            if self.start_year <= y <= life_end and remaining > 0:
+                charge = min(annual_dep, remaining)
+                # Force final year to clear any rounding remainder
+                if y == life_end or charge > remaining:
+                    charge = remaining
+                schedule[y] = charge
+                remaining -= charge
             else:
                 schedule[y] = 0.0
         return schedule
@@ -48,9 +73,12 @@ class CapexItem:
             'item_id': self.item_id,
             'name': self.name,
             'amount': self.amount,
+            'asset_additions': self.asset_additions,
             'start_year': self.start_year,
+            'start_date': self.start_date,
             'useful_life': self.useful_life,
             'salvage_value': self.salvage_value,
+            'depreciation_rate': self.depreciation_rate,
             'category': self.category,
             'notes': self.notes,
             'created_date': self.created_date,
@@ -62,15 +90,36 @@ class CapexScheduleManager:
         self.items: Dict[str, CapexItem] = {}
         self._counter = 0
 
-    def add_item(self, name: str, amount: float, start_year: int, useful_life: int = 10,
-                 salvage_value: float = 0.0, category: str = "General", notes: str = "") -> str:
+    def add_item(
+        self,
+        name: str,
+        amount: float,
+        start_year: int,
+        useful_life: int = 10,
+        salvage_value: float = 0.0,
+        category: str = "General",
+        notes: str = "",
+        depreciation_rate: float = 0.0,
+        asset_additions: float = 0.0,
+        start_date: Optional[str] = None,
+    ) -> str:
         self._counter += 1
         item_id = f"CAP_{self._counter:03d}"
-        item = CapexItem(item_id=item_id, name=name, amount=amount, start_year=start_year,
-                         useful_life=useful_life, salvage_value=salvage_value,
-                         category=category, notes=notes)
+        item = CapexItem(
+            item_id=item_id,
+            name=name,
+            amount=amount,
+            start_year=start_year,
+            useful_life=useful_life,
+            salvage_value=salvage_value,
+            category=category,
+            notes=notes,
+            depreciation_rate=depreciation_rate,
+            asset_additions=asset_additions,
+            start_date=start_date or f"{start_year}-01-01",
+        )
         self.items[item_id] = item
-        print(f"✓ CAPEX item added: {item_id} - {name} (${amount:,.0f})")
+        print(f"✓ CAPEX item added: {item_id} - {name} (${item.capitalized_cost():,.0f})")
         return item_id
 
     def get_item(self, item_id: str) -> Optional[CapexItem]:
@@ -88,6 +137,11 @@ class CapexScheduleManager:
                 setattr(item, key, value)
             else:
                 raise ValueError(f"Invalid field for CapexItem: {key}")
+        if 'start_date' in kwargs and 'start_year' not in kwargs:
+            try:
+                item.start_year = int(kwargs['start_date'][:4])
+            except (ValueError, TypeError, KeyError):
+                pass
         item.last_modified = datetime.now().isoformat()
         print(f"✓ CAPEX item updated: {item_id}")
         return True
@@ -106,7 +160,7 @@ class CapexScheduleManager:
         schedule = {y: 0.0 for y in ylist}
         for item in self.items.values():
             if item.start_year in schedule:
-                schedule[item.start_year] += item.amount
+                schedule[item.start_year] += item.capitalized_cost()
         return schedule
 
     def depreciation_schedule(self, start_year: int, years: int) -> Dict[int, float]:
@@ -120,13 +174,53 @@ class CapexScheduleManager:
         return total_dep
 
     def total_capex(self) -> float:
-        return sum(item.amount for item in self.items.values())
+        return sum(item.capitalized_cost() for item in self.items.values())
 
 # Helper initializer
 def initialize_default_capex(manager: CapexScheduleManager) -> CapexScheduleManager:
     # Add some default capex items
-    manager.add_item(name="Land Acquisition", amount=1_000_000, start_year=2026, useful_life=30, salvage_value=0, category="Land")
-    manager.add_item(name="Factory Construction", amount=2_500_000, start_year=2026, useful_life=30, salvage_value=0, category="Buildings")
-    manager.add_item(name="Machinery & Automation", amount=500_000, start_year=2026, useful_life=10, salvage_value=50_000, category="Machinery")
-    manager.add_item(name="Tooling & Fixtures", amount=150_000, start_year=2027, useful_life=7, salvage_value=5_000, category="Equipment")
+    manager.add_item(
+        name="Land Acquisition",
+        amount=1_000_000,
+        start_year=2026,
+        useful_life=30,
+        salvage_value=0,
+        category="Land",
+        depreciation_rate=0.0,
+        asset_additions=0.0,
+        start_date="2026-01-01",
+    )
+    manager.add_item(
+        name="Factory Construction",
+        amount=2_500_000,
+        start_year=2026,
+        useful_life=30,
+        salvage_value=0,
+        category="Buildings",
+        depreciation_rate=0.0333,
+        asset_additions=0.0,
+        start_date="2026-02-01",
+    )
+    manager.add_item(
+        name="Machinery & Automation",
+        amount=500_000,
+        start_year=2026,
+        useful_life=10,
+        salvage_value=50_000,
+        category="Machinery",
+        depreciation_rate=0.1,
+        asset_additions=0.0,
+        start_date="2026-03-01",
+    )
+    manager.add_item(
+        name="Tooling & Fixtures",
+        amount=150_000,
+        start_year=2027,
+        useful_life=7,
+        salvage_value=5_000,
+        category="Equipment",
+        depreciation_rate=0.142857,
+        asset_additions=0.0,
+        start_date="2027-01-01",
+    )
     return manager

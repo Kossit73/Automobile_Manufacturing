@@ -10,7 +10,7 @@ import copy
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, date
 import plotly.express as px
 import plotly.graph_objects as go
 
@@ -142,6 +142,20 @@ def _calculate_planner_capacity(plan: dict, working_days: int) -> tuple[dict, st
     bottleneck = min(stage_capacity, key=stage_capacity.get) if stage_capacity else "chassis"
     annual_capacity = stage_capacity.get(bottleneck, 0.0) * working_days
     return stage_capacity, bottleneck, annual_capacity
+
+
+def _default_asset_start_date(year: int) -> date:
+    try:
+        return date(year, 1, 1)
+    except ValueError:
+        return date(datetime.now().year, 1, 1)
+
+
+def _parse_capex_start_date(value: str, fallback_year: int) -> date:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return _default_asset_start_date(fallback_year)
 
 # =====================================================
 # SESSION STATE INITIALIZATION
@@ -590,10 +604,10 @@ def _render_capex_management_section():
 
     st.markdown("#### Capital Expenditure Management")
 
-    tab1, tab2, tab3 = st.tabs(["Current Assets", "Add Asset", "Edit Asset"])
+    tab1, tab2, tab3 = st.tabs(["Current CAPEX", "Add CAPEX", "Edit CAPEX"])
 
     with tab1:
-        st.markdown("## Current CAPEX Schedule")
+        st.markdown("### Current CAPEX Schedule")
 
         assets = st.session_state.capex_manager.list_items()
         items_data = []
@@ -602,9 +616,11 @@ def _render_capex_management_section():
                 'ID': item.item_id,
                 'Name': item.name,
                 'Category': item.category,
-                'Amount ($M)': f"${item.amount/1e6:.2f}",
-                'Life (years)': item.useful_life,
-                'Start Year': item.start_year,
+                'Acquisition ($M)': f"${item.amount/1e6:.2f}",
+                'Asset Additions ($M)': f"${item.asset_additions/1e6:.2f}",
+                'Depreciation Rate (%)': f"{item.depreciation_rate * 100:.1f}%",
+                'Start Date': item.start_date,
+                'Useful Life (years)': item.useful_life,
             })
 
         if items_data:
@@ -615,41 +631,67 @@ def _render_capex_management_section():
 
         col1, col2, col3 = st.columns(3)
         total_capex = st.session_state.capex_manager.total_capex()
+        schedule_start = int(st.session_state.production_start_year)
+        horizon_years = max(
+            1, int(st.session_state.production_end_year - schedule_start + 1)
+        )
+        deprec_schedule = st.session_state.capex_manager.depreciation_schedule(
+            schedule_start, horizon_years
+        )
 
         with col1:
             st.metric("Total CAPEX", f"${total_capex/1e6:.2f}M")
         with col2:
             st.metric("# Assets", len(assets))
         with col3:
-            deprec_schedule = st.session_state.capex_manager.depreciation_schedule(2026, 5)
-            st.metric("2026 Depreciation", f"${deprec_schedule.get(2026, 0)/1e3:.0f}K")
+            st.metric(
+                f"{schedule_start} Depreciation",
+                f"${deprec_schedule.get(schedule_start, 0)/1e3:.0f}K",
+            )
 
     with tab2:
-        st.markdown("## Add New Capital Asset")
+        st.markdown("### Add New CAPEX Asset")
 
         col1, col2 = st.columns(2)
 
         with col1:
             name = st.text_input("Asset Name", value="New Asset")
             category = st.text_input("Asset Category", value="Equipment")
-            amount = st.number_input("Acquisition Cost ($)", min_value=10000, value=100000, step=10000)
-            useful_life = st.number_input("Useful Life (years)", min_value=1, value=10)
+            amount = st.number_input(
+                "Acquisition Cost ($)", min_value=10000, value=100000, step=10000
+            )
+            asset_additions = st.number_input(
+                "Asset Additions ($)", min_value=0.0, value=0.0, step=5000.0
+            )
+            depreciation_rate_pct = st.number_input(
+                "Depreciation Rate (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.5
+            )
+            useful_life = st.number_input("Asset Useful Life (years)", min_value=1, value=10)
 
         with col2:
-            salvage_value = st.number_input("Salvage Value ($)", min_value=0, value=0, step=5000)
-            start_year = st.number_input("Start Year", min_value=2026, value=2026)
+            salvage_value = st.number_input(
+                "Salvage Value ($)", min_value=0, value=0, step=5000
+            )
+            start_date_value = st.date_input(
+                "Start Date",
+                value=_default_asset_start_date(int(st.session_state.production_start_year)),
+                key="capex_add_start_date",
+            )
             notes = st.text_area("Notes", value="", key="capex_add_notes")
 
-        if st.button("Add Asset"):
+        if st.button("Add CAPEX Asset", key="capex_add_btn"):
             try:
                 asset_id = st.session_state.capex_manager.add_item(
                     name=name,
                     amount=amount,
-                    start_year=int(start_year),
+                    start_year=start_date_value.year,
                     useful_life=int(useful_life),
                     salvage_value=salvage_value,
                     category=category,
                     notes=notes,
+                    depreciation_rate=depreciation_rate_pct / 100.0,
+                    asset_additions=asset_additions,
+                    start_date=start_date_value.isoformat(),
                 )
                 st.success(f"Asset added. ID: {asset_id}")
                 st.session_state.last_update = datetime.now()
@@ -658,7 +700,7 @@ def _render_capex_management_section():
                 st.error(f"Error: {str(e)}")
 
     with tab3:
-        st.markdown("## Edit Capital Asset")
+        st.markdown("### Edit CAPEX Asset")
 
         assets = st.session_state.capex_manager.list_items()
         if not assets:
@@ -675,22 +717,51 @@ def _render_capex_management_section():
         with col1:
             new_name = st.text_input("Name", value=asset.name)
             new_category = st.text_input("Category", value=asset.category)
-            new_amount = st.number_input("Amount ($)", min_value=0, value=int(asset.amount))
+            new_amount = st.number_input("Acquisition Cost ($)", min_value=0, value=int(asset.amount))
+            new_asset_additions = st.number_input(
+                "Asset Additions ($)",
+                min_value=0.0,
+                value=float(asset.asset_additions),
+                step=5000.0,
+            )
+            new_dep_rate = st.number_input(
+                "Depreciation Rate (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(asset.depreciation_rate * 100),
+                step=0.5,
+            )
 
         with col2:
-            new_life = st.number_input("Useful Life (years)", min_value=1, value=asset.useful_life)
-            new_salvage = st.number_input("Salvage Value", min_value=0, value=int(asset.salvage_value))
-            new_notes = st.text_area("Notes", value=asset.notes, key=f"capex_edit_notes_{selected_id}")
+            default_date = _parse_capex_start_date(asset.start_date, asset.start_year)
+            new_start_date = st.date_input(
+                "Start Date",
+                value=default_date,
+                key=f"capex_edit_start_{selected_id}",
+            )
+            new_life = st.number_input(
+                "Asset Useful Life (years)", min_value=1, value=asset.useful_life
+            )
+            new_salvage = st.number_input(
+                "Salvage Value ($)", min_value=0, value=int(asset.salvage_value)
+            )
+            new_notes = st.text_area(
+                "Notes", value=asset.notes, key=f"capex_edit_notes_{selected_id}"
+            )
 
         action_cols = st.columns(2)
         with action_cols[0]:
-            if st.button("Save Changes", key="capex_save_changes"):
+            if st.button("Save Changes", key=f"capex_save_changes_{selected_id}"):
                 try:
                     st.session_state.capex_manager.edit_item(
                         selected_id,
                         name=new_name,
                         category=new_category,
                         amount=new_amount,
+                        asset_additions=new_asset_additions,
+                        depreciation_rate=new_dep_rate / 100.0,
+                        start_date=new_start_date.isoformat(),
+                        start_year=new_start_date.year,
                         useful_life=new_life,
                         salvage_value=new_salvage,
                         notes=new_notes,
@@ -701,7 +772,7 @@ def _render_capex_management_section():
                     st.error(f"Error: {str(e)}")
 
         with action_cols[1]:
-            if st.button("Remove Asset", key="capex_remove_asset"):
+            if st.button("Remove Asset", key=f"capex_remove_asset_{selected_id}"):
                 try:
                     st.session_state.capex_manager.remove_item(selected_id)
                     st.success("Asset removed.")

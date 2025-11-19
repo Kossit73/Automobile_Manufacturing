@@ -41,9 +41,14 @@ print("\nBaseline Enterprise Value: ${:,.0f}".format(base_model['enterprise_valu
 print("\n--- ADDING NEW CAPEX ITEM: Solar Array ---")
 new_item_id = capex_mgr.add_item(
     name="Solar Array",
-    cost=250_000,
-    life_years=10,
-    start_year=cfg.start_year
+    amount=250_000,
+    start_year=cfg.start_year,
+    useful_life=10,
+    salvage_value=10_000,
+    category="Energy",
+    depreciation_rate=0.1,
+    asset_additions=50_000,
+    start_date=f"{cfg.start_year}-04-01",
 )
 print("Added item id:", new_item_id)
 
@@ -63,9 +68,9 @@ items = capex_mgr.list_items()
 if items:
     first = items[0]
     old = first.to_dict()
-    new_cost = int(old['cost'] * 0.9)
-    capex_mgr.edit_item(first.item_id, cost=new_cost)
-    print(f"Edited {first.item_id}: cost {old['cost']} -> {new_cost}")
+    new_cost = int(old['amount'] * 0.9)
+    capex_mgr.edit_item(first.item_id, amount=new_cost)
+    print(f"Edited {first.item_id}: amount {old['amount']} -> {new_cost}")
 
 print("\n--- CAPEX ITEMS AFTER EDIT ---")
 for it in capex_mgr.list_items():

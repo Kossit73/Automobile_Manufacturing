@@ -354,6 +354,44 @@ def _increment_capacity_years(years: List[int], increment_pct: float):
     _ensure_capacity_schedule()
 
 
+def _default_owner_pct() -> float:
+    return float(st.session_state.get('owner_equity_pct', 70.0))
+
+
+def _investment_years() -> List[int]:
+    base_years = list(range(st.session_state.production_start_year, st.session_state.production_end_year + 1))
+    overrides = st.session_state.get('investment_overrides', {})
+    extra_years = sorted(set(overrides.keys()) - set(base_years))
+    return sorted(base_years + extra_years)
+
+
+def _get_owner_pct_for_year(year: int) -> float:
+    overrides = st.session_state.get('investment_overrides', {})
+    return float(overrides.get(year, _default_owner_pct()))
+
+
+def _set_owner_pct_for_year(year: int, pct: float):
+    pct = max(0.0, min(float(pct), 100.0))
+    overrides = st.session_state.setdefault('investment_overrides', {})
+    overrides[year] = pct
+    st.session_state['investment_overrides'] = dict(sorted(overrides.items()))
+
+
+def _remove_investment_entry(year: int):
+    overrides = st.session_state.get('investment_overrides', {})
+    if year in overrides:
+        overrides.pop(year, None)
+        st.session_state['investment_overrides'] = overrides
+
+
+def _increment_investment_entries(years: List[int], increment_pct: float):
+    if not years:
+        return
+    for year in years:
+        updated = _get_owner_pct_for_year(year) + increment_pct
+        _set_owner_pct_for_year(year, updated)
+
+
 def _normalize_product_mix():
     mix = st.session_state.setdefault('product_mix', {})
     total = sum(max(0.0, val) for val in mix.values())
@@ -2227,36 +2265,146 @@ with tab_platform:
         )
 
     with tab_investment:
+        st.markdown("#### Investment Schedule")
         owner_default = float(st.session_state.owner_equity_pct)
-        if st.session_state.investment_overrides:
-            owner_default = float(st.session_state.investment_overrides.get(years[0], owner_default))
-
-        owner_pct = st.slider("Owner Equity %", 0.0, 100.0, owner_default, key="owner_equity_pct_slider")
-        st.session_state.owner_equity_pct = owner_pct
-        investor_pct = max(0.0, 100.0 - owner_pct)
-        st.info(f"Owner: {owner_pct:.1f}% | Investor: {investor_pct:.1f}%")
-        investment_df = pd.DataFrame({
-            "Year": years,
-            "Owner %": [owner_pct for _ in years],
-            "Investor %": [investor_pct for _ in years],
-            "Owner Equity": [model["config"].equity_investment * (owner_pct / 100.0) if y == years[0] else 0.0 for y in years],
-            "Investor Equity": [model["config"].equity_investment * (investor_pct / 100.0) if y == years[0] else 0.0 for y in years],
-            "Debt Raised": [model["config"].loan_amount if y == years[0] else 0.0 for y in years],
-        })
-
-        if st.session_state.investment_overrides:
-            investment_df["Owner %"] = [
-                st.session_state.investment_overrides.get(y, val)
-                for y, val in zip(investment_df["Year"], investment_df["Owner %"])
-            ]
-            investment_df["Investor %"] = [100.0 - pct for pct in investment_df["Owner %"]]
-        _editable_schedule(
-            "Investment Schedule",
-            investment_df,
-            "investment_overrides",
-            "Owner %",
-            "Edit ownership percentages or add equity rows; debt values remain reference-only.",
+        owner_pct = st.slider(
+            "Baseline Owner Equity %",
+            0.0,
+            100.0,
+            owner_default,
+            key="owner_equity_pct_slider",
         )
+        st.session_state.owner_equity_pct = owner_pct
+        st.info(
+            "Adjust owner percentages per year below; rows without overrides use the baseline value."
+        )
+
+        investment_years = _investment_years()
+        model_start_year = years[0] if years else (investment_years[0] if investment_years else st.session_state.production_start_year)
+        owner_values = [_get_owner_pct_for_year(y) for y in investment_years]
+        investor_values = [100.0 - pct for pct in owner_values]
+        owner_equity_values = [
+            model["config"].equity_investment * (pct / 100.0) if y == model_start_year else 0.0
+            for y, pct in zip(investment_years, owner_values)
+        ]
+        investor_equity_values = [
+            model["config"].equity_investment * (inv_pct / 100.0) if y == model_start_year else 0.0
+            for y, inv_pct in zip(investment_years, investor_values)
+        ]
+        debt_values = [
+            model["config"].loan_amount if y == model_start_year else 0.0
+            for y in investment_years
+        ]
+
+        investment_df = pd.DataFrame(
+            {
+                "Year": investment_years,
+                "Owner %": owner_values,
+                "Investor %": investor_values,
+                "Owner Equity": owner_equity_values,
+                "Investor Equity": investor_equity_values,
+                "Debt Raised": debt_values,
+            }
+        )
+
+        invest_tabs = st.tabs(
+            [
+                "Current Schedule",
+                "Add Entry",
+                "Edit Entry",
+                "Remove Entry",
+                "Yearly Increment",
+            ]
+        )
+
+        with invest_tabs[0]:
+            st.dataframe(
+                _format_statement(investment_df, ["Owner Equity", "Investor Equity", "Debt Raised"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        with invest_tabs[1]:
+            with st.form("investment_add_form"):
+                year_value = st.number_input(
+                    "Investment Year",
+                    min_value=int(st.session_state.production_start_year),
+                    max_value=int(st.session_state.production_end_year),
+                    value=int(investment_years[-1]) if investment_years else int(st.session_state.production_start_year),
+                    step=1,
+                )
+                owner_value = st.slider(
+                    "Owner Equity %",
+                    0,
+                    100,
+                    value=int(_get_owner_pct_for_year(int(year_value))),
+                    key="investment_add_owner_pct",
+                )
+                add_submitted = st.form_submit_button("Add Investment Entry")
+            if add_submitted:
+                _set_owner_pct_for_year(int(year_value), float(owner_value))
+                st.success("Investment entry added. Rerunning the model with updated ownership splits.")
+                st.rerun()
+
+        with invest_tabs[2]:
+            if not investment_years:
+                st.info("No investment years available to edit.")
+            else:
+                edit_year = st.selectbox(
+                    "Select Year to Edit",
+                    investment_years,
+                    key="investment_edit_year",
+                )
+                current_pct = _get_owner_pct_for_year(int(edit_year))
+                with st.form("investment_edit_form"):
+                    updated_pct = st.slider(
+                        "Owner Equity %",
+                        0,
+                        100,
+                        value=int(current_pct),
+                        key="investment_edit_owner_pct",
+                    )
+                    edit_submitted = st.form_submit_button("Save Investment Changes")
+                if edit_submitted:
+                    _set_owner_pct_for_year(int(edit_year), float(updated_pct))
+                    st.success("Investment entry updated. Rerunning the model to reflect the change.")
+                    st.rerun()
+
+        with invest_tabs[3]:
+            if not investment_years:
+                st.info("No investment years available to remove.")
+            else:
+                remove_year = st.selectbox(
+                    "Select Year to Remove",
+                    investment_years,
+                    key="investment_remove_year",
+                )
+                if st.button("Remove Investment Entry", key="investment_remove_btn"):
+                    _remove_investment_entry(int(remove_year))
+                    st.success("Investment entry removed. Default ownership percentages now apply.")
+                    st.rerun()
+
+        with invest_tabs[4]:
+            if not investment_years:
+                st.info("No investment years available for increments.")
+            else:
+                increment_years = st.multiselect(
+                    "Select Years to Increment",
+                    investment_years,
+                    default=investment_years,
+                    key="investment_increment_years",
+                )
+                increment_value = st.number_input(
+                    "Increment (percentage points)",
+                    min_value=-100.0,
+                    max_value=100.0,
+                    value=1.0,
+                    step=0.5,
+                )
+                if st.button("Apply Increment", key="investment_increment_btn"):
+                    _increment_investment_entries([int(y) for y in increment_years], float(increment_value))
+                    st.success("Investment percentages updated. Rerunning the model with the new values.")
+                    st.rerun()
 
     with tab_assets:
         _editable_schedule(

@@ -1193,16 +1193,85 @@ with tab_platform:
                         WC_CATEGORY_OPTIONS,
                         key="add_wc_category",
                     )
-                    amount_value = st.number_input(
-                        "Amount ($)",
-                        value=0.0,
-                        step=10_000.0,
-                        key="add_wc_amount",
-                    )
+
+                    calculated_amount = 0.0
+                    details_text = ""
+                    selected_year = int(year_choice)
+
+                    if category_choice == "Receivables":
+                        receivable_days_input = st.number_input(
+                            "Receivables Days",
+                            min_value=0,
+                            max_value=365,
+                            value=int(cfg.receivable_days),
+                            step=1,
+                            key="add_wc_receivable_days",
+                        )
+                        base_value = model["revenue"].get(selected_year, 0.0)
+                        calculated_amount = base_value * (receivable_days_input / 365.0)
+                        details_text = (
+                            f"Receivables = Revenue ${base_value:,.0f} × {receivable_days_input}/365"
+                        )
+                    elif category_choice == "Inventory":
+                        inventory_days_input = st.number_input(
+                            "Inventory Days",
+                            min_value=0,
+                            max_value=365,
+                            value=int(cfg.inventory_days),
+                            step=1,
+                            key="add_wc_inventory_days",
+                        )
+                        base_value = max(0.0, model["cogs"].get(selected_year, 0.0))
+                        calculated_amount = base_value * (inventory_days_input / 365.0)
+                        details_text = (
+                            f"Inventory = COGS ${base_value:,.0f} × {inventory_days_input}/365"
+                        )
+                    elif category_choice == "Payables":
+                        payables_days_input = st.number_input(
+                            "Payables Days",
+                            min_value=0,
+                            max_value=365,
+                            value=int(cfg.payable_days),
+                            step=1,
+                            key="add_wc_payables_days",
+                        )
+                        base_value = max(0.0, model["cogs"].get(selected_year, 0.0))
+                        calculated_amount = base_value * (payables_days_input / 365.0)
+                        details_text = (
+                            f"Payables = COGS ${base_value:,.0f} × {payables_days_input}/365"
+                        )
+                    else:
+                        default_pct = min(
+                            100.0,
+                            max(0.0, (cfg.accrued_expense_days / 365.0) * 100.0),
+                        )
+                        accrued_pct_input = st.number_input(
+                            "Accrued Expenses (% of Operating Expense)",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=round(default_pct, 2),
+                            step=0.25,
+                            key="add_wc_accrued_pct",
+                        )
+                        breakdown = model.get("opex_breakdown", {}).get(selected_year, {})
+                        opex_total = sum(
+                            breakdown.get(k, 0.0)
+                            for k in ("marketing", "labor", "other")
+                        )
+                        calculated_amount = opex_total * (accrued_pct_input / 100.0)
+                        details_text = (
+                            f"Accrued = OpEx ${opex_total:,.0f} × {accrued_pct_input:.2f}%"
+                        )
+
+                    st.caption(details_text or "Amounts are derived from the selected component's driver.")
+                    st.info(f"Calculated Amount: ${calculated_amount:,.0f}")
+
                     add_wc_submitted = st.form_submit_button("Add Working Capital Accrual")
 
                 if add_wc_submitted:
-                    _update_working_capital_entry(int(year_choice), category_choice, float(amount_value))
+                    _update_working_capital_entry(
+                        int(year_choice), category_choice, float(calculated_amount)
+                    )
                     st.success("Working-capital accrual saved.")
                     st.rerun()
 

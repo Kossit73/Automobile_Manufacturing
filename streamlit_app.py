@@ -759,26 +759,71 @@ def _editable_schedule(
 
     st.markdown(f"#### {title}")
     st.caption(help_text)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
-    edited = st.data_editor(
-        df,
-        num_rows="dynamic",
-        use_container_width=True,
-        hide_index=True,
-        key=f"{override_key}_editor",
-    )
+    add_tab, edit_tab, remove_tab = st.tabs(["Add", "Edit", "Remove"])
 
-    if st.button(f"Save {title} Changes", key=f"{override_key}_save"):
-        overrides = {}
-        for _, row in edited.iterrows():
-            try:
-                year = int(row.get("Year"))
-                overrides[year] = float(row.get(value_column, 0.0))
-            except Exception:
-                continue
+    existing_overrides: Dict[int, float] = st.session_state.get(override_key, {})
+    existing_years = sorted(set(existing_overrides.keys()) | set(df.get("Year", [])))
 
-        st.session_state[override_key] = overrides
-        st.success(f"Saved {title.lower()} updates. Schedules will refresh with the new values.")
+    with add_tab:
+        with st.form(f"{override_key}_add_form"):
+            add_year = st.number_input(
+                "Year",
+                min_value=int(df["Year"].min()) if not df.empty else 0,
+                step=1,
+                value=int(df["Year"].max()) + 1 if not df.empty else int(st.session_state.get("production_start_year", 0)),
+                key=f"{override_key}_add_year",
+            )
+            add_value = st.number_input(
+                value_column,
+                min_value=0.0,
+                step=1000.0,
+                key=f"{override_key}_add_value",
+            )
+            if st.form_submit_button("Add Entry"):
+                st.session_state.setdefault(override_key, {})[int(add_year)] = float(add_value)
+                st.success(f"Added {title} entry for {int(add_year)}.")
+
+    with edit_tab:
+        if not existing_years:
+            st.info("No rows available to edit yet.")
+        else:
+            with st.form(f"{override_key}_edit_form"):
+                edit_year = st.selectbox(
+                    "Select Year",
+                    existing_years,
+                    key=f"{override_key}_edit_year",
+                )
+                current_val = existing_overrides.get(edit_year)
+                if current_val is None and not df.empty and (df["Year"] == edit_year).any():
+                    current_val = float(df.loc[df["Year"] == edit_year, value_column].iloc[0])
+                if current_val is None:
+                    current_val = 0.0
+                edit_value = st.number_input(
+                    value_column,
+                    min_value=0.0,
+                    step=1000.0,
+                    value=float(current_val),
+                    key=f"{override_key}_edit_value",
+                )
+                if st.form_submit_button("Save Changes"):
+                    st.session_state.setdefault(override_key, {})[int(edit_year)] = float(edit_value)
+                    st.success(f"Updated {title} entry for {int(edit_year)}.")
+
+    with remove_tab:
+        if not existing_years:
+            st.info("No rows available to remove yet.")
+        else:
+            with st.form(f"{override_key}_remove_form"):
+                remove_year = st.selectbox(
+                    "Select Year",
+                    existing_years,
+                    key=f"{override_key}_remove_year",
+                )
+                if st.form_submit_button("Remove Entry"):
+                    st.session_state.setdefault(override_key, {}).pop(int(remove_year), None)
+                    st.success(f"Removed {title} entry for {int(remove_year)}.")
 
 
 def _render_labor_management_section():

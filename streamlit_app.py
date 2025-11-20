@@ -612,6 +612,41 @@ def _apply_fixed_cost_increment(years: list[int], increment_pct: float, fixed_co
         overrides[y] = max(0.0, baseline * multiplier)
 
 
+def _variable_cost_value_for_year(year: int, variable_cost_df: pd.DataFrame) -> float:
+    """Return the base COGS value for the supplied year."""
+
+    match = variable_cost_df[variable_cost_df["Year"] == year]
+    if not match.empty:
+        try:
+            return float(match.iloc[0]["COGS (Variable)"])
+        except Exception:
+            return 0.0
+    return 0.0
+
+
+def _update_variable_cost_entry(year: int, amount: float, variable_cost_df: pd.DataFrame):
+    """Persist a variable cost (COGS) override for the selected year."""
+
+    overrides = st.session_state.setdefault("variable_cost_overrides", {})
+    overrides[year] = amount
+
+
+def _remove_variable_cost_entry(year: int):
+    """Remove a variable cost override for the supplied year."""
+
+    st.session_state.get("variable_cost_overrides", {}).pop(year, None)
+
+
+def _apply_variable_cost_increment(years: list[int], increment_pct: float, variable_cost_df: pd.DataFrame):
+    """Apply a percentage increment to selected years of variable costs."""
+
+    overrides = st.session_state.setdefault("variable_cost_overrides", {})
+    multiplier = 1 + (increment_pct / 100.0)
+    for y in years:
+        baseline = overrides.get(y, _variable_cost_value_for_year(y, variable_cost_df))
+        overrides[y] = max(0.0, baseline * multiplier)
+
+
 FINANCING_COMPONENT_MAP = {
     "Interest": "interest_overrides",
     "Loan Repayment": "loan_repayment_overrides",
@@ -2413,13 +2448,121 @@ with tab_platform:
                 st.rerun()
 
     with tab_variable_cost:
-        _editable_schedule(
-            "Variable Cost Schedule",
-            variable_cost_df,
-            "variable_cost_overrides",
-            "COGS (Variable)",
-            "Edit COGS by year. Added rows expand the projection horizon automatically.",
+        st.markdown("#### Variable Cost Schedule")
+        st.caption(
+            "Variable costs reflect cost of goods sold. Use these controls to add, edit, remove, or increment"
+            " annual COGS while keeping overrides aligned with the model outputs."
         )
+
+        var_overrides = st.session_state.get("variable_cost_overrides", {})
+        display_var_df = variable_cost_df.copy()
+        display_var_df["Override Applied"] = [var_overrides.get(int(y), "") for y in display_var_df["Year"]]
+
+        (
+            var_curr,
+            var_add,
+            var_edit,
+            var_remove,
+            var_increment,
+        ) = st.tabs(
+            [
+                "Current Variable Costs",
+                "Add Variable Cost",
+                "Edit Variable Cost",
+                "Remove Variable Cost",
+                "Yearly Increment",
+            ]
+        )
+
+        with var_curr:
+            st.dataframe(
+                _format_statement(display_var_df, ["COGS (Variable)"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        with var_add:
+            st.markdown("## Add Variable Cost")
+            if years:
+                with st.form("add_variable_cost_form"):
+                    add_year = st.selectbox("Year", years, key="add_variable_cost_year")
+                    default_cogs = var_overrides.get(
+                        int(add_year), _variable_cost_value_for_year(int(add_year), variable_cost_df)
+                    )
+                    add_amount = st.number_input(
+                        "COGS (Variable) ($)",
+                        min_value=0.0,
+                        value=float(default_cogs),
+                        step=5000.0,
+                        key="add_variable_cost_amount",
+                    )
+                    add_submit = st.form_submit_button("Add Variable Cost")
+                if add_submit:
+                    _update_variable_cost_entry(int(add_year), float(add_amount), variable_cost_df)
+                    st.success("Variable cost entry saved. Rerunning the model with the override.")
+                    st.rerun()
+            else:
+                st.info("Set the projection horizon to begin adding variable costs.")
+
+        with var_edit:
+            st.markdown("## Edit Variable Cost")
+            if not years:
+                st.info("No years available to edit. Configure the projection horizon first.")
+            else:
+                edit_year = st.selectbox("Select Year", years, key="edit_variable_cost_year")
+                current_val = var_overrides.get(
+                    int(edit_year), _variable_cost_value_for_year(int(edit_year), variable_cost_df)
+                )
+                edit_amount = st.number_input(
+                    "COGS (Variable) ($)",
+                    min_value=0.0,
+                    value=float(current_val),
+                    step=5000.0,
+                    key=f"edit_variable_cost_amount_{edit_year}",
+                )
+                if st.button("Save Variable Cost", key=f"save_variable_cost_{edit_year}"):
+                    _update_variable_cost_entry(int(edit_year), float(edit_amount), variable_cost_df)
+                    st.success("Variable cost updated. Schedules will refresh with the new value.")
+                    st.rerun()
+
+        with var_remove:
+            st.markdown("## Remove Variable Cost")
+            if not var_overrides:
+                st.info("No variable cost overrides to remove.")
+            else:
+                removal_years = st.multiselect(
+                    "Select override years to remove",
+                    list(sorted(var_overrides.keys())),
+                    format_func=lambda y: f"{y} (${var_overrides.get(y, 0):,.0f})",
+                    key="remove_variable_cost_years",
+                )
+                if st.button("Remove Selected Overrides", key="remove_variable_cost_btn") and removal_years:
+                    for yr in removal_years:
+                        _remove_variable_cost_entry(int(yr))
+                    st.success("Selected variable cost overrides removed.")
+                    st.rerun()
+
+        with var_increment:
+            st.markdown("## Yearly Increment Helper")
+            with st.form("increment_variable_cost_form"):
+                inc_years = st.multiselect(
+                    "Select Years", years, default=years, key="increment_variable_cost_years"
+                )
+                inc_pct = st.number_input(
+                    "Increment (%)",
+                    min_value=-50.0,
+                    max_value=200.0,
+                    value=3.0,
+                    step=1.0,
+                    key="increment_variable_cost_pct",
+                )
+                inc_submit = st.form_submit_button("Apply Increment")
+            if inc_submit and inc_years:
+                _apply_variable_cost_increment(
+                    [int(y) for y in inc_years], float(inc_pct), variable_cost_df
+                )
+                st.success("Variable costs updated with the incremented values.")
+                st.rerun()
 
     with tab_other_cost:
         _editable_schedule(

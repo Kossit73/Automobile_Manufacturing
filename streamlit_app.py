@@ -3699,15 +3699,17 @@ with tab_ai:
         )
         st.code("uvicorn rag_app:app --host 0.0.0.0 --port 8000", language="bash")
 
-    st.markdown("### Current Session Status")
-    st.write(
-        {
-            "provider": st.session_state.ai_settings.get("provider"),
-            "model": st.session_state.ai_settings.get("model"),
-            "api_key_set": bool(st.session_state.ai_settings.get("api_key")),
-            "enabled": st.session_state.ai_settings.get("enabled", True),
-        }
-    )
+    show_rag_status = False
+    if show_rag_status:
+        st.markdown("### Current Session Status")
+        st.write(
+            {
+                "provider": st.session_state.ai_settings.get("provider"),
+                "model": st.session_state.ai_settings.get("model"),
+                "api_key_set": bool(st.session_state.ai_settings.get("api_key")),
+                "enabled": st.session_state.ai_settings.get("enabled", True),
+            }
+        )
 
     st.markdown("### Upload documents for the RAG feasibility study")
     project_id = st.text_input(
@@ -3789,15 +3791,17 @@ with tab_ai:
                 use_container_width=True,
             )
 
-    st.markdown("#### Next step: send files to the RAG service")
-    st.write(
-        "After uploading, call the FastAPI `/ingest` endpoint with the same project ID to index the documents."
-    )
-    st.code(
-        """curl -X POST -F "project_id=<project_id>" -F "files=@/path/to/file1.pdf" \\
+    show_rag_ingest_hint = False
+    if show_rag_ingest_hint:
+        st.markdown("#### Next step: send files to the RAG service")
+        st.write(
+            "After uploading, call the FastAPI `/ingest` endpoint with the same project ID to index the documents."
+        )
+        st.code(
+            """curl -X POST -F "project_id=<project_id>" -F "files=@/path/to/file1.pdf" \\
   -F "files=@/path/to/file2.xlsx" http://localhost:8000/ingest""",
-        language="bash",
-    )
+            language="bash",
+        )
 
 # =====================================================
 # PAGE 5: REPORTS

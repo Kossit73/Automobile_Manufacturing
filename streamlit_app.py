@@ -7,6 +7,7 @@ Version: 1.0 (November 2025)
 
 import os
 import copy
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
@@ -56,6 +57,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+RAG_PROJECTS_DIR = Path("projects")
 
 # Automobile manufacturing planner defaults
 AUTO_STAGES = ["chassis", "paint", "assembly", "quality"]
@@ -161,6 +164,13 @@ def _parse_capex_start_date(value: str, fallback_year: int) -> date:
     except (ValueError, TypeError):
         return _default_asset_start_date(fallback_year)
 
+
+def _ensure_rag_project_dirs(project_id: str) -> Path:
+    base = RAG_PROJECTS_DIR / project_id
+    for sub in ["uploads", "parsed", "index", "financial", "charts"]:
+        (base / sub).mkdir(parents=True, exist_ok=True)
+    return base
+
 # =====================================================
 # SESSION STATE INITIALIZATION
 # =====================================================
@@ -196,6 +206,12 @@ def initialize_session_state():
             "api_key": os.getenv("OPENAI_API_KEY", ""),
             "enabled": True,
         }
+
+    if 'rag_project_id' not in st.session_state:
+        st.session_state.rag_project_id = "demo-project"
+
+    if 'rag_uploaded_files' not in st.session_state:
+        st.session_state.rag_uploaded_files = {}
 
     if 'owner_equity_pct' not in st.session_state:
         st.session_state.owner_equity_pct = 70.0
@@ -3448,6 +3464,57 @@ with tab_ai:
             "api_key_set": bool(st.session_state.ai_settings.get("api_key")),
             "enabled": st.session_state.ai_settings.get("enabled", True),
         }
+    )
+
+    st.markdown("### Upload documents for the RAG feasibility study")
+    project_id = st.text_input(
+        "Project ID",
+        value=st.session_state.rag_project_id,
+        help="Files are stored under projects/<project_id>/uploads for the RAG service.",
+    )
+    project_key = project_id.strip() or "default-project"
+
+    uploaded_files = st.file_uploader(
+        "Upload source documents (any format)",
+        accept_multiple_files=True,
+        type=None,
+        help="PDF, DOCX, PPTX, XLSX, CSV, TXT, or any other format supported by your feasibility study",
+    )
+
+    if uploaded_files:
+        base = _ensure_rag_project_dirs(project_key)
+        saved = []
+        for f in uploaded_files:
+            dest = base / "uploads" / f.name
+            dest.write_bytes(f.getbuffer())
+            saved.append({"name": f.name, "size": f.size, "location": str(dest)})
+
+        st.session_state.rag_project_id = project_key
+        st.session_state.rag_uploaded_files[project_key] = saved
+        st.success(
+            f"Saved {len(saved)} file(s) to {base / 'uploads'} for project '{project_key}'."
+        )
+
+    current_files = st.session_state.rag_uploaded_files.get(project_key, [])
+    if current_files:
+        file_df = pd.DataFrame(current_files)
+        file_df["size_kb"] = (file_df["size"] / 1024).round(1)
+        st.dataframe(
+            file_df[["name", "size_kb", "location"]].rename(columns={"size_kb": "Size (KB)"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No documents uploaded yet. Add files to populate the RAG project workspace.")
+
+    st.markdown("#### Next step: send files to the RAG service")
+    st.write(
+        "After uploading, call the FastAPI `/ingest` endpoint with the same project ID to index the documents."
+    )
+    st.code(
+        """curl -X POST -F "project_id=<project_id>" -F "files=@/path/to/file1.pdf" \\
+  -F "files=@/path/to/file2.xlsx" http://localhost:8000/ingest""",
+        language="bash",
     )
 
 # =====================================================

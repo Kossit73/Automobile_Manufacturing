@@ -214,6 +214,97 @@ def _compose_feasibility_summary(project_id: str, model: Optional[dict], files: 
     }
 
 
+def _format_currency_compact(value: float) -> str:
+    try:
+        if abs(value) >= 1_000_000_000:
+            return f"${value/1_000_000_000:.1f}B"
+        if abs(value) >= 1_000_000:
+            return f"${value/1_000_000:.1f}M"
+        if abs(value) >= 1_000:
+            return f"${value/1_000:.1f}K"
+        return f"${value:,.0f}"
+    except Exception:
+        return "-$-"
+
+
+def _build_feasibility_template(project_id: str, model: Optional[dict], files: List[dict]) -> List[str]:
+    years = list(model.get("years", [])) if model else []
+    start_year = years[0] if years else None
+    end_year = years[-1] if years else None
+    revenue_start = model.get("revenue", {}).get(start_year, 0) if model else 0
+    revenue_end = model.get("revenue", {}).get(end_year, 0) if model else 0
+    net_start = model.get("net_profit", {}).get(start_year, 0) if model else 0
+    net_end = model.get("net_profit", {}).get(end_year, 0) if model else 0
+    cash_end = model.get("cash_balance", {}).get(end_year, 0) if model else 0
+    ev = model.get("enterprise_value", 0) if model else 0
+
+    sources = ", ".join(f.get("name", "file") for f in files) if files else "None uploaded"
+
+    header = [
+        "Feasibility Study",
+        f"Project: {project_id}",
+        f"Projection horizon: {start_year} – {end_year}" if start_year and end_year else "Projection horizon: (not provided)",
+        f"Enterprise value (DCF): {_format_currency_compact(ev)}" if model else "Enterprise value: (run the model to populate)",
+        f"Year {start_year} revenue: {_format_currency_compact(revenue_start)}" if start_year else "",
+        f"Year {end_year} revenue: {_format_currency_compact(revenue_end)}" if end_year else "",
+        f"Closing cash: {_format_currency_compact(cash_end)}" if end_year else "",
+        f"Sources ingested: {sources}",
+    ]
+
+    sections = [
+        "Executive Summary",
+        "Project Description & Scope",
+        "Market & Demand Analysis",
+        "Technical & Operations",
+        "Legal, Permitting & Environmental",
+        "Implementation Plan",
+        "Financial Analysis",
+        "Risk Assessment & ESG",
+        "Conclusion & Recommendation",
+        "Appendices",
+    ]
+
+    narrative = ["", "Suggested Content Outline (auto-generated)"]
+    for sec in sections:
+        narrative.append(f"## {sec}")
+        if sec == "Executive Summary":
+            narrative.extend(
+                [
+                    f"- Headline: {_format_currency_compact(revenue_end)} revenue and {_format_currency_compact(net_end)} net profit by {end_year}.",
+                    f"- Capitalization: equity {_format_currency_compact(model.get('equity_investment', 0)) if model else 'n/a'}; debt {_format_currency_compact(model.get('loan_amount', 0)) if model else 'n/a'}.",
+                    f"- Use of proceeds and milestone timing across {start_year}–{end_year}.",
+                ]
+            )
+        elif sec == "Financial Analysis":
+            narrative.extend(
+                [
+                    "- Income statement: revenue, COGS, operating expenses, EBITDA/EBIT, taxes, net profit by year.",
+                    "- Cash flow: CFO/CFI/CFF with working-capital changes, CAPEX spends, debt draws/repayments, closing cash.",
+                    "- Balance sheet: assets (fixed/working capital), liabilities (debt, payables), and equity; balance check.",
+                    "- Valuation: DCF enterprise value, terminal growth, and sensitivity to discount rate or margins.",
+                ]
+            )
+        elif sec == "Risk Assessment & ESG":
+            narrative.extend(
+                [
+                    "- Key risks with likelihood/impact, mitigations, and ESG considerations (emissions, compliance, safety).",
+                    "- Scenario ranges (downside/base/upside) for revenue, costs, and liquidity; Monte Carlo or VaR highlights.",
+                ]
+            )
+        elif sec == "Appendices":
+            narrative.extend(
+                [
+                    "- Financial statements and schedules (income, cash flow, balance sheet, debt, CAPEX, labor).",
+                    "- Source list with citations from uploaded documents and model cell references.",
+                    "- Charts: NPV curve, DSCR trend, cash-flow waterfall, cost/margin breakdowns.",
+                ]
+            )
+        else:
+            narrative.append("- Key findings and evidence-based highlights (auto-fill from retrieved passages).")
+
+    return [line for line in header + narrative if line]
+
+
 def _build_xlsx_from_tables(tables: Dict[str, List[List]]) -> bytes:
     def _sheet_xml(rows: List[List]) -> str:
         sheet_rows = []
@@ -352,18 +443,9 @@ def _build_feasibility_package(project_id: str, model: Optional[dict], files: Li
     tables = _compose_feasibility_summary(project_id, model, files)
     excel_bytes = _build_xlsx_from_tables(tables)
 
-    paragraphs = ["Feasibility Study"]
-    paragraphs.append(f"Project: {project_id}")
-    if model and model.get("years"):
-        start, end = model['years'][0], model['years'][-1]
-        paragraphs.append(f"Horizon: {start} – {end}")
-        paragraphs.append(f"Enterprise Value: ${model.get('enterprise_value', 0):,.0f}")
-    if files:
-        paragraphs.append(f"Sources: {', '.join(f.get('name', 'file') for f in files)}")
-    paragraphs.append("Report generated from current dashboard inputs.")
-
-    docx_bytes = _build_docx_from_text(paragraphs)
-    pdf_bytes = _build_pdf_from_text(paragraphs)
+    template_lines = _build_feasibility_template(project_id, model or {}, files)
+    docx_bytes = _build_docx_from_text(template_lines)
+    pdf_bytes = _build_pdf_from_text(template_lines)
     return {"excel": excel_bytes, "docx": docx_bytes, "pdf": pdf_bytes}
 
 # =====================================================

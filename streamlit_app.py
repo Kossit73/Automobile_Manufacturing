@@ -219,6 +219,9 @@ def initialize_session_state():
     if 'product_price_overrides' not in st.session_state:
         st.session_state.product_price_overrides = {}
 
+    if 'break_even_overrides' not in st.session_state:
+        st.session_state.break_even_overrides = []
+
     if 'financing_metadata' not in st.session_state:
         st.session_state.financing_metadata = {}
 
@@ -3648,7 +3651,93 @@ with tab_advanced:
             st.info("COGS forecast not available for the current series.")
 
         st.markdown("#### Break-even analysis per product")
-        be_df = break_even_analyzer.per_product_break_even(year=start_year)
+
+        be_overrides: list[dict] = st.session_state.get("break_even_overrides", [])
+        with st.expander("Break-even overrides", expanded=False):
+            if be_overrides:
+                be_override_df = pd.DataFrame(be_overrides)
+                st.dataframe(be_override_df, hide_index=True, use_container_width=True)
+            else:
+                st.caption("No break-even overrides applied.")
+
+            st.markdown("**Add Override**")
+            with st.form("be_add_override"):
+                add_cols = st.columns(5)
+                prod_name = add_cols[0].text_input("Product", key="be_add_prod")
+                add_units = add_cols[1].number_input("Units", value=0.0, step=100.0, key="be_add_units")
+                add_price = add_cols[2].number_input("Unit Price", value=0.0, step=100.0, key="be_add_price")
+                add_var = add_cols[3].number_input(
+                    "Variable Cost / Unit", value=0.0, step=100.0, key="be_add_var"
+                )
+                add_fixed = add_cols[4].number_input(
+                    "Allocated Fixed Cost", value=0.0, step=100.0, key="be_add_fixed"
+                )
+                if st.form_submit_button("Add Break-even Override") and prod_name:
+                    be_overrides.append(
+                        {
+                            "product": prod_name.strip(),
+                            "units": float(add_units),
+                            "unit_price": float(add_price),
+                            "variable_cost": float(add_var),
+                            "fixed_cost": float(add_fixed),
+                        }
+                    )
+                    st.session_state["break_even_overrides"] = be_overrides
+                    _rerun()
+
+            if be_overrides:
+                st.markdown("**Edit / Remove Override**")
+                selected = st.selectbox(
+                    "Select override", [item.get("product") for item in be_overrides], key="be_edit_select"
+                )
+                current = next((item for item in be_overrides if item.get("product") == selected), {})
+                with st.form("be_edit_override"):
+                    edit_cols = st.columns(5)
+                    edit_units = edit_cols[1].number_input(
+                        "Units", value=float(current.get("units", 0.0) or 0.0), step=100.0, key="be_edit_units"
+                    )
+                    edit_price = edit_cols[2].number_input(
+                        "Unit Price", value=float(current.get("unit_price", 0.0) or 0.0), step=100.0, key="be_edit_price"
+                    )
+                    edit_var = edit_cols[3].number_input(
+                        "Variable Cost / Unit",
+                        value=float(current.get("variable_cost", 0.0) or 0.0),
+                        step=100.0,
+                        key="be_edit_var",
+                    )
+                    edit_fixed = edit_cols[4].number_input(
+                        "Allocated Fixed Cost",
+                        value=float(current.get("fixed_cost", 0.0) or 0.0),
+                        step=100.0,
+                        key="be_edit_fixed",
+                    )
+                    col_save, col_remove = st.columns(2)
+                    if col_save.form_submit_button("Save Override"):
+                        updated = []
+                        for item in be_overrides:
+                            if item.get("product") == selected:
+                                updated.append(
+                                    {
+                                        "product": selected,
+                                        "units": float(edit_units),
+                                        "unit_price": float(edit_price),
+                                        "variable_cost": float(edit_var),
+                                        "fixed_cost": float(edit_fixed),
+                                    }
+                                )
+                            else:
+                                updated.append(item)
+                        st.session_state["break_even_overrides"] = updated
+                        _rerun()
+                    if col_remove.form_submit_button("Remove Override"):
+                        st.session_state["break_even_overrides"] = [
+                            item for item in be_overrides if item.get("product") != selected
+                        ]
+                        _rerun()
+
+        be_df = break_even_analyzer.per_product_break_even(
+            year=start_year, overrides=st.session_state.get("break_even_overrides", [])
+        )
         if not be_df.empty:
             formatted_be = be_df.copy()
             currency_cols = [

@@ -115,8 +115,15 @@ class BreakEvenAnalyzer:
         self.config = config
         self.years = list(model_data.get('years', []))
 
-    def per_product_break_even(self, year: int | None = None) -> pd.DataFrame:
-        """Return a per-product break-even table for the selected year."""
+    def per_product_break_even(
+        self, year: int | None = None, overrides: list[dict] | None = None
+    ) -> pd.DataFrame:
+        """Return a per-product break-even table for the selected year.
+
+        Overrides may contain per-product adjustments with optional keys:
+        ``product`` (name), ``units``, ``unit_price``, ``variable_cost``,
+        and ``fixed_cost``. Missing fields fall back to model-derived values.
+        """
 
         if not self.years:
             return pd.DataFrame()
@@ -134,6 +141,10 @@ class BreakEvenAnalyzer:
         fixed_cost = marketing + labor + other
 
         rows = []
+        overrides = overrides or []
+        override_map = {o.get('product'): o for o in overrides if o.get('product')}
+
+        # Build base rows from the model's mix
         for product, share in mix.items():
             units = production_volume * share
             unit_price = prices.get(product, 0.0)
@@ -142,15 +153,7 @@ class BreakEvenAnalyzer:
 
             variable_alloc = cogs * revenue_share
             variable_per_unit = variable_alloc / units if units else 0.0
-            contribution_per_unit = unit_price - variable_per_unit
-
             fixed_alloc = fixed_cost * revenue_share
-            if contribution_per_unit > 0:
-                break_even_units = fixed_alloc / contribution_per_unit
-                break_even_revenue = break_even_units * unit_price
-            else:
-                break_even_units = np.nan
-                break_even_revenue = np.nan
 
             rows.append(
                 {
@@ -159,6 +162,51 @@ class BreakEvenAnalyzer:
                     'Unit Price': unit_price,
                     'Revenue': product_revenue,
                     'Variable Cost / Unit': variable_per_unit,
+                    'Allocated Fixed Cost': fixed_alloc,
+                }
+            )
+
+        # Add any override-only products not present in the mix
+        for product, override in override_map.items():
+            if product not in mix:
+                rows.append(
+                    {
+                        'Product': product,
+                        'Units': float(override.get('units', 0.0) or 0.0),
+                        'Unit Price': float(override.get('unit_price', 0.0) or 0.0),
+                        'Revenue': 0.0,
+                        'Variable Cost / Unit': float(override.get('variable_cost', 0.0) or 0.0),
+                        'Allocated Fixed Cost': float(override.get('fixed_cost', 0.0) or 0.0),
+                    }
+                )
+
+        # Apply overrides and compute contribution / break-even figures
+        enriched_rows = []
+        for row in rows:
+            override = override_map.get(row['Product'], {})
+            units = float(override.get('units', row['Units']) or 0.0)
+            unit_price = float(override.get('unit_price', row['Unit Price']) or 0.0)
+            variable_per_unit = float(
+                override.get('variable_cost', row['Variable Cost / Unit']) or 0.0
+            )
+            fixed_alloc = float(override.get('fixed_cost', row['Allocated Fixed Cost']) or 0.0)
+            revenue_val = units * unit_price
+            contribution_per_unit = unit_price - variable_per_unit
+
+            if contribution_per_unit > 0:
+                break_even_units = fixed_alloc / contribution_per_unit
+                break_even_revenue = break_even_units * unit_price
+            else:
+                break_even_units = np.nan
+                break_even_revenue = np.nan
+
+            enriched_rows.append(
+                {
+                    'Product': row['Product'],
+                    'Units': units,
+                    'Unit Price': unit_price,
+                    'Revenue': revenue_val if revenue_val else row['Revenue'],
+                    'Variable Cost / Unit': variable_per_unit,
                     'Contribution / Unit': contribution_per_unit,
                     'Allocated Fixed Cost': fixed_alloc,
                     'Break-even Units': break_even_units,
@@ -166,7 +214,7 @@ class BreakEvenAnalyzer:
                 }
             )
 
-        return pd.DataFrame(rows)
+        return pd.DataFrame(enriched_rows)
     
 # =====================================================
 # 2. SCENARIO STRESS TESTING

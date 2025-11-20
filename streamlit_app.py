@@ -9,6 +9,10 @@ import os
 import copy
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from io import BytesIO
+import zipfile
+import textwrap
+from xml.sax.saxutils import escape
 
 import streamlit as st
 import pandas as pd
@@ -171,6 +175,197 @@ def _ensure_rag_project_dirs(project_id: str) -> Path:
         (base / sub).mkdir(parents=True, exist_ok=True)
     return base
 
+
+def _compose_feasibility_summary(project_id: str, model: Optional[dict], files: List[dict]) -> Dict[str, List[List[str]]]:
+    summary_lines = [["Project ID", project_id]]
+    if model:
+        years = list(model.get("years", []))
+        if years:
+            start, end = years[0], years[-1]
+            summary_lines.append(["Projection Years", f"{start} - {end}"])
+            summary_lines.append(["Enterprise Value", f"${model.get('enterprise_value', 0):,.0f}"])
+            summary_lines.append(["Year {start} Revenue", f"${model['revenue'].get(start, 0):,.0f}"])
+            summary_lines.append(["Year {end} Revenue", f"${model['revenue'].get(end, 0):,.0f}"])
+            summary_lines.append(["Closing Cash", f"${model['cash_balance'].get(end, 0):,.0f}"])
+
+        revenue_rows = [["Year", "Revenue", "COGS", "Opex", "Net Profit"]]
+        for y in years:
+            revenue_rows.append(
+                [
+                    y,
+                    model['revenue'].get(y, 0),
+                    model['cogs'].get(y, 0),
+                    model['opex'].get(y, 0),
+                    model['net_profit'].get(y, 0),
+                ]
+            )
+    else:
+        revenue_rows = [["Year", "Revenue", "COGS", "Opex", "Net Profit"]]
+        summary_lines.append(["Model", "No financial model available – using placeholders."])
+
+    file_rows = [["Uploaded File", "Location"]]
+    for f in files:
+        file_rows.append([f.get("name", "file"), f.get("location", "uploaded")])
+
+    return {
+        "Summary": summary_lines,
+        "Financials": revenue_rows,
+        "Sources": file_rows,
+    }
+
+
+def _build_xlsx_from_tables(tables: Dict[str, List[List]]) -> bytes:
+    def _sheet_xml(rows: List[List]) -> str:
+        sheet_rows = []
+        for r_idx, row in enumerate(rows, start=1):
+            cells = []
+            for c_idx, value in enumerate(row, start=1):
+                col_letter = chr(ord('A') + c_idx - 1)
+                cell_ref = f"{col_letter}{r_idx}"
+                cells.append(
+                    f"<c r=\"{cell_ref}\" t=\"inlineStr\"><is><t>{escape(str(value))}</t></is></c>"
+                )
+            sheet_rows.append(f"<row r=\"{r_idx}\">{''.join(cells)}</row>")
+        return (
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+            "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+            f"<sheetData>{''.join(sheet_rows)}</sheetData></worksheet>"
+        )
+
+    content_types = [
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+        "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">",
+        "  <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>",
+        "  <Default Extension=\"xml\" ContentType=\"application/xml\"/>",
+    ]
+    sheet_entries = []
+    for idx, name in enumerate(tables.keys(), start=1):
+        content_types.append(
+            f"  <Override PartName=\"/xl/worksheets/sheet{idx}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+        )
+        sheet_entries.append((idx, name))
+    content_types.append(
+        "  <Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
+    )
+    content_types.append("</Types>")
+
+    workbook_sheets = []
+    for idx, name in sheet_entries:
+        workbook_sheets.append(
+            f"<sheet name=\"{escape(str(name))}\" sheetId=\"{idx}\" r:id=\"rId{idx}\"/>"
+        )
+    workbook_xml = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
+        "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+        f"<sheets>{''.join(workbook_sheets)}</sheets></workbook>"
+    )
+
+    workbook_rels = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+                     "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"]
+    for idx, _ in sheet_entries:
+        workbook_rels.append(
+            f"  <Relationship Id=\"rId{idx}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{idx}.xml\"/>"
+        )
+    workbook_rels.append("</Relationships>")
+
+    rels_root = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+        "  <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"/xl/workbook.xml\"/>"
+        "</Relationships>"
+    )
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", "\n".join(content_types))
+        zf.writestr("_rels/.rels", rels_root)
+        zf.writestr("xl/workbook.xml", workbook_xml)
+        zf.writestr("xl/_rels/workbook.xml.rels", "\n".join(workbook_rels))
+        for idx, (name, rows) in enumerate(tables.items(), start=1):
+            zf.writestr(f"xl/worksheets/sheet{idx}.xml", _sheet_xml(rows))
+    return buffer.getvalue()
+
+
+def _build_docx_from_text(paragraphs: List[str]) -> bytes:
+    doc_body = []
+    for p in paragraphs:
+        doc_body.append(
+            f"<w:p><w:r><w:t>{escape(p)}</w:t></w:r></w:p>"
+        )
+    document_xml = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<w:document xmlns:wpc=\"http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas\" "
+        "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" "
+        "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+        f"<w:body>{''.join(doc_body)}</w:body></w:document>"
+    )
+
+    rels_root = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+        "  <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>"
+        "</Relationships>"
+    )
+
+    content_types = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+        "  <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+        "  <Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+        "  <Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>"
+        "</Types>"
+    )
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels_root)
+        zf.writestr("word/document.xml", document_xml)
+    return buffer.getvalue()
+
+
+def _build_pdf_from_text(lines: List[str]) -> bytes:
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_pdf import PdfPages
+    except Exception:
+        # Fallback: plain text masquerading as PDF
+        return "\n".join(lines).encode()
+
+    buffer = BytesIO()
+    with PdfPages(buffer) as pdf:
+        fig = plt.figure(figsize=(8.5, 11))
+        wrapped = []
+        for line in lines:
+            wrapped.extend(textwrap.wrap(line, 90) or [""])
+            wrapped.append("")
+        for idx, chunk in enumerate(wrapped):
+            fig.text(0.05, 0.95 - idx * 0.03, chunk, fontsize=10, ha="left", va="top")
+        fig.subplots_adjust(left=0.05, right=0.95, top=0.97, bottom=0.03)
+        pdf.savefig(fig)
+        plt.close(fig)
+    return buffer.getvalue()
+
+
+def _build_feasibility_package(project_id: str, model: Optional[dict], files: List[dict]) -> Dict[str, bytes]:
+    tables = _compose_feasibility_summary(project_id, model, files)
+    excel_bytes = _build_xlsx_from_tables(tables)
+
+    paragraphs = ["Feasibility Study"]
+    paragraphs.append(f"Project: {project_id}")
+    if model and model.get("years"):
+        start, end = model['years'][0], model['years'][-1]
+        paragraphs.append(f"Horizon: {start} – {end}")
+        paragraphs.append(f"Enterprise Value: ${model.get('enterprise_value', 0):,.0f}")
+    if files:
+        paragraphs.append(f"Sources: {', '.join(f.get('name', 'file') for f in files)}")
+    paragraphs.append("Report generated from current dashboard inputs.")
+
+    docx_bytes = _build_docx_from_text(paragraphs)
+    pdf_bytes = _build_pdf_from_text(paragraphs)
+    return {"excel": excel_bytes, "docx": docx_bytes, "pdf": pdf_bytes}
+
 # =====================================================
 # SESSION STATE INITIALIZATION
 # =====================================================
@@ -212,6 +407,9 @@ def initialize_session_state():
 
     if 'rag_uploaded_files' not in st.session_state:
         st.session_state.rag_uploaded_files = {}
+
+    if 'rag_report_packages' not in st.session_state:
+        st.session_state.rag_report_packages = {}
 
     if 'owner_equity_pct' not in st.session_state:
         st.session_state.owner_equity_pct = 70.0
@@ -3551,6 +3749,45 @@ with tab_ai:
         )
     else:
         st.info("No documents uploaded yet. Add files to populate the RAG project workspace.")
+
+    st.markdown("### Generate feasibility study package")
+    st.write(
+        "Click Generate to bundle the current financial model (if available) and uploaded documents "
+        "into Excel, Word, and PDF reports without leaving the app."
+    )
+
+    if st.button("Generate", key="rag_generate_button"):
+        package = _build_feasibility_package(project_key, st.session_state.financial_model, current_files)
+        st.session_state.rag_report_packages[project_key] = package
+        st.success("Feasibility study package generated. Use the download buttons below.")
+
+    package = st.session_state.rag_report_packages.get(project_key)
+    if package:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.download_button(
+                "Download Excel",
+                data=package["excel"],
+                file_name=f"{project_key}_feasibility.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        with col2:
+            st.download_button(
+                "Download Word",
+                data=package["docx"],
+                file_name=f"{project_key}_feasibility.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
+        with col3:
+            st.download_button(
+                "Download PDF",
+                data=package["pdf"],
+                file_name=f"{project_key}_feasibility.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
 
     st.markdown("#### Next step: send files to the RAG service")
     st.write(

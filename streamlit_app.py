@@ -35,6 +35,7 @@ from advanced_analytics import (
     StressTestEngine,
     MonteCarloSimulator,
     SegmentationAnalyzer,
+    BreakEvenAnalyzer,
     WhatIfAnalyzer,
     GoalSeekOptimizer,
     RegressionModeler,
@@ -3314,6 +3315,7 @@ with tab_advanced:
     mc_summary_df = pd.DataFrame(summary_rows)
 
     segment_analyzer = SegmentationAnalyzer(model)
+    break_even_analyzer = BreakEvenAnalyzer(model, cfg)
     segment_data = {}
     for product, share in model.get("product_mix", {}).items():
         base_revenue = model.get("revenue", {}).get(start_year, 0) * share
@@ -3338,10 +3340,12 @@ with tab_advanced:
 
     ts_analyzer = TimeSeriesAnalyzer()
     revenue_series = {y: model.get("revenue", {}).get(y, 0.0) for y in years}
+    cogs_series = {y: model.get("cogs", {}).get(y, 0.0) for y in years}
     prod_series = {y: model.get("production_volume", {}).get(y, 0.0) for y in years}
     moving_avg = ts_analyzer.moving_average(revenue_series, window=3)
     seasonality = ts_analyzer.detect_seasonality(revenue_series)
     smoothing = ts_analyzer.simple_exponential_smoothing(revenue_series, forecast_periods=3)
+    cogs_smoothing = ts_analyzer.simple_exponential_smoothing(cogs_series, forecast_periods=3)
 
     regression = RegressionModeler.simple_linear_regression(
         list(prod_series.values()), list(revenue_series.values())
@@ -3622,6 +3626,48 @@ with tab_advanced:
             st.plotly_chart(forecast_chart, use_container_width=True)
         else:
             st.info("SES forecast not available for the current series.")
+
+        cost_forecast_df = pd.DataFrame(
+            {
+                "Future Year": cogs_smoothing.get("future_years", []),
+                "COGS Forecast": cogs_smoothing.get("future_forecast", []),
+            }
+        )
+        if not cost_forecast_df.empty:
+            st.dataframe(cost_forecast_df, hide_index=True, use_container_width=True)
+            cost_chart = px.line(
+                cost_forecast_df,
+                x="Future Year",
+                y="COGS Forecast",
+                markers=True,
+                title="COGS Forecast (Simple Exponential Smoothing)",
+                labels={"COGS Forecast": "Forecast", "Future Year": "Year"},
+            )
+            st.plotly_chart(cost_chart, use_container_width=True)
+        else:
+            st.info("COGS forecast not available for the current series.")
+
+        st.markdown("#### Break-even analysis per product")
+        be_df = break_even_analyzer.per_product_break_even(year=start_year)
+        if not be_df.empty:
+            formatted_be = be_df.copy()
+            currency_cols = [
+                "Unit Price",
+                "Revenue",
+                "Variable Cost / Unit",
+                "Contribution / Unit",
+                "Allocated Fixed Cost",
+                "Break-even Revenue",
+            ]
+            for col in currency_cols:
+                formatted_be[col] = formatted_be[col].apply(_format_currency)
+            formatted_be["Break-even Units"] = formatted_be["Break-even Units"].apply(
+                lambda v: f"{v:,.0f}" if pd.notna(v) else "N/A"
+            )
+            formatted_be["Units"] = formatted_be["Units"].apply(lambda v: f"{v:,.0f}")
+            st.dataframe(formatted_be, hide_index=True, use_container_width=True)
+        else:
+            st.info("Break-even details will appear once production, pricing, and cost data are available.")
 
         if not segment_df.empty:
             seg_view = segment_df.copy()

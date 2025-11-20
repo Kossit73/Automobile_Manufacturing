@@ -103,30 +103,68 @@ class AdvancedSensitivityAnalyzer:
         # Calculate cumulative impact (Pareto)
         df['cumulative_impact_pct'] = df['impact_pct'].cumsum()
         df['pareto_rank'] = (df['cumulative_impact_pct'] <= 80).cumsum()
-        
+
         return df
+
+
+class BreakEvenAnalyzer:
+    """Compute break-even metrics per product using current model outputs."""
+
+    def __init__(self, model_data: dict, config: 'CompanyConfig'):
+        self.model_data = model_data
+        self.config = config
+        self.years = list(model_data.get('years', []))
+
+    def per_product_break_even(self, year: int | None = None) -> pd.DataFrame:
+        """Return a per-product break-even table for the selected year."""
+
+        if not self.years:
+            return pd.DataFrame()
+
+        year = year or self.years[0]
+        production_volume = self.model_data.get('production_volume', {}).get(year, 0.0)
+        revenue = self.model_data.get('revenue', {}).get(year, 0.0)
+        cogs = self.model_data.get('cogs', {}).get(year, 0.0)
+        mix = self.model_data.get('product_mix', {}) or {}
+        prices = self.model_data.get('selling_price', {}) or {}
+        opex_breakdown = self.model_data.get('opex_breakdown', {}).get(year, {})
+        fixed_cost = float(sum(opex_breakdown.values()))
+
+        rows = []
+        for product, share in mix.items():
+            units = production_volume * share
+            unit_price = prices.get(product, 0.0)
+            product_revenue = units * unit_price
+            revenue_share = product_revenue / revenue if revenue else 0.0
+
+            variable_alloc = cogs * revenue_share
+            variable_per_unit = variable_alloc / units if units else 0.0
+            contribution_per_unit = unit_price - variable_per_unit
+
+            fixed_alloc = fixed_cost * revenue_share
+            if contribution_per_unit > 0:
+                break_even_units = fixed_alloc / contribution_per_unit
+                break_even_revenue = break_even_units * unit_price
+            else:
+                break_even_units = np.nan
+                break_even_revenue = np.nan
+
+            rows.append(
+                {
+                    'Product': product,
+                    'Units': units,
+                    'Unit Price': unit_price,
+                    'Revenue': product_revenue,
+                    'Variable Cost / Unit': variable_per_unit,
+                    'Contribution / Unit': contribution_per_unit,
+                    'Allocated Fixed Cost': fixed_alloc,
+                    'Break-even Units': break_even_units,
+                    'Break-even Revenue': break_even_revenue,
+                }
+            )
+
+        return pd.DataFrame(rows)
     
-    def tornado_diagram_data(self, parameters: List[str], ranges: Dict) -> Dict:
-        """Generate data for tornado diagram visualization"""
-        sensitivity = self.pareto_sensitivity(parameters, ranges)
-        
-        tornado_data = {}
-        for _, row in sensitivity.iterrows():
-            param = row['parameter']
-            low = row['low_ev']
-            high = row['high_ev']
-            base = self.model_data['enterprise_value']
-            
-            tornado_data[param] = {
-                'low_impact': low - base,
-                'high_impact': high - base,
-                'range': high - low,
-                'mid_point': (low + high) / 2
-            }
-        
-        return tornado_data
-
-
 # =====================================================
 # 2. SCENARIO STRESS TESTING
 # =====================================================

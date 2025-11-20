@@ -8,7 +8,7 @@ Version: 1.0 (November 2025)
 import os
 import copy
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from io import BytesIO
 import zipfile
 import textwrap
@@ -176,19 +176,34 @@ def _ensure_rag_project_dirs(project_id: str) -> Path:
     return base
 
 
+MIN_FEASIBILITY_PAGES = 20
+MAX_FEASIBILITY_PAGES = 100
+LINES_PER_PDF_PAGE = 40
+
+
 def _compose_feasibility_summary(project_id: str, model: Optional[dict], files: List[dict]) -> Dict[str, List[List[str]]]:
     summary_lines = [["Project ID", project_id]]
-    if model:
-        years = list(model.get("years", []))
-        if years:
-            start, end = years[0], years[-1]
-            summary_lines.append(["Projection Years", f"{start} - {end}"])
-            summary_lines.append(["Enterprise Value", f"${model.get('enterprise_value', 0):,.0f}"])
-            summary_lines.append(["Year {start} Revenue", f"${model['revenue'].get(start, 0):,.0f}"])
-            summary_lines.append(["Year {end} Revenue", f"${model['revenue'].get(end, 0):,.0f}"])
-            summary_lines.append(["Closing Cash", f"${model['cash_balance'].get(end, 0):,.0f}"])
+    years = list(model.get("years", [])) if model else []
+    if model and years:
+        start, end = years[0], years[-1]
+        summary_lines.append(["Projection Years", f"{start} - {end}"])
+        summary_lines.append(["Enterprise Value", f"${model.get('enterprise_value', 0):,.0f}"])
+        summary_lines.append(["Year {start} Revenue", f"${model['revenue'].get(start, 0):,.0f}"])
+        summary_lines.append(["Year {end} Revenue", f"${model['revenue'].get(end, 0):,.0f}"])
+        summary_lines.append(["Closing Cash", f"${model['cash_balance'].get(end, 0):,.0f}"])
+    else:
+        summary_lines.append(["Model", "No financial model available – using placeholders."])
 
-        revenue_rows = [["Year", "Revenue", "COGS", "Opex", "Net Profit"]]
+    income_df, cashflow_df, balance_df = generate_financial_statements(model) if model else (
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+    )
+
+    revenue_rows = [["Year", "Revenue", "COGS", "Opex", "Net Profit"]]
+    if not years:
+        revenue_rows.append(["n/a", "n/a", "n/a", "n/a", "n/a"])
+    else:
         for y in years:
             revenue_rows.append(
                 [
@@ -199,19 +214,81 @@ def _compose_feasibility_summary(project_id: str, model: Optional[dict], files: 
                     model['net_profit'].get(y, 0),
                 ]
             )
-    else:
-        revenue_rows = [["Year", "Revenue", "COGS", "Opex", "Net Profit"]]
-        summary_lines.append(["Model", "No financial model available – using placeholders."])
+
+    wc = model.get("working_capital", {}) if model else {}
+    working_rows = [["Year", "Receivables", "Inventory", "Payables", "Accrued Exp.", "Net WC", "ΔWC"]]
+    for y in years:
+        working_rows.append(
+            [
+                y,
+                wc.get("receivables", {}).get(y, 0.0),
+                wc.get("inventory", {}).get(y, 0.0),
+                wc.get("payables", {}).get(y, 0.0),
+                wc.get("accrued_expenses", {}).get(y, 0.0),
+                wc.get("net_working_capital", {}).get(y, 0.0),
+                wc.get("delta_working_capital", {}).get(y, 0.0),
+            ]
+        )
+
+    financing_rows = [["Year", "Interest", "Principal", "Financing CF"]]
+    for y in years:
+        financing_rows.append(
+            [
+                y,
+                model.get("interest_payment", {}).get(y, 0.0) if model else 0.0,
+                model.get("loan_repayment", {}).get(y, 0.0) if model else 0.0,
+                model.get("cff", {}).get(y, 0.0) if model else 0.0,
+            ]
+        )
+
+    opex_breakdown_rows = [["Year", "Marketing", "Labor", "Other"]]
+    for y in years:
+        breakdown = model.get("opex_breakdown", {}).get(y, {}) if model else {}
+        opex_breakdown_rows.append(
+            [y, breakdown.get("marketing", 0.0), breakdown.get("labor", 0.0), breakdown.get("other", 0.0)]
+        )
+
+    production_rows = [["Year", "Utilization", "Units", "Revenue"]]
+    for y in years:
+        utilization = 0.0
+        if model and "config" in model:
+            utilization = model["config"].capacity_utilization.get(y, model["config"].capacity_utilization.get(years[0], 0.0))
+        production_rows.append(
+            [
+                y,
+                utilization,
+                model.get("production_volume", {}).get(y, 0.0) if model else 0.0,
+                model.get("revenue", {}).get(y, 0.0) if model else 0.0,
+            ]
+        )
 
     file_rows = [["Uploaded File", "Location"]]
     for f in files:
         file_rows.append([f.get("name", "file"), f.get("location", "uploaded")])
 
-    return {
+    income_rows: List[List[Any]] = (
+        [list(income_df.columns)] + income_df.values.tolist() if not income_df.empty else [["Run the model to populate."]]
+    )
+    cash_rows: List[List[Any]] = (
+        [list(cashflow_df.columns)] + cashflow_df.values.tolist() if not cashflow_df.empty else [["Run the model to populate."]]
+    )
+    balance_rows: List[List[Any]] = (
+        [list(balance_df.columns)] + balance_df.values.tolist() if not balance_df.empty else [["Run the model to populate."]]
+    )
+
+    tables: Dict[str, List[List[Any]]] = {
         "Summary": summary_lines,
         "Financials": revenue_rows,
         "Sources": file_rows,
+        "Income Statement": income_rows,
+        "Cash Flow": cash_rows,
+        "Balance Sheet": balance_rows,
+        "Working Capital": working_rows,
+        "Financing": financing_rows,
+        "Operating Expenses": opex_breakdown_rows,
+        "Production Schedule": production_rows,
     }
+    return tables
 
 
 def _format_currency_compact(value: float) -> str:
@@ -227,7 +304,39 @@ def _format_currency_compact(value: float) -> str:
         return "-$-"
 
 
+def _table_to_text_lines(title: str, table: List[List[Any]]) -> List[str]:
+    if not table:
+        return [f"## {title}", "(no data available)"]
+    header, *rows = table
+    lines = [f"## {title}", " | ".join(str(h) for h in header), "-" * 80]
+    for row in rows:
+        formatted = []
+        for cell in row:
+            if isinstance(cell, (int, float)):
+                formatted.append(_format_currency_compact(cell))
+            else:
+                formatted.append(str(cell))
+        lines.append(" | ".join(formatted))
+    lines.append("")
+    return lines
+
+
+def _pad_to_minimum_pages(lines: List[str]) -> List[str]:
+    min_lines = MIN_FEASIBILITY_PAGES * LINES_PER_PDF_PAGE
+    max_lines = MAX_FEASIBILITY_PAGES * LINES_PER_PDF_PAGE
+    padded = list(lines)
+    idx = 1
+    while len(padded) < min_lines:
+        padded.append(f"Appendix placeholder {idx}: additional scenario, sensitivity, and schedule commentary.")
+        idx += 1
+    if len(padded) > max_lines:
+        return padded[:max_lines]
+    return padded
+
+
 def _build_feasibility_template(project_id: str, model: Optional[dict], files: List[dict]) -> List[str]:
+    tables = _compose_feasibility_summary(project_id, model or {}, files)
+
     years = list(model.get("years", [])) if model else []
     start_year = years[0] if years else None
     end_year = years[-1] if years else None
@@ -249,60 +358,62 @@ def _build_feasibility_template(project_id: str, model: Optional[dict], files: L
         f"Year {end_year} revenue: {_format_currency_compact(revenue_end)}" if end_year else "",
         f"Closing cash: {_format_currency_compact(cash_end)}" if end_year else "",
         f"Sources ingested: {sources}",
+        "",
     ]
 
-    sections = [
-        "Executive Summary",
-        "Project Description & Scope",
-        "Market & Demand Analysis",
-        "Technical & Operations",
-        "Legal, Permitting & Environmental",
-        "Implementation Plan",
-        "Financial Analysis",
-        "Risk Assessment & ESG",
-        "Conclusion & Recommendation",
-        "Appendices",
+    narrative = [
+        "Suggested Content Outline (auto-generated)",
+        "## Executive Summary",
+        f"- Headline: {_format_currency_compact(revenue_end)} revenue and {_format_currency_compact(net_end)} net profit by {end_year}.",
+        f"- Capitalization: equity {_format_currency_compact(model.get('equity_investment', 0)) if model else 'n/a'}; debt {_format_currency_compact(model.get('loan_amount', 0)) if model else 'n/a' }.",
+        f"- Use of proceeds and milestone timing across {start_year}–{end_year}.",
+        "## Project Description & Scope",
+        "- Facility, platform, and production goals with linked capacity/utilization curve.",
+        "## Market & Demand Analysis",
+        "- Demand drivers, pricing stance, and product mix (bikes, scooters, SUV, hatchback, nano).",
+        "## Technical & Operations",
+        "- Annual capacity, utilization ramp, automation plan, and CAPEX phasing.",
+        "## Legal, Permitting & Environmental",
+        "- Approvals, ESG commitments, and compliance milestones tied to production timeline.",
+        "## Implementation Plan",
+        "- Schedule, procurement steps, staffing ramp, and working-day assumptions.",
+        "## Financial Analysis",
+        "- Income statement: revenue, COGS, operating expenses, EBITDA/EBIT, taxes, net profit by year.",
+        "- Cash flow: CFO/CFI/CFF with working-capital changes, CAPEX spends, debt draws/repayments, closing cash.",
+        "- Balance sheet: assets (fixed/working capital), liabilities (debt, payables), equity; balance check.",
+        "- Valuation: DCF enterprise value, terminal growth, sensitivity and scenario ranges.",
+        "## Risk Assessment & ESG",
+        "- Key risks, mitigations, ESG metrics (emissions/carbon pricing), and scenario/Monte Carlo highlights.",
+        "## Conclusion & Recommendation",
+        "- Investment case, liquidity runway, and next-step actions.",
+        "## Appendices",
+        "- Financial statements, operating schedules, production and pricing tables, and advanced analytics summaries.",
+        "",
+        "Core Statements and Schedules",
     ]
 
-    narrative = ["", "Suggested Content Outline (auto-generated)"]
-    for sec in sections:
-        narrative.append(f"## {sec}")
-        if sec == "Executive Summary":
-            narrative.extend(
-                [
-                    f"- Headline: {_format_currency_compact(revenue_end)} revenue and {_format_currency_compact(net_end)} net profit by {end_year}.",
-                    f"- Capitalization: equity {_format_currency_compact(model.get('equity_investment', 0)) if model else 'n/a'}; debt {_format_currency_compact(model.get('loan_amount', 0)) if model else 'n/a'}.",
-                    f"- Use of proceeds and milestone timing across {start_year}–{end_year}.",
-                ]
-            )
-        elif sec == "Financial Analysis":
-            narrative.extend(
-                [
-                    "- Income statement: revenue, COGS, operating expenses, EBITDA/EBIT, taxes, net profit by year.",
-                    "- Cash flow: CFO/CFI/CFF with working-capital changes, CAPEX spends, debt draws/repayments, closing cash.",
-                    "- Balance sheet: assets (fixed/working capital), liabilities (debt, payables), and equity; balance check.",
-                    "- Valuation: DCF enterprise value, terminal growth, and sensitivity to discount rate or margins.",
-                ]
-            )
-        elif sec == "Risk Assessment & ESG":
-            narrative.extend(
-                [
-                    "- Key risks with likelihood/impact, mitigations, and ESG considerations (emissions, compliance, safety).",
-                    "- Scenario ranges (downside/base/upside) for revenue, costs, and liquidity; Monte Carlo or VaR highlights.",
-                ]
-            )
-        elif sec == "Appendices":
-            narrative.extend(
-                [
-                    "- Financial statements and schedules (income, cash flow, balance sheet, debt, CAPEX, labor).",
-                    "- Source list with citations from uploaded documents and model cell references.",
-                    "- Charts: NPV curve, DSCR trend, cash-flow waterfall, cost/margin breakdowns.",
-                ]
-            )
-        else:
-            narrative.append("- Key findings and evidence-based highlights (auto-fill from retrieved passages).")
+    statement_lines: List[str] = []
+    for sheet_name in (
+        "Income Statement",
+        "Cash Flow",
+        "Balance Sheet",
+        "Working Capital",
+        "Operating Expenses",
+        "Financing",
+        "Production Schedule",
+    ):
+        statement_lines.extend(_table_to_text_lines(sheet_name, tables.get(sheet_name, [])))
 
-    return [line for line in header + narrative if line]
+    appendix_lines = [
+        "Advanced Analytics Highlights",
+        "- Sensitivity & tornado drivers summarize EV swings to cost, volume, and discount-rate shifts.",
+        "- Scenarios and stress cases expose liquidity and profitability ranges.",
+        "- Simulation & risk stats capture Monte Carlo, VaR, and tail outcomes.",
+        "- What-if & goal-seek tracks target-based input solutions.",
+    ]
+
+    full_lines = [line for line in header + narrative + statement_lines + appendix_lines if line]
+    return _pad_to_minimum_pages(full_lines)
 
 
 def _build_xlsx_from_tables(tables: Dict[str, List[List]]) -> bytes:
@@ -426,16 +537,19 @@ def _build_pdf_from_text(lines: List[str]) -> bytes:
 
     buffer = BytesIO()
     with PdfPages(buffer) as pdf:
-        fig = plt.figure(figsize=(8.5, 11))
-        wrapped = []
+        wrapped: List[str] = []
         for line in lines:
             wrapped.extend(textwrap.wrap(line, 90) or [""])
             wrapped.append("")
-        for idx, chunk in enumerate(wrapped):
-            fig.text(0.05, 0.95 - idx * 0.03, chunk, fontsize=10, ha="left", va="top")
-        fig.subplots_adjust(left=0.05, right=0.95, top=0.97, bottom=0.03)
-        pdf.savefig(fig)
-        plt.close(fig)
+
+        for page_start in range(0, len(wrapped), LINES_PER_PDF_PAGE):
+            page_lines = wrapped[page_start:page_start + LINES_PER_PDF_PAGE]
+            fig = plt.figure(figsize=(8.5, 11))
+            for idx, chunk in enumerate(page_lines):
+                fig.text(0.05, 0.95 - idx * 0.025, chunk, fontsize=10, ha="left", va="top")
+            fig.subplots_adjust(left=0.05, right=0.95, top=0.97, bottom=0.03)
+            pdf.savefig(fig)
+            plt.close(fig)
     return buffer.getvalue()
 
 

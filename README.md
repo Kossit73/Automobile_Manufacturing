@@ -84,6 +84,7 @@ A comprehensive financial modeling, labor management, and advanced analytics pla
 ├── CAPEX_MANAGEMENT_GUIDE.md (450 lines) - Capital planning guide
 ├── QUICKSTART.md - 30-second intro
 ├── README_ANALYTICS.md - Analytics feature overview
+├── RAG_IMPLEMENTATION.md - FastAPI RAG feasibility service (endpoints, setup, deployment)
 └── INDEX.md - Complete module index
 ```
 

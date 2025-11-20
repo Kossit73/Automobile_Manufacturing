@@ -2871,6 +2871,29 @@ with tab_dashboard:
         st.subheader("Ratio Highlights")
         st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
+        ratio_plot_cols = [
+            "Net Margin (%)",
+            "ROE (%)",
+            "Current Ratio",
+            "Debt-to-Equity",
+        ]
+        ratio_plot_df = ratios_df.melt(
+            id_vars=["Year"],
+            value_vars=[c for c in ratio_plot_cols if c in ratios_df.columns],
+            var_name="Ratio",
+            value_name="Value",
+        )
+        if not ratio_plot_df.empty:
+            ratio_chart = px.line(
+                ratio_plot_df,
+                x="Year",
+                y="Value",
+                color="Ratio",
+                markers=True,
+                title="Ratio Trends",
+            )
+            st.plotly_chart(ratio_chart, use_container_width=True)
+
     with viz_tabs[3]:
         scenarios_df, insights_df = visualizer.scenario_tables()
         st.subheader("Scenario Comparison")
@@ -2879,15 +2902,78 @@ with tab_dashboard:
             st.subheader("Key Deltas")
             st.dataframe(insights_df, use_container_width=True, hide_index=True)
 
+        if not scenarios_df.empty:
+            ev_chart = px.bar(
+                scenarios_df,
+                x="Scenario",
+                y="Enterprise Value",
+                text="Enterprise Value",
+                title="Enterprise Value by Scenario",
+            )
+            ev_chart.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
+            st.plotly_chart(ev_chart, use_container_width=True)
+
+            rev_cols = [c for c in scenarios_df.columns if "Revenue" in c]
+            if rev_cols:
+                rev_chart = px.bar(
+                    scenarios_df,
+                    x="Scenario",
+                    y=rev_cols,
+                    barmode="group",
+                    title="Revenue by Scenario",
+                    labels={"value": "Revenue", "variable": "Year"},
+                )
+                st.plotly_chart(rev_chart, use_container_width=True)
+
     with viz_tabs[4]:
         sensitivity_df = visualizer.sensitivity_table()
         st.subheader("Sensitivity Analysis")
         st.dataframe(sensitivity_df, use_container_width=True, hide_index=True)
 
+        if not sensitivity_df.empty:
+            sensitivity_df["Label"] = sensitivity_df.apply(
+                lambda r: f"{r['Parameter']} {r['pct_change']*100:.0f}%", axis=1
+            )
+            sens_chart = px.bar(
+                sensitivity_df,
+                x="Label",
+                y="ev_change_pct",
+                color="Parameter",
+                title="Enterprise Value Change by Driver",
+                labels={"ev_change_pct": "EV Change (%)"},
+            )
+            st.plotly_chart(sens_chart, use_container_width=True)
+
     with viz_tabs[5]:
         trend_df = visualizer.chart_tables()
         st.subheader("Revenue, Profit, Cash & Margin")
         st.dataframe(trend_df, use_container_width=True, hide_index=True)
+
+        if not trend_df.empty:
+            value_cols = [
+                "Revenue",
+                "Net Profit",
+                "Cash Balance",
+            ]
+            trend_chart = px.line(
+                trend_df,
+                x="Year",
+                y=value_cols,
+                markers=True,
+                title="Revenue, Profit, and Cash Trends",
+                labels={"value": "Amount", "variable": "Metric"},
+            )
+            st.plotly_chart(trend_chart, use_container_width=True)
+
+            margin_chart = px.line(
+                trend_df,
+                x="Year",
+                y="Profit Margin (%)",
+                markers=True,
+                title="Profit Margin Trend",
+                labels={"Profit Margin (%)": "Margin (%)"},
+            )
+            st.plotly_chart(margin_chart, use_container_width=True)
 
 # =====================================================
 # PAGE 2: AI & MACHINE LEARNING (RAG)

@@ -577,6 +577,41 @@ def _remove_operating_expense_entry(year: int, category: str):
         st.session_state.other_cost_overrides.pop(year, None)
 
 
+def _fixed_cost_value_for_year(year: int, fixed_cost_df: pd.DataFrame) -> float:
+    """Return the fixed operating cost for the given year from the current schedule."""
+
+    match = fixed_cost_df[fixed_cost_df["Year"] == year]
+    if not match.empty:
+        try:
+            return float(match.iloc[0]["Fixed Operating Costs"])
+        except Exception:
+            return 0.0
+    return 0.0
+
+
+def _update_fixed_cost_entry(year: int, amount: float, fixed_cost_df: pd.DataFrame):
+    """Persist a fixed operating cost override for the selected year."""
+
+    overrides = st.session_state.setdefault("fixed_cost_overrides", {})
+    overrides[year] = amount
+
+
+def _remove_fixed_cost_entry(year: int):
+    """Remove a fixed operating cost override for the selected year."""
+
+    st.session_state.get("fixed_cost_overrides", {}).pop(year, None)
+
+
+def _apply_fixed_cost_increment(years: list[int], increment_pct: float, fixed_cost_df: pd.DataFrame):
+    """Apply a percentage increment to selected years of fixed operating costs."""
+
+    overrides = st.session_state.setdefault("fixed_cost_overrides", {})
+    multiplier = 1 + (increment_pct / 100.0)
+    for y in years:
+        baseline = overrides.get(y, _fixed_cost_value_for_year(y, fixed_cost_df))
+        overrides[y] = max(0.0, baseline * multiplier)
+
+
 FINANCING_COMPONENT_MAP = {
     "Interest": "interest_overrides",
     "Loan Repayment": "loan_repayment_overrides",
@@ -2271,13 +2306,111 @@ with tab_platform:
                             st.rerun()
 
     with tab_fixed_cost:
-        _editable_schedule(
-            "Fixed Cost Schedule",
-            fixed_cost_df,
-            "fixed_cost_overrides",
-            "Fixed Operating Costs",
-            "Use the + button to add years or delete rows; edits override computed operating expenses.",
+        st.markdown("#### Fixed Cost Schedule")
+        st.caption(
+            "Fixed operating costs combine marketing, labor/payroll, and other operating costs. "
+            "Use these controls to add, edit, remove, or increment annual fixed costs while keeping depreciation visible for context."
         )
+
+        fixed_overrides = st.session_state.get("fixed_cost_overrides", {})
+        display_df = fixed_cost_df.copy()
+        display_df["Override Applied"] = [fixed_overrides.get(int(y), "") for y in display_df["Year"]]
+
+        (
+            fixed_curr,
+            fixed_add,
+            fixed_edit,
+            fixed_remove,
+            fixed_increment,
+        ) = st.tabs(
+            [
+                "Current Fixed Costs",
+                "Add Fixed Cost",
+                "Edit Fixed Cost",
+                "Remove Fixed Cost",
+                "Yearly Increment",
+            ]
+        )
+
+        with fixed_curr:
+            st.dataframe(
+                _format_statement(display_df, ["Fixed Operating Costs", "Depreciation"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        with fixed_add:
+            st.markdown("## Add Fixed Cost")
+            with st.form("add_fixed_cost_form"):
+                add_year = st.selectbox("Year", years, key="add_fixed_cost_year")
+                default_amount = fixed_overrides.get(int(add_year), _fixed_cost_value_for_year(int(add_year), fixed_cost_df))
+                add_amount = st.number_input(
+                    "Fixed Operating Costs ($)",
+                    min_value=0.0,
+                    value=float(default_amount),
+                    step=5000.0,
+                    key="add_fixed_cost_amount",
+                )
+                add_submit = st.form_submit_button("Add Fixed Cost")
+            if add_submit:
+                _update_fixed_cost_entry(int(add_year), float(add_amount), fixed_cost_df)
+                st.success("Fixed cost entry saved. Rerunning the model with the override.")
+                st.rerun()
+
+        with fixed_edit:
+            st.markdown("## Edit Fixed Cost")
+            if not years:
+                st.info("No years available to edit. Configure the projection horizon first.")
+            else:
+                edit_year = st.selectbox("Select Year", years, key="edit_fixed_cost_year")
+                current_val = fixed_overrides.get(int(edit_year), _fixed_cost_value_for_year(int(edit_year), fixed_cost_df))
+                edit_amount = st.number_input(
+                    "Fixed Operating Costs ($)",
+                    min_value=0.0,
+                    value=float(current_val),
+                    step=5000.0,
+                    key=f"edit_fixed_cost_amount_{edit_year}",
+                )
+                if st.button("Save Fixed Cost", key=f"save_fixed_cost_{edit_year}"):
+                    _update_fixed_cost_entry(int(edit_year), float(edit_amount), fixed_cost_df)
+                    st.success("Fixed cost updated. Schedules will refresh with the new value.")
+                    st.rerun()
+
+        with fixed_remove:
+            st.markdown("## Remove Fixed Cost")
+            if not fixed_overrides:
+                st.info("No fixed cost overrides to remove.")
+            else:
+                removal_years = st.multiselect(
+                    "Select override years to remove", list(sorted(fixed_overrides.keys())),
+                    format_func=lambda y: f"{y} (${fixed_overrides.get(y, 0):,.0f})",
+                    key="remove_fixed_cost_years",
+                )
+                if st.button("Remove Selected Overrides", key="remove_fixed_cost_btn") and removal_years:
+                    for yr in removal_years:
+                        _remove_fixed_cost_entry(int(yr))
+                    st.success("Selected fixed cost overrides removed.")
+                    st.rerun()
+
+        with fixed_increment:
+            st.markdown("## Yearly Increment Helper")
+            with st.form("increment_fixed_cost_form"):
+                inc_years = st.multiselect(
+                    "Select Years", years, default=years, key="increment_fixed_cost_years"
+                )
+                inc_pct = st.number_input(
+                    "Increment (%)",
+                    min_value=-50.0,
+                    max_value=200.0,
+                    value=3.0,
+                    step=1.0,
+                    key="increment_fixed_cost_pct",
+                )
+                inc_submit = st.form_submit_button("Apply Increment")
+            if inc_submit and inc_years:
+                _apply_fixed_cost_increment([int(y) for y in inc_years], float(inc_pct), fixed_cost_df)
+                st.success("Fixed operating costs updated with the incremented values.")
+                st.rerun()
 
     with tab_variable_cost:
         _editable_schedule(

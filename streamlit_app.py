@@ -43,6 +43,7 @@ from advanced_analytics import (
     PortfolioOptimizer,
     RealOptionsAnalyzer,
     ESGAnalyzer,
+    clone_config,
 )
 
 # =====================================================
@@ -3202,6 +3203,41 @@ with tab_advanced:
     years = list(model["years"])
     start_year, final_year = years[0], years[-1]
 
+    def _ensure_analytics_state():
+        if "sens_drivers" not in st.session_state:
+            st.session_state["sens_drivers"] = [
+                {"parameter": "annual_capacity", "range": 0.2},
+                {"parameter": "cogs_ratio", "range": 0.2},
+                {"parameter": "loan_interest_rate", "range": 0.2},
+                {"parameter": "loan_amount", "range": 0.2},
+                {"parameter": "wacc", "range": 0.2},
+            ]
+        if "custom_stress_scenarios" not in st.session_state:
+            st.session_state["custom_stress_scenarios"] = []
+        if "custom_segments" not in st.session_state:
+            st.session_state["custom_segments"] = []
+        if "mc_distributions" not in st.session_state:
+            st.session_state["mc_distributions"] = [
+                {"parameter": "cogs_ratio", "dist": "normal", "p1": cfg.cogs_ratio, "p2": 0.05},
+                {"parameter": "wacc", "dist": "normal", "p1": cfg.wacc, "p2": 0.02},
+                {"parameter": "annual_capacity", "dist": "normal", "p1": cfg.annual_capacity, "p2": cfg.annual_capacity * 0.1},
+            ]
+        if "what_if_adjustments" not in st.session_state:
+            st.session_state["what_if_adjustments"] = [
+                {"name": "Higher Utilization", "parameter": "annual_capacity", "value": cfg.annual_capacity * 1.1},
+                {"name": "Lean Manufacturing", "parameter": "cogs_ratio", "value": max(0.05, cfg.cogs_ratio * 0.95)},
+            ]
+        if "goal_seek_config" not in st.session_state:
+            st.session_state["goal_seek_config"] = {
+                "parameter": "cogs_ratio",
+                "target_metric": "enterprise_value",
+                "multiplier": 1.1,
+            }
+        if "portfolio_returns_rows" not in st.session_state:
+            st.session_state["portfolio_returns_rows"] = []
+
+    _ensure_analytics_state()
+
     st.markdown("## Baseline Snapshot")
     kpi_cols = st.columns(3)
     with kpi_cols[0]:
@@ -3218,27 +3254,45 @@ with tab_advanced:
         )
 
     # Shared analytics used across the advanced feature tabs
-    sens_params = ["annual_capacity", "cogs_ratio", "loan_interest_rate", "loan_amount", "wacc"]
-    sens_ranges = {p: 0.2 for p in sens_params}
+    sens_params = [item["parameter"] for item in st.session_state.get("sens_drivers", []) if item.get("parameter")]
+    sens_ranges = {item["parameter"]: float(item.get("range", 0.2)) for item in st.session_state.get("sens_drivers", []) if item.get("parameter")}
     sensitivity = AdvancedSensitivityAnalyzer(model, cfg)
-    sens_df = sensitivity.pareto_sensitivity(sens_params, sens_ranges)
+    sens_df = sensitivity.pareto_sensitivity(sens_params, sens_ranges) if sens_params else pd.DataFrame()
 
     stress_engine = StressTestEngine(model, cfg)
     stress_results = stress_engine.extreme_scenarios()
+    for scenario in st.session_state.get("custom_stress_scenarios", []):
+        cfg_override = clone_config(cfg)
+        capacity_mult = scenario.get("capacity_mult", 1.0)
+        cogs_mult = scenario.get("cogs_mult", 1.0)
+        wacc_shift = scenario.get("wacc_shift", 0.0)
+        cfg_override = clone_config(
+            cfg_override,
+            annual_capacity=cfg_override.annual_capacity * capacity_mult,
+            cogs_ratio=cfg_override.cogs_ratio * cogs_mult,
+            wacc=max(0.0, cfg_override.wacc + wacc_shift),
+        )
+        scenario_model = run_financial_model(cfg_override)
+        stress_results[scenario.get("name", "Custom Scenario")] = {
+            "enterprise_value": scenario_model.get("enterprise_value", 0.0),
+            "revenue_2030": scenario_model.get("revenue", {}).get(final_year, 0.0),
+            "net_profit_2030": scenario_model.get("net_profit", {}).get(final_year, 0.0),
+            "final_cash": scenario_model.get("cash_balance", {}).get(final_year, 0.0),
+            "recovery_probability": 100.0 if scenario_model.get("cash_balance", {}).get(final_year, 0.0) >= 0 else 0.0,
+        }
     stress_df = (
         pd.DataFrame.from_dict(stress_results, orient="index")
         .reset_index()
         .rename(columns={"index": "Scenario"})
     )
 
+    mc_params = {
+        item["parameter"]: (item.get("dist", "normal"), float(item.get("p1", 0)), float(item.get("p2", 0)))
+        for item in st.session_state.get("mc_distributions", [])
+        if item.get("parameter")
+    }
     mc_engine = MonteCarloSimulator(model, cfg, num_simulations=400)
-    mc_stats = mc_engine.run_simulation(
-        {
-            "cogs_ratio": ("normal", cfg.cogs_ratio, 0.05),
-            "wacc": ("normal", cfg.wacc, 0.02),
-            "annual_capacity": ("normal", cfg.annual_capacity, cfg.annual_capacity * 0.1),
-        }
-    )
+    mc_stats = mc_engine.run_simulation(mc_params) if mc_params else {}
 
     summary_rows = []
     labels = {
@@ -3269,6 +3323,17 @@ with tab_advanced:
             "cost": base_revenue * cfg.cogs_ratio,
             "units": max(1, base_units),
         }
+    for segment in st.session_state.get("custom_segments", []):
+        name = segment.get("name")
+        revenue_override = float(segment.get("revenue", 0))
+        cost_override = float(segment.get("cost", 0))
+        units_override = float(segment.get("units", 1))
+        if name:
+            segment_data[name] = {
+                "revenue": revenue_override,
+                "cost": cost_override,
+                "units": max(1, units_override),
+            }
     segment_df = segment_analyzer.segment_analysis(segment_data) if segment_data else pd.DataFrame()
 
     ts_analyzer = TimeSeriesAnalyzer()
@@ -3284,25 +3349,38 @@ with tab_advanced:
 
     what_if = WhatIfAnalyzer(cfg)
     scenario_rows = []
-    sample_adjustments = {
-        "Higher Utilization": {"annual_capacity": cfg.annual_capacity * 1.1},
-        "Lean Manufacturing": {"cogs_ratio": max(0.05, cfg.cogs_ratio * 0.95)},
-        "Marketing Push": {"marketing_budget": {start_year: cfg.marketing_budget.get(start_year, 0) * 1.2}},
-    }
-    for name, adjustment in sample_adjustments.items():
-        scenario_rows.append(what_if.create_scenario(name, adjustment))
+    adjustments = st.session_state.get("what_if_adjustments", [])
+    for item in adjustments:
+        name = item.get("name") or "Custom Scenario"
+        param = item.get("parameter")
+        value = item.get("value")
+        if param:
+            scenario_rows.append(what_if.create_scenario(name, {param: value}))
     what_if_df = pd.DataFrame(scenario_rows)
 
     goal_optimizer = GoalSeekOptimizer(cfg)
-    goal_target = model.get("enterprise_value", 0) * 1.1
-    goal_result = goal_optimizer.find_breakeven_parameter("cogs_ratio", "enterprise_value", goal_target)
+    goal_cfg = st.session_state.get("goal_seek_config", {})
+    goal_param = goal_cfg.get("parameter", "cogs_ratio")
+    goal_metric = goal_cfg.get("target_metric", "enterprise_value")
+    multiplier = goal_cfg.get("multiplier", 1.1)
+    goal_target = model.get(goal_metric, 0)
+    if isinstance(goal_target, dict):
+        goal_target = goal_target.get(final_year, 0)
+    goal_target = goal_target * multiplier
+    goal_result = goal_optimizer.find_breakeven_parameter(goal_param, goal_metric, goal_target)
 
     risk_analyzer = RiskAnalyzer()
     ev_distribution = mc_stats.get("enterprise_values", {}).get("distribution", [])
     var_summary = risk_analyzer.calculate_var(ev_distribution.tolist(), 0.95) if len(ev_distribution) else {}
     cvar_summary = risk_analyzer.calculate_cvar(ev_distribution.tolist(), 0.95) if len(ev_distribution) else {}
 
-    portfolio_returns = np.random.normal(0.08, 0.15, (250, 4))
+    if st.session_state.get("portfolio_returns_rows"):
+        try:
+            portfolio_returns = np.array(st.session_state.get("portfolio_returns_rows"))
+        except Exception:
+            portfolio_returns = np.random.normal(0.08, 0.15, (250, 4))
+    else:
+        portfolio_returns = np.random.normal(0.08, 0.15, (250, 4))
     portfolio_opt = PortfolioOptimizer.optimize_portfolio(portfolio_returns)
 
     options_value = RealOptionsAnalyzer.expansion_option_value(
@@ -3330,6 +3408,34 @@ with tab_advanced:
 
     with analytics_tabs[0]:
         st.markdown("### Sensitivity analysis, tornado & spider views")
+        with st.expander("Manage sensitivity drivers", expanded=False):
+            current_params = [d["parameter"] for d in st.session_state.get("sens_drivers", [])]
+            selected = st.selectbox("Select driver", [""] + current_params, key="sens_select")
+            default = next((d for d in st.session_state.get("sens_drivers", []) if d["parameter"] == selected), {})
+            new_param = st.text_input("Parameter name", value=default.get("parameter", ""), key="sens_param")
+            new_range = st.number_input(
+                "Range (%)",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(default.get("range", 0.2)),
+                step=0.05,
+                key="sens_range",
+            )
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Save / Update Driver", key="sens_save") and new_param:
+                    updated = False
+                    for driver in st.session_state["sens_drivers"]:
+                        if driver["parameter"] == new_param:
+                            driver["range"] = new_range
+                            updated = True
+                    if not updated:
+                        st.session_state["sens_drivers"].append({"parameter": new_param, "range": new_range})
+                    _rerun()
+            with c2:
+                if st.button("Remove Driver", key="sens_remove") and selected:
+                    st.session_state["sens_drivers"] = [d for d in st.session_state["sens_drivers"] if d["parameter"] != selected]
+                    _rerun()
         if sens_df.empty:
             st.info("No sensitivity results available for the current configuration.")
         else:
@@ -3387,6 +3493,30 @@ with tab_advanced:
 
     with analytics_tabs[1]:
         st.markdown("### Scenario stress testing & spider metrics")
+        with st.expander("Manage scenarios", expanded=False):
+            custom = st.session_state.get("custom_stress_scenarios", [])
+            selected = st.selectbox("Select scenario", [""] + [s.get("name", "") for s in custom], key="stress_select")
+            default = next((s for s in custom if s.get("name") == selected), {})
+            sc_name = st.text_input("Scenario name", value=default.get("name", ""), key="stress_name")
+            cap_mult = st.number_input("Capacity multiplier", min_value=0.0, value=float(default.get("capacity_mult", 1.0)), step=0.1, key="stress_cap")
+            cogs_mult = st.number_input("COGS multiplier", min_value=0.0, value=float(default.get("cogs_mult", 1.0)), step=0.1, key="stress_cogs")
+            wacc_shift = st.number_input("WACC shift", value=float(default.get("wacc_shift", 0.0)), step=0.01, key="stress_wacc")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Save / Update Scenario", key="stress_save") and sc_name:
+                    updated = False
+                    for scen in custom:
+                        if scen.get("name") == sc_name:
+                            scen.update({"capacity_mult": cap_mult, "cogs_mult": cogs_mult, "wacc_shift": wacc_shift})
+                            updated = True
+                    if not updated:
+                        custom.append({"name": sc_name, "capacity_mult": cap_mult, "cogs_mult": cogs_mult, "wacc_shift": wacc_shift})
+                    st.session_state["custom_stress_scenarios"] = custom
+                    _rerun()
+            with c2:
+                if st.button("Remove Scenario", key="stress_remove") and selected:
+                    st.session_state["custom_stress_scenarios"] = [s for s in custom if s.get("name") != selected]
+                    _rerun()
         if stress_df.empty:
             st.info("No stress scenarios available.")
         else:
@@ -3428,6 +3558,30 @@ with tab_advanced:
 
     with analytics_tabs[2]:
         st.markdown("### Trend, seasonality & segmentation")
+        with st.expander("Manage segments", expanded=False):
+            segs = st.session_state.get("custom_segments", [])
+            selected = st.selectbox("Select segment", [""] + [s.get("name", "") for s in segs], key="seg_select")
+            default = next((s for s in segs if s.get("name") == selected), {})
+            seg_name = st.text_input("Segment name", value=default.get("name", ""), key="seg_name")
+            seg_rev = st.number_input("Revenue", value=float(default.get("revenue", 0.0)), step=10000.0, key="seg_rev")
+            seg_cost = st.number_input("Cost", value=float(default.get("cost", 0.0)), step=10000.0, key="seg_cost")
+            seg_units = st.number_input("Units", value=float(default.get("units", 1.0)), min_value=0.0, step=100.0, key="seg_units")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Save / Update Segment", key="seg_save") and seg_name:
+                    updated = False
+                    for seg in segs:
+                        if seg.get("name") == seg_name:
+                            seg.update({"revenue": seg_rev, "cost": seg_cost, "units": seg_units})
+                            updated = True
+                    if not updated:
+                        segs.append({"name": seg_name, "revenue": seg_rev, "cost": seg_cost, "units": seg_units})
+                    st.session_state["custom_segments"] = segs
+                    _rerun()
+            with c2:
+                if st.button("Remove Segment", key="seg_remove") and selected:
+                    st.session_state["custom_segments"] = [s for s in segs if s.get("name") != selected]
+                    _rerun()
         ma_df = pd.DataFrame(
             {
                 "Year": moving_avg.get("years", years),
@@ -3510,6 +3664,30 @@ with tab_advanced:
 
     with analytics_tabs[3]:
         st.markdown("### Monte Carlo, VaR/CVaR & probabilistic valuation")
+        with st.expander("Manage simulation inputs", expanded=False):
+            dists = st.session_state.get("mc_distributions", [])
+            selected = st.selectbox("Select parameter", [""] + [d.get("parameter", "") for d in dists], key="mc_select")
+            default = next((d for d in dists if d.get("parameter") == selected), {})
+            p_name = st.text_input("Parameter", value=default.get("parameter", ""), key="mc_param")
+            dist = st.selectbox("Distribution", ["normal", "uniform", "lognormal", "triangular"], index=0 if default.get("dist") not in ["uniform", "lognormal", "triangular"] else ["normal", "uniform", "lognormal", "triangular"].index(default.get("dist")), key="mc_dist")
+            p1 = st.number_input("Param 1", value=float(default.get("p1", 0.0)), step=0.01, key="mc_p1")
+            p2 = st.number_input("Param 2", value=float(default.get("p2", 0.0)), step=0.01, key="mc_p2")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Save / Update Distribution", key="mc_save") and p_name:
+                    updated = False
+                    for dist_row in dists:
+                        if dist_row.get("parameter") == p_name:
+                            dist_row.update({"dist": dist, "p1": p1, "p2": p2})
+                            updated = True
+                    if not updated:
+                        dists.append({"parameter": p_name, "dist": dist, "p1": p1, "p2": p2})
+                    st.session_state["mc_distributions"] = dists
+                    _rerun()
+            with c2:
+                if st.button("Remove Distribution", key="mc_remove") and selected:
+                    st.session_state["mc_distributions"] = [d for d in dists if d.get("parameter") != selected]
+                    _rerun()
         formatted_summary = mc_summary_df.copy()
         for idx, row in formatted_summary.iterrows():
             if "ROI" in row["Metric"]:
@@ -3555,6 +3733,44 @@ with tab_advanced:
 
     with analytics_tabs[4]:
         st.markdown("### What-if analysis, goal seek & tornado/spider helpers")
+        with st.expander("Manage what-if scenarios", expanded=False):
+            adj = st.session_state.get("what_if_adjustments", [])
+            selected = st.selectbox("Select scenario", [""] + [a.get("name", "") for a in adj], key="wi_select")
+            default = next((a for a in adj if a.get("name") == selected), {})
+            wi_name = st.text_input("Scenario name", value=default.get("name", ""), key="wi_name")
+            wi_param = st.text_input("Parameter", value=default.get("parameter", ""), key="wi_param")
+            wi_value = st.number_input("Value", value=float(default.get("value", 0.0)), step=0.01, key="wi_value")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Save / Update Scenario", key="wi_save") and wi_name and wi_param:
+                    updated = False
+                    for item in adj:
+                        if item.get("name") == wi_name:
+                            item.update({"parameter": wi_param, "value": wi_value})
+                            updated = True
+                    if not updated:
+                        adj.append({"name": wi_name, "parameter": wi_param, "value": wi_value})
+                    st.session_state["what_if_adjustments"] = adj
+                    _rerun()
+            with c2:
+                if st.button("Remove Scenario", key="wi_remove") and selected:
+                    st.session_state["what_if_adjustments"] = [a for a in adj if a.get("name") != selected]
+                    _rerun()
+
+        with st.expander("Goal seek settings", expanded=False):
+            goal_cfg = st.session_state.get("goal_seek_config", {})
+            g_param = st.text_input("Parameter to adjust", value=goal_cfg.get("parameter", "cogs_ratio"), key="goal_param")
+            g_metric = st.text_input("Target metric", value=goal_cfg.get("target_metric", "enterprise_value"), key="goal_metric")
+            g_mult = st.number_input("Target multiplier", value=float(goal_cfg.get("multiplier", 1.1)), step=0.05, key="goal_mult")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Save Goal", key="goal_save"):
+                    st.session_state["goal_seek_config"] = {"parameter": g_param, "target_metric": g_metric, "multiplier": g_mult}
+                    _rerun()
+            with c2:
+                if st.button("Reset Goal", key="goal_reset"):
+                    st.session_state["goal_seek_config"] = {"parameter": "cogs_ratio", "target_metric": "enterprise_value", "multiplier": 1.1}
+                    _rerun()
         if not what_if_df.empty:
             impact_cols = ["enterprise_value", "ev_change", "ev_change_pct", "revenue_2030", "profit_2030"]
             view = what_if_df.drop(columns=[c for c in what_if_df.columns if c not in impact_cols + ["scenario_name"]]).rename(columns={"scenario_name": "Scenario"})
@@ -3584,6 +3800,25 @@ with tab_advanced:
 
     with analytics_tabs[5]:
         st.markdown("### Optimization, portfolio, ESG, and real options")
+        with st.expander("Manage optimization inputs", expanded=False):
+            st.caption("Add rows of asset returns (comma-separated percentages, e.g., 0.08,0.12,0.05).")
+            new_row = st.text_input("Return row", key="opt_row")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Add Return Row", key="opt_add") and new_row:
+                    try:
+                        parsed = [float(x.strip()) for x in new_row.split(",") if x.strip()]
+                        if parsed:
+                            st.session_state["portfolio_returns_rows"].append(parsed)
+                            _rerun()
+                    except Exception:
+                        st.warning("Could not parse returns; please enter numbers separated by commas.")
+            with c2:
+                if st.button("Remove Last Row", key="opt_remove") and st.session_state.get("portfolio_returns_rows"):
+                    st.session_state["portfolio_returns_rows"].pop()
+                    _rerun()
+            if st.session_state.get("portfolio_returns_rows"):
+                st.dataframe(pd.DataFrame(st.session_state["portfolio_returns_rows"]), use_container_width=True, hide_index=True)
         opt_view = {
             "Optimal Weights": ", ".join([f"{w:.2f}" for w in portfolio_opt.get("optimal_weights", [])]),
             "Expected Return": f"{portfolio_opt.get('expected_return',0):.2%}",

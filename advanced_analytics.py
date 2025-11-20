@@ -128,7 +128,10 @@ class BreakEvenAnalyzer:
         mix = self.model_data.get('product_mix', {}) or {}
         prices = self.model_data.get('selling_price', {}) or {}
         opex_breakdown = self.model_data.get('opex_breakdown', {}).get(year, {})
-        fixed_cost = float(sum(opex_breakdown.values()))
+        marketing = float(opex_breakdown.get('marketing', 0.0) or 0.0)
+        labor = float(opex_breakdown.get('labor', 0.0) or 0.0)
+        other = float(opex_breakdown.get('other', 0.0) or 0.0)
+        fixed_cost = marketing + labor + other
 
         rows = []
         for product, share in mix.items():

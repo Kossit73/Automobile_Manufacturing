@@ -964,7 +964,12 @@ def _render_capex_management_section():
                 step=0.5,
                 key="capex_add_dep_rate",
             )
-            useful_life = st.number_input("Asset Useful Life (years)", min_value=1, value=10)
+            useful_life = st.number_input(
+                "Asset Useful Life (years)",
+                min_value=1,
+                value=10,
+                key="capex_add_useful_life",
+            )
 
         with col2:
             salvage_value = st.number_input(
@@ -1040,7 +1045,10 @@ def _render_capex_management_section():
                 key=f"capex_edit_start_{selected_id}",
             )
             new_life = st.number_input(
-                "Asset Useful Life (years)", min_value=1, value=asset.useful_life
+                "Asset Useful Life (years)",
+                min_value=1,
+                value=asset.useful_life,
+                key=f"capex_edit_useful_life_{selected_id}",
             )
             new_salvage = st.number_input(
                 "Salvage Value ($)", min_value=0, value=int(asset.salvage_value)

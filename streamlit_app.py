@@ -718,28 +718,6 @@ def _render_labor_management_section():
         with col3:
             st.metric("Cost per Employee", f"${total_cost/hc:,.0f}" if hc > 0 else "N/A")
 
-        st.markdown("## 5-Year Labor Cost Schedule")
-        cost_schedule = LaborCostSchedule(st.session_state.labor_manager)
-        schedule_df = cost_schedule.generate_5year_schedule(
-            salary_growth=st.session_state.salary_growth_rate
-        )
-
-        display_df = schedule_df.copy()
-        for col in ['Direct Labor Cost', 'Indirect Labor Cost', 'Total Labor Cost']:
-            display_df[col] = display_df[col].apply(lambda x: f"${x/1e6:.2f}M")
-
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-        fig = px.line(
-            schedule_df,
-            x='Year',
-            y=['Direct Labor Cost', 'Indirect Labor Cost'],
-            markers=True,
-            title="Labor Cost Forecast (2026-2030)",
-            labels={'value': 'Cost ($)', 'variable': 'Labor Type'},
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
     with tab2:
         st.markdown("## Add New Labor Position")
 
@@ -2836,6 +2814,29 @@ with tab_dashboard:
         st.metric("# Assets", f"{len(capex_items)}")
         dep_first = model['depreciation'].get(start_year, model['depreciation']) if isinstance(model['depreciation'], dict) else model['depreciation']
         st.metric("Annual Depreciation", f"${dep_first/1e3:.0f}K")
+
+    st.markdown("## 5-Year Labor Cost Schedule")
+
+    cost_schedule = LaborCostSchedule(st.session_state.labor_manager)
+    schedule_df = cost_schedule.generate_5year_schedule(
+        salary_growth=st.session_state.salary_growth_rate
+    )
+
+    display_df = schedule_df.copy()
+    for col in ['Direct Labor Cost', 'Indirect Labor Cost', 'Total Labor Cost']:
+        display_df[col] = display_df[col].apply(lambda x: f"${x/1e6:.2f}M")
+
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    labor_fig = px.line(
+        schedule_df,
+        x='Year',
+        y=['Direct Labor Cost', 'Indirect Labor Cost'],
+        markers=True,
+        title="Labor Cost Forecast",
+        labels={'value': 'Cost ($)', 'variable': 'Labor Type'},
+    )
+    st.plotly_chart(labor_fig, use_container_width=True)
 
     st.markdown("## Financial Visualization & Reports")
     visualizer = FinancialVisualizer(model)

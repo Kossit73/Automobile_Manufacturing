@@ -1410,37 +1410,29 @@ with tab_platform:
         "Working Days": [model["config"].working_days for _ in years],
     })
 
-    schedule_tabs = st.tabs([
-        "Labor Cost",
-        "CAPEX",
-        "Production Schedule",
-        "Operating Expense Breakdown",
-        "Working Capital Accruals",
-        "Working Capital & FCF",
-        "Financing",
-        "Fixed Cost",
-        "Variable Cost",
-        "Other Cost",
-        "Debt",
-        "Investment",
-        "Assets",
-        "Automobile & Assembly",
-    ])
+    schedule_tabs = st.tabs(
+        [
+            "Labor Cost",
+            "Production Schedule",
+            "Operating Expense Breakdown",
+            "Working Capital Accruals",
+            "Financing",
+            "Fixed Cost",
+            "Variable Cost",
+            "Investment",
+            "Automobile & Assembly",
+        ]
+    )
 
     (
         tab_labor,
-        tab_capex,
         tab_production,
         tab_opex_breakdown,
         tab_wc_accruals,
-        tab_wc_fcf,
         tab_financing,
         tab_fixed_cost,
         tab_variable_cost,
-        tab_other_cost,
-        tab_debt,
         tab_investment,
-        tab_assets,
         tab_auto,
     ) = schedule_tabs
 
@@ -1455,13 +1447,6 @@ with tab_platform:
                 "Total Labor Cost",
                 "Edit labor totals inline; add or remove years to reshape the schedule.",
             )
-
-    with tab_capex:
-        st.dataframe(
-            _format_statement(capex_df, ["CAPEX Spend", "Depreciation"]),
-            use_container_width=True,
-            hide_index=True,
-        )
 
     with tab_production:
         st.markdown("#### Production Schedule")
@@ -2106,9 +2091,6 @@ with tab_platform:
                             st.success("Working-capital accrual removed.")
                             st.rerun()
 
-    with tab_wc_fcf:
-        st.dataframe(_format_statement(working_cap_df, ["FCF", "Discounted FCF", "Working Capital Change"]), use_container_width=True, hide_index=True)
-
     with tab_financing:
         st.markdown("#### Financing Schedule")
         if financing_df.empty:
@@ -2564,24 +2546,6 @@ with tab_platform:
                 st.success("Variable costs updated with the incremented values.")
                 st.rerun()
 
-    with tab_other_cost:
-        _editable_schedule(
-            "Other Cost Schedule",
-            other_cost_df,
-            "other_cost_overrides",
-            "Other Operating Cost",
-            "Adjust other operating costs by year; use add/remove to reshape the horizon.",
-        )
-
-    with tab_debt:
-        _editable_schedule(
-            "Debt Schedule",
-            debt_schedule_df,
-            "loan_repayment_overrides",
-            "Principal",
-            "Edit principal repayments; add/remove years to reshape the debt amortization profile.",
-        )
-
     with tab_investment:
         st.markdown("#### Investment Schedule")
         owner_default = float(st.session_state.owner_equity_pct)
@@ -2813,15 +2777,6 @@ with tab_platform:
                     )
                     st.success("Investment percentages updated. Rerunning the model with the new values.")
                     st.rerun()
-
-    with tab_assets:
-        _editable_schedule(
-            "Asset Schedule",
-            assets_df,
-            "asset_overrides",
-            "Total Assets",
-            "Update asset balances or add projection years to tailor the asset view.",
-        )
 
     with tab_auto:
         st.markdown("#### Automobile Manufacturing Planner")

@@ -38,6 +38,27 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+def _sorted_years(model_data: dict) -> List[int]:
+    years = model_data.get('years') if isinstance(model_data, dict) else None
+    if years is None:
+        return []
+    if isinstance(years, range):
+        years = list(years)
+    return sorted(years)
+
+
+def _series_lookup(series: Dict | None, year: int | None) -> float:
+    if series is None or year is None:
+        return 0.0
+    if isinstance(series, dict):
+        if year in series:
+            return float(series[year])
+        if series:
+            last_key = sorted(series.keys())[-1]
+            return float(series[last_key])
+    return 0.0
+
+
 def clone_config(config: 'CompanyConfig', **updates: Any) -> 'CompanyConfig':
     """Return a defensive copy of ``config`` with optional field overrides."""
 
@@ -289,25 +310,39 @@ class StressTestEngine:
                         setattr(cfg, key, value)
             
             model = run_financial_model(cfg)
+            years = _sorted_years(model)
+            start_year = years[0] if years else None
+            last_year = years[-1] if years else None
             results[scenario_name] = {
                 'enterprise_value': model['enterprise_value'],
-                'revenue_2030': model['revenue'][2030],
-                'net_profit_2030': model['net_profit'][2030],
-                'final_cash': model['cash_balance'][2030],
-                'recovery_probability': self._recovery_score(model)
+                'revenue_2030': _series_lookup(model.get('revenue'), last_year),
+                'net_profit_2030': _series_lookup(model.get('net_profit'), last_year),
+                'final_cash': _series_lookup(model.get('cash_balance'), last_year),
+                'recovery_probability': self._recovery_score(model, start_year=start_year, end_year=last_year)
             }
         
         return results
     
-    def _recovery_score(self, model_data: dict) -> float:
-        """Calculate probability of recovery (0-100)"""
-        if model_data['cash_balance'][2030] < 0:
+    def _recovery_score(self, model_data: dict, start_year: int | None = None, end_year: int | None = None) -> float:
+        """Calculate probability of recovery (0-100) without assuming fixed years."""
+        years = _sorted_years(model_data)
+        if not years:
             return 0
-        if model_data['enterprise_value'] < 0:
+
+        start_year = start_year if start_year is not None else years[0]
+        end_year = end_year if end_year is not None else years[-1]
+
+        final_cash = _series_lookup(model_data.get('cash_balance'), end_year)
+        start_cash = _series_lookup(model_data.get('cash_balance'), start_year)
+        final_profit = _series_lookup(model_data.get('net_profit'), end_year)
+
+        if final_cash < 0:
+            return 0
+        if model_data.get('enterprise_value', 0) < 0:
             return 20
-        if model_data['net_profit'][2030] < 0:
+        if final_profit < 0:
             return 40
-        if model_data['cash_balance'][2030] > model_data['cash_balance'][2026]:
+        if final_cash > start_cash:
             return 100
         return 60
 
